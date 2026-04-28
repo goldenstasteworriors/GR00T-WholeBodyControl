@@ -5,6 +5,7 @@ from typing import cast
 import torch
 
 from mjlab.envs import mdp as mj_mdp
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_error_magnitude
 
 from sonic_mj.mdp.commands import SonicMotionCommand
@@ -70,6 +71,8 @@ def joint_limit(env) -> torch.Tensor:
     return mj_mdp.joint_pos_limits(env)
 
 
-def feet_acc(env) -> torch.Tensor:
-    return torch.zeros(env.num_envs, device=env.device)
-
+def feet_acc(
+    env,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=(".*ankle.*",)),
+) -> torch.Tensor:
+    return mj_mdp.joint_acc_l2(env, asset_cfg=asset_cfg)

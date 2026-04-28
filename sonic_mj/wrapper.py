@@ -55,6 +55,11 @@ class SonicMjEnvWrapper:
 
     def reset(self, flatten_dict_obs=True):
         obs, _info = self.env.reset()
+        self.motion_command.sync_after_sim_forward()
+        env_ids = torch.arange(self.num_envs, device=self.device)
+        self.env.observation_manager.reset(env_ids)
+        obs = self.env.observation_manager.compute(update_history=True)
+        self.env.obs_buf = obs
         processed = self.process_raw_obs(obs, flatten_dict_obs=flatten_dict_obs)
         self.obs_buf_dict = copy.deepcopy(processed)
         return processed
@@ -105,14 +110,19 @@ class SonicMjEnvWrapper:
         return out
 
     def get_env_state_dict(self):
-        return {}
+        return {"motion_lib": self._motion_lib.get_state_dict()}
 
-    def load_env_state_dict(self, state_dict):  # noqa: ARG002
-        return None
+    def load_env_state_dict(self, state_dict):
+        if "motion_lib" in state_dict:
+            self._motion_lib.load_state_dict(state_dict["motion_lib"])
+            if getattr(self._motion_lib, "use_adaptive_sampling", False):
+                self.resample_motion()
 
     def set_is_evaluating(self, is_evaluating=True, *_, **__):
         self.is_evaluating = is_evaluating
-        if hasattr(self.motion_command, "is_evaluating"):
+        if hasattr(self.motion_command, "set_is_evaluating"):
+            self.motion_command.set_is_evaluating(is_evaluating)
+        elif hasattr(self.motion_command, "is_evaluating"):
             self.motion_command.is_evaluating = is_evaluating
 
     def set_is_training(self):
@@ -124,6 +134,12 @@ class SonicMjEnvWrapper:
 
     def reinit_dr(self):
         return None
+
+    def sync_and_compute_adaptive_sampling(self, accelerator, sync_across_gpus=False):
+        if self._motion_lib is not None:
+            self._motion_lib.sync_and_compute_adaptive_sampling(
+                accelerator, sync_across_gpus=sync_across_gpus
+            )
 
     def render_results(self):
         return None

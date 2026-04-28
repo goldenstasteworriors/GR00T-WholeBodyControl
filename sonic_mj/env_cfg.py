@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -40,6 +41,20 @@ def _as_tuple(value):
 
 def _event_params(term_cfg):
     return _cfg_get(term_cfg, "params", {}) or {}
+
+
+def _term_params(group_cfg, term_name: str):
+    return _cfg_get(_cfg_get(group_cfg, term_name, None), "params", {}) or {}
+
+
+def _scale_range_to_pseudo_inertia_alpha(
+    scale_range: tuple[float, float] | list[float],
+) -> tuple[float, float]:
+    """Convert mass/inertia scale range to mjlab pseudo-inertia log scale."""
+    low, high = float(scale_range[0]), float(scale_range[1])
+    if low <= 0.0 or high <= 0.0:
+        raise ValueError(f"Mass scale range must be positive, got {scale_range}.")
+    return 0.5 * math.log(low), 0.5 * math.log(high)
 
 
 def _make_sonic_events(manager_cfg):
@@ -88,19 +103,33 @@ def _make_sonic_events(manager_cfg):
     if mass_cfg is not None:
         params = _event_params(mass_cfg)
         asset_cfg = _cfg_get(params, "asset_cfg", {})
-        events["randomize_rigid_body_mass"] = EventTermCfg(
-            func=mj_mdp.dr.body_mass,
-            mode=_cfg_get(mass_cfg, "mode", "startup"),
-            params={
+        mass_distribution_params = _as_tuple(
+            _cfg_get(params, "mass_distribution_params", (0.8, 1.2))
+        )
+        operation = _cfg_get(params, "operation", "scale")
+        if operation == "scale":
+            mass_func = mj_mdp.dr.pseudo_inertia
+            mass_params = {
                 "asset_cfg": SceneEntityCfg(
                     "robot",
                     body_names=_cfg_get(asset_cfg, "body_names", ".*"),
                 ),
-                "ranges": _as_tuple(
-                    _cfg_get(params, "mass_distribution_params", (0.8, 1.2))
+                "alpha_range": _scale_range_to_pseudo_inertia_alpha(mass_distribution_params),
+            }
+        else:
+            mass_func = mj_mdp.dr.body_mass
+            mass_params = {
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    body_names=_cfg_get(asset_cfg, "body_names", ".*"),
                 ),
-                "operation": _cfg_get(params, "operation", "scale"),
-            },
+                "ranges": mass_distribution_params,
+                "operation": operation,
+            }
+        events["randomize_rigid_body_mass"] = EventTermCfg(
+            func=mass_func,
+            mode=_cfg_get(mass_cfg, "mode", "startup"),
+            params=mass_params,
         )
 
     physics_material_cfg = _cfg_get(source_events, "physics_material", None)
@@ -153,6 +182,7 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
     actor_action_hist = int(_cfg_get(config, "actor_actions_history_length", 10))
     critic_hist = int(_cfg_get(config, "critic_prop_history_length", 10))
     critic_action_hist = int(_cfg_get(config, "critic_actions_history_length", 10))
+    termination_cfg = _cfg_get(manager_cfg, "terminations", {}) or {}
 
     observations = {
         "policy": ObservationGroupCfg(
@@ -259,6 +289,26 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
                 cat_upper_body_poses=bool(motion_cfg.cat_upper_body_poses),
                 cat_upper_body_poses_prob=float(motion_cfg.cat_upper_body_poses_prob),
                 freeze_frame_aug=bool(motion_cfg.freeze_frame_aug),
+                freeze_frame_aug_prob=float(_cfg_get(motion_cfg, "freeze_frame_aug_prob", 0.1)),
+                encoder_sample_probs=dict(_cfg_get(motion_cfg, "encoder_sample_probs", {}))
+                or None,
+                teleop_sample_prob_when_smpl=float(
+                    _cfg_get(motion_cfg, "teleop_sample_prob_when_smpl", 0.0)
+                ),
+                start_from_first_frame=bool(_cfg_get(motion_cfg, "start_from_first_frame", False)),
+                sample_unique_motions=bool(_cfg_get(motion_cfg, "sample_unique_motions", False)),
+                use_paired_motions=bool(_cfg_get(motion_cfg, "use_paired_motions", False)),
+                sample_from_n_initial_frames=_cfg_get(
+                    motion_cfg, "sample_from_n_initial_frames", None
+                ),
+                pose_range=dict(_cfg_get(motion_cfg, "pose_range", {}) or {}),
+                velocity_range=dict(_cfg_get(motion_cfg, "velocity_range", {}) or {}),
+                joint_position_range=_as_tuple(
+                    _cfg_get(motion_cfg, "joint_position_range", (-0.1, 0.1))
+                ),
+                joint_velocity_range=_as_tuple(
+                    _cfg_get(motion_cfg, "joint_velocity_range", (0.0, 0.0))
+                ),
             )
         },
         observations=observations,
@@ -281,21 +331,30 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
             "feet_acc": RewardTermCfg(
                 func=rewards.feet_acc,
                 weight=float(_cfg_get(manager_cfg.rewards.feet_acc, "weight", -2.5e-6)),
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*ankle.*",))},
             ),
         },
         terminations={
             "time_out": TerminationTermCfg(func=terminations.time_out, time_out=True),
             "anchor_pos": TerminationTermCfg(
-                func=terminations.anchor_pos, params={"threshold": 1.0}
+                func=terminations.anchor_pos,
+                params=_term_params(termination_cfg, "anchor_pos"),
             ),
             "anchor_ori_full": TerminationTermCfg(
-                func=terminations.anchor_ori_full, params={"threshold": 1.57}
+                func=terminations.anchor_ori_full,
+                params={
+                    key: value
+                    for key, value in _term_params(termination_cfg, "anchor_ori_full").items()
+                    if key != "asset_cfg"
+                },
             ),
             "ee_body_pos": TerminationTermCfg(
-                func=terminations.ee_body_pos, params={"threshold": 1.0}
+                func=terminations.ee_body_pos,
+                params=_term_params(termination_cfg, "ee_body_pos"),
             ),
             "foot_pos_xyz": TerminationTermCfg(
-                func=terminations.foot_pos_xyz, params={"threshold": 1.0}
+                func=terminations.foot_pos_xyz,
+                params=_term_params(termination_cfg, "foot_pos_xyz"),
             ),
         },
         events=_make_sonic_events(manager_cfg),

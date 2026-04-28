@@ -44,6 +44,8 @@ def command(env, command_name: str = "motion") -> torch.Tensor:
 
 def encoder_index(env, command_name: str = "motion") -> torch.Tensor:
     cmd = _motion(env, command_name)
+    if cmd.encoder_index.ndim == 2 and cmd.encoder_index.shape[1] > 1:
+        return cmd.encoder_index.float()
     out = torch.zeros(env.num_envs, 3, device=env.device)
     out.scatter_(1, cmd.encoder_index.clamp(0, 2), 1.0)
     return out
