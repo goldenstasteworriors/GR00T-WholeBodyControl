@@ -57,6 +57,17 @@ def _scale_range_to_pseudo_inertia_alpha(
     return 0.5 * math.log(low), 0.5 * math.log(high)
 
 
+def _uses_variable_frame_masks(config) -> bool:
+    backbone_cfg = _cfg_get(_cfg_get(_cfg_get(config, "algo", {}), "config", {}), "actor", {})
+    backbone_cfg = _cfg_get(backbone_cfg, "backbone", {}) or {}
+    for group_name in ("encoders", "decoders"):
+        group = _cfg_get(backbone_cfg, group_name, {}) or {}
+        for term_cfg in group.values():
+            if len(_cfg_get(term_cfg, "mask", []) or []) > 0:
+                return True
+    return False
+
+
 def _make_sonic_events(manager_cfg):
     source_events = _cfg_get(manager_cfg, "events", {}) or {}
     events = {
@@ -183,6 +194,49 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
     critic_hist = int(_cfg_get(config, "critic_prop_history_length", 10))
     critic_action_hist = int(_cfg_get(config, "critic_actions_history_length", 10))
     termination_cfg = _cfg_get(manager_cfg, "terminations", {}) or {}
+    encoder_sample_probs = dict(_cfg_get(motion_cfg, "encoder_sample_probs", {}) or {})
+    use_soma_encoder = "soma" in encoder_sample_probs
+    use_variable_frames = bool(_cfg_get(motion_cfg, "variable_frames_enabled", False))
+    expose_variable_frame_mask = use_variable_frames and _uses_variable_frame_masks(config)
+
+    tokenizer_terms = {
+        "encoder_index": ObservationTermCfg(func=obs.encoder_index),
+        "command_multi_future_nonflat": ObservationTermCfg(func=obs.command_multi_future_nonflat),
+        "command_z_multi_future_nonflat": ObservationTermCfg(
+            func=obs.command_z_multi_future_nonflat
+        ),
+        "motion_anchor_ori_b_mf_nonflat": ObservationTermCfg(
+            func=obs.motion_anchor_ori_b_mf_nonflat
+        ),
+        "command_multi_future_lower_body": ObservationTermCfg(func=obs.command_multi_future_lower_body),
+        "vr_3point_local_target": ObservationTermCfg(func=obs.vr_3point_local_target),
+        "vr_3point_local_orn_target": ObservationTermCfg(func=obs.vr_3point_local_orn_target),
+        "motion_anchor_ori_b": ObservationTermCfg(func=obs.motion_anchor_ori_b),
+        "command_z": ObservationTermCfg(func=obs.command_z),
+        "smpl_joints_multi_future_local_nonflat": ObservationTermCfg(
+            func=obs.smpl_joints_multi_future_local_nonflat
+        ),
+        "smpl_root_ori_b_multi_future": ObservationTermCfg(func=obs.smpl_root_ori_b_multi_future),
+        "joint_pos_multi_future_wrist_for_smpl": ObservationTermCfg(
+            func=obs.joint_pos_multi_future_wrist_for_smpl
+        ),
+    }
+    if expose_variable_frame_mask:
+        tokenizer_terms["command_num_frames"] = ObservationTermCfg(func=obs.command_num_frames)
+    if use_soma_encoder:
+        tokenizer_terms.update(
+            {
+                "soma_joints_multi_future_local_nonflat": ObservationTermCfg(
+                    func=obs.soma_joints_multi_future_local_nonflat
+                ),
+                "soma_root_ori_b_multi_future": ObservationTermCfg(
+                    func=obs.soma_root_ori_b_multi_future
+                ),
+                "joint_pos_multi_future_wrist_for_soma": ObservationTermCfg(
+                    func=obs.joint_pos_multi_future_wrist_for_soma
+                ),
+            }
+        )
 
     observations = {
         "policy": ObservationGroupCfg(
@@ -213,36 +267,7 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
             enable_corruption=False,
         ),
         "tokenizer": ObservationGroupCfg(
-            terms={
-                "encoder_index": ObservationTermCfg(func=obs.encoder_index),
-                "command_multi_future_nonflat": ObservationTermCfg(
-                    func=obs.command_multi_future_nonflat
-                ),
-                "command_z_multi_future_nonflat": ObservationTermCfg(
-                    func=obs.command_z_multi_future_nonflat
-                ),
-                "motion_anchor_ori_b_mf_nonflat": ObservationTermCfg(
-                    func=obs.motion_anchor_ori_b_mf_nonflat
-                ),
-                "command_multi_future_lower_body": ObservationTermCfg(
-                    func=obs.command_multi_future_lower_body
-                ),
-                "vr_3point_local_target": ObservationTermCfg(func=obs.vr_3point_local_target),
-                "vr_3point_local_orn_target": ObservationTermCfg(
-                    func=obs.vr_3point_local_orn_target
-                ),
-                "motion_anchor_ori_b": ObservationTermCfg(func=obs.motion_anchor_ori_b),
-                "command_z": ObservationTermCfg(func=obs.command_z),
-                "smpl_joints_multi_future_local_nonflat": ObservationTermCfg(
-                    func=obs.smpl_joints_multi_future_local_nonflat
-                ),
-                "smpl_root_ori_b_multi_future": ObservationTermCfg(
-                    func=obs.smpl_root_ori_b_multi_future
-                ),
-                "joint_pos_multi_future_wrist_for_smpl": ObservationTermCfg(
-                    func=obs.joint_pos_multi_future_wrist_for_smpl
-                ),
-            },
+            terms=tokenizer_terms,
             concatenate_terms=False,
             enable_corruption=False,
         ),
@@ -286,12 +311,14 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
                 dt_future_ref_frames=float(motion_cfg.dt_future_ref_frames),
                 smpl_num_future_frames=int(motion_cfg.smpl_num_future_frames),
                 smpl_dt_future_ref_frames=float(motion_cfg.smpl_dt_future_ref_frames),
+                variable_frames_enabled=use_variable_frames,
+                variable_frames_min=int(_cfg_get(motion_cfg, "variable_frames_min", 16)),
+                variable_frames_step=int(_cfg_get(motion_cfg, "variable_frames_step", 4)),
                 cat_upper_body_poses=bool(motion_cfg.cat_upper_body_poses),
                 cat_upper_body_poses_prob=float(motion_cfg.cat_upper_body_poses_prob),
                 freeze_frame_aug=bool(motion_cfg.freeze_frame_aug),
                 freeze_frame_aug_prob=float(_cfg_get(motion_cfg, "freeze_frame_aug_prob", 0.1)),
-                encoder_sample_probs=dict(_cfg_get(motion_cfg, "encoder_sample_probs", {}))
-                or None,
+                encoder_sample_probs=encoder_sample_probs or None,
                 teleop_sample_prob_when_smpl=float(
                     _cfg_get(motion_cfg, "teleop_sample_prob_when_smpl", 0.0)
                 ),
@@ -301,6 +328,17 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
                 sample_from_n_initial_frames=_cfg_get(
                     motion_cfg, "sample_from_n_initial_frames", None
                 ),
+                contact_file=_cfg_get(motion_cfg, "contact_file", None),
+                sample_before_contact=bool(
+                    _cfg_get(motion_cfg, "sample_before_contact", False)
+                ),
+                sample_before_contact_margin=int(
+                    _cfg_get(motion_cfg, "sample_before_contact_margin", 10)
+                ),
+                sample_before_contact_hand=str(
+                    _cfg_get(motion_cfg, "sample_before_contact_hand", "right_hand")
+                ),
+                contact_frame_tolerance=int(_cfg_get(motion_cfg, "contact_frame_tolerance", 3)),
                 pose_range=dict(_cfg_get(motion_cfg, "pose_range", {}) or {}),
                 velocity_range=dict(_cfg_get(motion_cfg, "velocity_range", {}) or {}),
                 joint_position_range=_as_tuple(

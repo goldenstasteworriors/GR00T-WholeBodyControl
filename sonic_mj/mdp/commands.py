@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import glob
+import math
+import os
 from typing import Literal
 
 import easydict
@@ -22,6 +25,30 @@ from gear_sonic.utils.motion_lib import motion_lib_robot
 
 def _as_tensor(value, *, device: str, dtype=torch.float32) -> torch.Tensor:
     return torch.as_tensor(value, dtype=dtype, device=device)
+
+
+def _init_variable_frames(
+    enabled: bool,
+    min_frames: int,
+    num_future_frames: int,
+    step: int,
+    num_envs: int,
+    device: str,
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    if not enabled:
+        return None, None
+    if step <= 0:
+        raise ValueError(f"variable_frames_step must be positive, got {step}.")
+    frame_choices = torch.arange(min_frames, num_future_frames + 1, step, device=device)
+    if len(frame_choices) == 0:
+        raise ValueError(
+            "No valid variable frame choices: "
+            f"variable_frames_min={min_frames}, num_future_frames={num_future_frames}."
+        )
+    per_env_num_frames = torch.full(
+        (num_envs,), num_future_frames, device=device, dtype=torch.long
+    )
+    return per_env_num_frames, frame_choices
 
 
 class SonicMotionCommand(CommandTerm):
@@ -83,6 +110,7 @@ class SonicMotionCommand(CommandTerm):
         self.motion_lib = motion_lib_robot.MotionLibRobot(
             motion_cfg, self.num_envs, self.device
         )
+        self.motion_target_fps = int(motion_cfg.target_fps)
         self.max_num_load_motions = min(self.num_envs, cfg.max_num_load_motions)
         self.motion_lib.load_motions_for_training(max_num_seqs=self.max_num_load_motions)
         self._motion_lib = self.motion_lib
@@ -106,6 +134,9 @@ class SonicMotionCommand(CommandTerm):
         self.teleop_encoder_index = (
             self.encoder_names.index("teleop") if "teleop" in self.encoder_names else None
         )
+        self.soma_encoder_index = (
+            self.encoder_names.index("soma") if "soma" in self.encoder_names else None
+        )
         no_smpl_probs = self.encoder_sample_probs.clone()
         if self.smpl_encoder_index is not None:
             no_smpl_probs[self.smpl_encoder_index] = 0.0
@@ -114,14 +145,41 @@ class SonicMotionCommand(CommandTerm):
             if self.g1_encoder_index is not None:
                 no_smpl_probs[self.g1_encoder_index] = 1.0
         self.encoder_sample_probs_no_smpl = no_smpl_probs / no_smpl_probs.sum()
+        no_soma_probs = self.encoder_sample_probs.clone()
+        if self.soma_encoder_index is not None:
+            no_soma_probs[self.soma_encoder_index] = 0.0
+        if no_soma_probs.sum() <= 0.0:
+            no_soma_probs[:] = 0.0
+            if self.g1_encoder_index is not None:
+                no_soma_probs[self.g1_encoder_index] = 1.0
+        self.encoder_sample_probs_no_soma = no_soma_probs / no_soma_probs.sum()
+        no_smpl_no_soma_probs = no_smpl_probs.clone()
+        if self.soma_encoder_index is not None:
+            no_smpl_no_soma_probs[self.soma_encoder_index] = 0.0
+        if no_smpl_no_soma_probs.sum() <= 0.0:
+            no_smpl_no_soma_probs[:] = 0.0
+            if self.g1_encoder_index is not None:
+                no_smpl_no_soma_probs[self.g1_encoder_index] = 1.0
+        self.encoder_sample_probs_no_smpl_no_soma = (
+            no_smpl_no_soma_probs / no_smpl_no_soma_probs.sum()
+        )
 
         self.motion_ids = self._sample_initial_motion_ids()
         self.motion_start_time_steps = self.motion_lib.sample_time_steps(
             self.motion_ids, truncate_time=None
         )
+        self._load_contact_data()
         self._apply_start_time_overrides(torch.arange(self.num_envs, device=self.device))
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.motion_num_steps = self.motion_lib.get_motion_num_steps(self.motion_ids)
+        self.per_env_num_frames, self._frame_choices = _init_variable_frames(
+            bool(cfg.variable_frames_enabled),
+            int(cfg.variable_frames_min),
+            int(cfg.num_future_frames),
+            int(cfg.variable_frames_step),
+            self.num_envs,
+            self.device,
+        )
         self.encoder_index = torch.zeros(
             self.num_envs, len(self.encoder_names), dtype=torch.long, device=self.device
         )
@@ -232,6 +290,59 @@ class SonicMotionCommand(CommandTerm):
         state["root_rot"] = self._xyzw_to_wxyz(state["root_rot"])
         return {k: v.reshape(self.num_envs, num_frames, *v.shape[1:]) for k, v in state.items()}
 
+    @property
+    def command_num_frames(self) -> torch.Tensor:
+        if self.per_env_num_frames is None:
+            return torch.full(
+                (self.num_envs, 1),
+                float(self.cfg.num_future_frames),
+                device=self.device,
+            )
+        return self.per_env_num_frames.float().reshape(-1, 1)
+
+    def soma_future_state(self) -> dict[str, torch.Tensor]:
+        num_frames = self.cfg.smpl_num_future_frames
+        frame_offsets = torch.round(
+            torch.arange(num_frames, device=self.device, dtype=torch.float32)
+            * self.cfg.smpl_dt_future_ref_frames
+            * self.motion_target_fps
+        ).long()
+        motion_steps = (
+            self.motion_start_time_steps[:, None] + self.time_steps[:, None] + frame_offsets[None, :]
+        )
+        flat_ids = self.motion_ids[:, None].expand(-1, num_frames).reshape(-1)
+        flat_steps = motion_steps.reshape(-1)
+
+        if hasattr(self.motion_lib, "get_soma_joints") and hasattr(self.motion_lib, "_motion_soma_joints"):
+            joints = self.motion_lib.get_soma_joints(flat_ids, flat_steps).reshape(
+                self.num_envs, num_frames, -1, 3
+            )
+        else:
+            joints = torch.zeros(
+                self.num_envs,
+                num_frames,
+                self.cfg.num_soma_joints,
+                3,
+                device=self.device,
+            )
+
+        if hasattr(self.motion_lib, "get_soma_root_quat") and hasattr(
+            self.motion_lib, "_motion_soma_root_quat"
+        ):
+            root_quat = self.motion_lib.get_soma_root_quat(flat_ids, flat_steps)
+            if root_quat.ndim > 2:
+                root_quat = root_quat.reshape(root_quat.shape[0], -1, root_quat.shape[-1])[:, 0]
+            root_quat = root_quat.reshape(self.num_envs, num_frames, 4)
+        else:
+            root_quat = torch.zeros(
+                self.num_envs, num_frames, 4, device=self.device
+            )
+            root_quat[..., 0] = 1.0
+        root_quat = self._soma_root_quat_to_zup_wxyz(root_quat.reshape(-1, 4)).reshape(
+            self.num_envs, num_frames, 4
+        )
+        return {"soma_joints": joints, "soma_root_quat_w": root_quat}
+
     def _refresh_motion_state(self) -> None:
         motion_times = (self.motion_start_time_steps + self.time_steps).float() * self._env.step_dt
         self._motion_state = self.motion_lib.get_motion_state(self.motion_ids, motion_times)
@@ -251,6 +362,19 @@ class SonicMotionCommand(CommandTerm):
     @staticmethod
     def _xyzw_to_wxyz(quat: torch.Tensor) -> torch.Tensor:
         return quat[..., [3, 0, 1, 2]]
+
+    def _soma_root_quat_to_zup_wxyz(self, quat: torch.Tensor) -> torch.Tensor:
+        if bool(getattr(self.motion_lib, "soma_y_up", True)):
+            base_rot = torch.tensor(
+                [math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0],
+                dtype=quat.dtype,
+                device=quat.device,
+            ).expand_as(quat)
+            quat = quat_mul(base_rot, quat)
+        bvh_base_rot = torch.tensor(
+            [0.5, 0.5, 0.5, 0.5], dtype=quat.dtype, device=quat.device
+        ).expand_as(quat)
+        return quat_mul(quat, bvh_base_rot)
 
     def _update_metrics(self) -> None:
         self.metrics["error_anchor_pos"] = torch.norm(
@@ -281,6 +405,164 @@ class SonicMotionCommand(CommandTerm):
             )
         elif self.cfg.start_from_first_frame:
             self.motion_start_time_steps[env_ids] = 0
+        if self.cfg.sample_before_contact and self._first_contact_lookup is not None:
+            self.motion_start_time_steps[env_ids] = self._sample_before_contact(
+                env_ids, self.motion_start_time_steps[env_ids]
+            )
+
+    def _load_contact_data(self) -> None:
+        self._first_contact_frame = None
+        self._contact_data = None
+        self._first_contact_lookup = None
+        self._per_env_first_contact = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self._motion_contact_flags = None
+        if self.cfg.contact_file is None or not os.path.exists(self.cfg.contact_file):
+            self._derive_first_contact_from_in_contact_labels()
+            return
+
+        import joblib
+
+        if os.path.isfile(self.cfg.contact_file):
+            contact_data = joblib.load(self.cfg.contact_file)
+        elif os.path.isdir(self.cfg.contact_file):
+            contact_data = {}
+            for pkl_file in sorted(glob.glob(os.path.join(self.cfg.contact_file, "*.pkl"))):
+                key = os.path.splitext(os.path.basename(pkl_file))[0]
+                data = joblib.load(pkl_file)
+                if isinstance(data, dict) and key in data:
+                    contact_data[key] = data[key]
+        else:
+            return
+
+        motion_keys = set(getattr(self.motion_lib, "curr_motion_keys", []))
+        if motion_keys:
+            contact_data = {
+                motion_name: motion_data
+                for motion_name, motion_data in contact_data.items()
+                if motion_name in motion_keys
+            }
+        self._contact_data = contact_data
+        first_contact_frame = {}
+        for motion_name, motion_data in contact_data.items():
+            if motion_keys and motion_name not in motion_keys:
+                continue
+            object_contact = motion_data.get("object") if isinstance(motion_data, dict) else None
+            if object_contact is None:
+                first_contact_frame[motion_name] = 0
+                continue
+            contact_tensor = torch.as_tensor(object_contact)
+            contact_per_frame = (contact_tensor != 0).reshape(contact_tensor.shape[0], -1).any(dim=1)
+            contact_frames = torch.nonzero(contact_per_frame, as_tuple=False).flatten()
+            first_contact_frame[motion_name] = (
+                int(contact_frames[0].item()) if len(contact_frames) > 0 else contact_tensor.shape[0]
+            )
+        self._first_contact_frame = first_contact_frame or None
+        self._validate_contact_frame_counts(contact_data)
+        self._build_first_contact_lookup()
+        self._build_motion_contact_flags()
+
+    def _derive_first_contact_from_in_contact_labels(self) -> None:
+        hand = self.cfg.sample_before_contact_hand
+        side = "left" if hand == "left_hand" else "right"
+        attr = f"_motion_object_in_contact_{side}"
+        if not hasattr(self.motion_lib, attr):
+            return
+
+        in_contact = getattr(self.motion_lib, attr)
+        length_starts = getattr(self.motion_lib, "length_starts", None)
+        motion_num_frames = getattr(self.motion_lib, "_motion_num_frames", None)
+        motion_keys = getattr(self.motion_lib, "curr_motion_keys", None)
+        if length_starts is None or motion_num_frames is None or motion_keys is None:
+            return
+
+        first_contact_frame = {}
+        for motion_idx, motion_key in enumerate(motion_keys):
+            start = int(length_starts[motion_idx].item())
+            num_frames = int(motion_num_frames[motion_idx].item())
+            motion_contact = in_contact[start : start + num_frames]
+            contact_frames = torch.nonzero(motion_contact > 0.5, as_tuple=False).flatten()
+            first_contact_frame[motion_key] = (
+                int(contact_frames[0].item()) if len(contact_frames) > 0 else num_frames
+            )
+        self._contact_data = None
+        self._first_contact_frame = first_contact_frame or None
+        self._build_first_contact_lookup()
+
+    def _build_first_contact_lookup(self) -> None:
+        if self._first_contact_frame is None:
+            self._first_contact_lookup = None
+            return
+        motion_keys = getattr(self.motion_lib, "curr_motion_keys", [])
+        self._first_contact_lookup = torch.zeros(
+            len(motion_keys), device=self.device, dtype=torch.long
+        )
+        for motion_idx, motion_key in enumerate(motion_keys):
+            self._first_contact_lookup[motion_idx] = int(
+                self._first_contact_frame.get(motion_key, 0)
+            )
+        self._update_per_env_first_contact(torch.arange(self.num_envs, device=self.device))
+
+    def _build_motion_contact_flags(self) -> None:
+        if not self._contact_data:
+            self._motion_contact_flags = None
+            return
+        self._motion_contact_flags = {}
+        for motion_idx, motion_key in enumerate(getattr(self.motion_lib, "curr_motion_keys", [])):
+            motion_data = self._contact_data.get(motion_key)
+            object_contact = motion_data.get("object") if isinstance(motion_data, dict) else None
+            if object_contact is None:
+                continue
+            contact_tensor = torch.as_tensor(object_contact, device=self.device)
+            contact_per_frame = (contact_tensor != 0).reshape(contact_tensor.shape[0], -1).any(dim=1)
+            self._motion_contact_flags[motion_idx] = contact_per_frame.bool()
+
+    def _update_per_env_first_contact(self, env_ids: torch.Tensor) -> None:
+        if self._first_contact_lookup is None or len(env_ids) == 0:
+            return
+        self._per_env_first_contact[env_ids] = self._first_contact_lookup[self.motion_ids[env_ids]]
+
+    def _validate_contact_frame_counts(self, contact_data: dict) -> None:
+        frame_tolerance = int(self.cfg.contact_frame_tolerance)
+        motion_keys = list(getattr(self.motion_lib, "curr_motion_keys", []))
+        motion_num_frames = getattr(self.motion_lib, "_motion_num_frames", None)
+        if motion_num_frames is None:
+            return
+        for motion_name, motion_data in contact_data.items():
+            if not isinstance(motion_data, dict):
+                continue
+            contact_source = motion_data.get("object", None)
+            if contact_source is None:
+                contact_source = motion_data.get("body", None)
+            if contact_source is None or motion_name not in motion_keys:
+                continue
+            contact_frames = int(torch.as_tensor(contact_source).shape[0])
+            motion_idx = motion_keys.index(motion_name)
+            expected_frames = int(motion_num_frames[motion_idx].item())
+            if abs(contact_frames - expected_frames) > frame_tolerance:
+                raise AssertionError(
+                    "[SonicMJ] Contact frame count mismatch for "
+                    f"{motion_name}: contact={contact_frames}, motion={expected_frames}, "
+                    f"tolerance={frame_tolerance}."
+                )
+
+    def _sample_before_contact(
+        self, env_ids: torch.Tensor, sampled_times: torch.Tensor
+    ) -> torch.Tensor:
+        if self._first_contact_lookup is None:
+            return sampled_times
+        first_contact = self._first_contact_lookup[self.motion_ids[env_ids]]
+        upper = first_contact - int(self.cfg.sample_before_contact_margin)
+        valid = upper > 0
+        if valid.any():
+            rand = torch.rand(len(env_ids), device=self.device)
+            sampled_times = sampled_times.clone()
+            sampled_times[valid] = torch.floor(rand[valid] * upper[valid].float()).to(
+                sampled_times.dtype
+            )
+        sampled_times[~valid] = 0
+        return sampled_times
 
     def _sample_encoder_index(self, env_ids: torch.Tensor) -> None:
         if len(env_ids) == 0:
@@ -289,11 +571,22 @@ class SonicMotionCommand(CommandTerm):
         has_smpl = torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
         if self.smpl_encoder_index is not None and hasattr(self.motion_lib, "motion_has_smpl"):
             has_smpl = self.motion_lib.motion_has_smpl[self.motion_ids[env_ids]].bool()
+        has_soma = torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
+        if self.soma_encoder_index is not None and hasattr(self.motion_lib, "motion_has_soma"):
+            has_soma = self.motion_lib.motion_has_soma[self.motion_ids[env_ids]].bool()
 
-        sampling_cases = (
-            (env_ids[has_smpl], self.encoder_sample_probs),
-            (env_ids[~has_smpl], self.encoder_sample_probs_no_smpl),
-        )
+        if self.soma_encoder_index is not None:
+            sampling_cases = (
+                (env_ids[has_smpl & has_soma], self.encoder_sample_probs),
+                (env_ids[has_smpl & ~has_soma], self.encoder_sample_probs_no_soma),
+                (env_ids[~has_smpl & has_soma], self.encoder_sample_probs_no_smpl),
+                (env_ids[~has_smpl & ~has_soma], self.encoder_sample_probs_no_smpl_no_soma),
+            )
+        else:
+            sampling_cases = (
+                (env_ids[has_smpl], self.encoder_sample_probs),
+                (env_ids[~has_smpl], self.encoder_sample_probs_no_smpl),
+            )
         for subset_ids, probs in sampling_cases:
             if len(subset_ids) == 0:
                 continue
@@ -314,6 +607,9 @@ class SonicMotionCommand(CommandTerm):
                     < self.cfg.teleop_sample_prob_when_smpl
                 )
                 self.encoder_index[smpl_env_ids[use_teleop], self.teleop_encoder_index] = 1
+        if self.g1_encoder_index is not None and self.soma_encoder_index is not None:
+            use_soma = self.encoder_index[env_ids, self.soma_encoder_index].bool()
+            self.encoder_index[env_ids[use_soma], self.g1_encoder_index] = 1
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         if self.is_evaluating:
@@ -343,8 +639,12 @@ class SonicMotionCommand(CommandTerm):
             )
         if not self.is_evaluating:
             self._apply_start_time_overrides(env_ids)
+        if self.per_env_num_frames is not None and len(env_ids) > 0:
+            idx = torch.randint(0, len(self._frame_choices), (len(env_ids),), device=self.device)
+            self.per_env_num_frames[env_ids] = self._frame_choices[idx]
         self.time_steps[env_ids] = 0
         self.motion_num_steps[env_ids] = self.motion_lib.get_motion_num_steps(self.motion_ids[env_ids])
+        self._update_per_env_first_contact(env_ids)
         if self.cfg.encoder_sampling_mode == "cycle":
             self.encoder_index[env_ids] = 0
             sampled = self.command_counter[env_ids].long() % len(self.encoder_names)
@@ -474,6 +774,10 @@ class SonicMotionCommandCfg(CommandTermCfg):
     dt_future_ref_frames: float = 0.1
     smpl_num_future_frames: int = 10
     smpl_dt_future_ref_frames: float = 0.02
+    variable_frames_enabled: bool = False
+    variable_frames_min: int = 16
+    variable_frames_step: int = 4
+    num_soma_joints: int = 26
     max_num_load_motions: int = 1024
     cat_upper_body_poses: bool = True
     cat_upper_body_poses_prob: float = 0.5
@@ -487,6 +791,11 @@ class SonicMotionCommandCfg(CommandTermCfg):
     sample_unique_motions: bool = False
     use_paired_motions: bool = False
     sample_from_n_initial_frames: int | None = None
+    contact_file: str | None = None
+    sample_before_contact: bool = False
+    sample_before_contact_margin: int = 10
+    sample_before_contact_hand: str = "right_hand"
+    contact_frame_tolerance: int = 3
     pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     joint_position_range: tuple[float, float] = (-0.1, 0.1)

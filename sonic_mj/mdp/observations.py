@@ -5,7 +5,13 @@ from typing import cast
 import torch
 
 from mjlab.envs import mdp as mj_mdp
-from mjlab.utils.lab_api.math import matrix_from_quat, quat_inv, quat_mul, subtract_frame_transforms
+from mjlab.utils.lab_api.math import (
+    matrix_from_quat,
+    quat_apply,
+    quat_inv,
+    quat_mul,
+    subtract_frame_transforms,
+)
 
 from sonic_mj.mdp.commands import SonicMotionCommand
 
@@ -129,6 +135,10 @@ def command_z_multi_future_nonflat(env, command_name: str = "motion") -> torch.T
     return future["body_pos_w"][:, :, cmd.motion_anchor_body_index, 2:3]
 
 
+def command_num_frames(env, command_name: str = "motion") -> torch.Tensor:
+    return _motion(env, command_name).command_num_frames
+
+
 def vr_3point_local_target(env, command_name: str = "motion") -> torch.Tensor:
     cmd = _motion(env, command_name)
     future = cmd.future_state(num_frames=1)
@@ -191,3 +201,25 @@ def joint_pos_multi_future_wrist_for_smpl(env, command_name: str = "motion") -> 
     future = _motion(env, command_name).future_state()
     wrist_ids = (19, 20, 21, 26, 27, 28)
     return future["dof_pos"][..., wrist_ids]
+
+
+def soma_joints_multi_future_local_nonflat(env, command_name: str = "motion") -> torch.Tensor:
+    cmd = _motion(env, command_name)
+    future = cmd.soma_future_state()
+    joints = future["soma_joints"]
+    root_quat = future["soma_root_quat_w"].unsqueeze(-2).expand(-1, -1, joints.shape[-2], -1)
+    joints_root = quat_apply(quat_inv(root_quat), joints)
+    return joints_root.reshape(env.num_envs, cmd.cfg.smpl_num_future_frames, -1)
+
+
+def soma_root_ori_b_multi_future(env, command_name: str = "motion") -> torch.Tensor:
+    cmd = _motion(env, command_name)
+    future = cmd.soma_future_state()
+    q = future["soma_root_quat_w"]
+    robot_q = cmd.robot_anchor_quat_w[:, None, :].repeat(1, q.shape[1], 1)
+    mat = matrix_from_quat(quat_mul(quat_inv(robot_q), q))
+    return mat[..., :2].reshape(env.num_envs, cmd.cfg.smpl_num_future_frames, -1)
+
+
+def joint_pos_multi_future_wrist_for_soma(env, command_name: str = "motion") -> torch.Tensor:
+    return joint_pos_multi_future_wrist_for_smpl(env, command_name)

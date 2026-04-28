@@ -52,6 +52,20 @@
   - evaluation mode 会跳过上述 reset 随机化，保持可视化/评估起始帧稳定。
   - 支持 `start_from_first_frame`、`sample_from_n_initial_frames`、`sample_unique_motions`、`use_paired_motions` 的基础采样语义。
   - `encoder_sample_probs` 已从配置传入 mjlab command，`encoder_index` 改为与原 SONIC 一致的 multi-hot 形式；SMPL encoder 被采样时会同步激活 G1，并按 `teleop_sample_prob_when_smpl` 额外采样 teleop。
+- 已补齐 `sonic_bones_seed` 需要的 SOMA 4-encoder 基础路径：
+  - `TrackingCommand` 支持 SOMA encoder index、motion_has_soma availability-aware 采样，以及采到 SOMA 时同步激活 G1 做 latent alignment。
+  - mjlab tokenizer 在配置包含 `encoder_sample_probs.soma` 时才加入 SOMA 观测项，避免影响 `sonic_release` 3-encoder 观测形状。
+  - 新增 SOMA joints/root orientation/wrist joint tokenizer 观测，SOMA root quat 按原 SONIC 语义执行 Y-up 到 Z-up 转换和 BVH base rotation removal。
+  - SOMA future state 改为直接使用 motion_lib 的 SOMA getter 和离散 future frame index，兼容 dummy SOMA 数据。
+- 已补齐 `TrackingCommand` 的 variable future frames 与 contact-before 初始化基础语义：
+  - 支持 `variable_frames_enabled` / `variable_frames_min` / `variable_frames_step`，reset 时为每个 env 重采样有效 future frame 数。
+  - 新增 `command_num_frames` tokenizer 观测；仅当 actor backbone 的 encoder/decoder 配置声明 `mask` 特征时暴露，避免破坏现有 `sonic_release` tokenizer 维度。
+  - 支持 `contact_file`、`sample_before_contact`、`sample_before_contact_margin`、`sample_before_contact_hand` 配置。
+  - `contact_file` 支持单 pkl 或目录 pkl；缺省时会尝试从 motion_lib 的 `_motion_object_in_contact_left/right` 标签推导 first contact frame。
+- 已进一步补齐 contact-based initialization 诊断缓存：
+  - mjlab `TrackingCommand` 会过滤 contact keys 到当前 loaded motion keys。
+  - 支持 contact/motion 帧数容差校验，默认 `contact_frame_tolerance=3`。
+  - 构建 `_motion_contact_flags`、`_first_contact_lookup` 和 `_per_env_first_contact`，便于后续真实 contact/object 数据 smoke 与调试。
 - 已提交并推送到远程：
   - branch：`SONICMJ`
   - commit：`1b9cb72 Add SonicMJ mjlab migration path`
@@ -127,6 +141,38 @@
   - `num_envs=16`、`num_learning_iterations=1`、`num_steps_per_env=2` 短训练通过。
   - action dim 仍为 `29`，policy obs 仍为 `930`，critic obs 仍为 `1789`，tokenizer `encoder_index` 仍为 `(3,)`。
   - termination 日志中 `anchor_pos=0.0000`、`anchor_ori_full=0.0000`、`ee_body_pos=0.0000`、`foot_pos_xyz=0.0000`。
+- SOMA 4-encoder 基础路径验证：
+  - `uv run python -m py_compile sonic_mj/mdp/commands.py sonic_mj/mdp/observations.py sonic_mj/env_cfg.py` 通过。
+  - `git diff --check` 通过。
+  - `sonic_release` tiny training 回归通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`。
+  - `sonic_release` tokenizer `encoder_index` 仍为 `(3,)`，policy obs 仍为 `930`，critic obs 仍为 `1789`，action dim 仍为 `29`。
+  - `sonic_bones_seed` + dummy SOMA tiny training 通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`。
+  - `sonic_bones_seed` tokenizer `encoder_index` 为 `(4,)`，新增 SOMA term 形状：
+    - `soma_joints_multi_future_local_nonflat`: `(10, 78)`
+    - `soma_root_ori_b_multi_future`: `(10, 6)`
+    - `joint_pos_multi_future_wrist_for_soma`: `(10, 6)`
+  - `UniversalTokenModule` 已初始化 `g1`、`teleop`、`smpl`、`soma` 四个 encoder。
+  - 已使用真实 SOMA BVH 数据 `/home/ykj/Downloads/dataset/bones-seed/soma_uniform/bvh/210531` 转换出 smoke PKL：
+    `data/motion_lib_bones_seed/soma_uniform_smoke/210531`。
+  - 转换结果：210 个 BVH 全部转换成功，0 failed；与 `data/motion_lib_bones_seed/robot_smoke` 的 motion key 覆盖为 210/210。
+  - 真实 SOMA PKL smoke training 通过：
+    `++manager_env.commands.motion.motion_lib_cfg.soma_motion_file=data/motion_lib_bones_seed/soma_uniform_smoke`。
+  - 抽查转换产物 `soma_joints` 为非零数据，例如 shape `(1027, 26, 3)`、`abs_mean=0.1964`、`abs_max=0.9877`；`soma_root_quat` shape `(1027, 4)`。
+- variable frames / contact-before 基础路径验证：
+  - `uv run python -m py_compile sonic_mj/mdp/commands.py sonic_mj/mdp/observations.py sonic_mj/env_cfg.py` 通过。
+  - `git diff --check` 通过。
+  - `sonic_release` tiny training 回归通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`。
+  - 新开关 smoke 通过：
+    `++manager_env.commands.motion.variable_frames_enabled=true`
+    `++manager_env.commands.motion.variable_frames_min=4`
+    `++manager_env.commands.motion.variable_frames_step=2`
+    `++manager_env.commands.motion.sample_before_contact=true`
+  - 现有 `sonic_release` tokenizer 未声明 variable-frame mask，因此 smoke 中未额外暴露 `command_num_frames`；policy obs 仍为 `930`，critic obs 仍为 `1789`，action dim 仍为 `29`。
+- contact 诊断缓存补齐后验证：
+  - `uv run python -m py_compile sonic_mj/mdp/commands.py sonic_mj/env_cfg.py sonic_mj/mdp/observations.py` 通过。
+  - `git diff --check` 通过。
+  - `sonic_release` tiny training 回归通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`。
+  - `sample_before_contact=true` fallback smoke 通过；当前本机 `data` 与 `/home/ykj/Downloads/dataset/bones-seed` 下未找到明显真实 contact 文件，因此真实 contact/object 数据校验仍未完成。
 
 ## 关键实现位置
 
@@ -156,6 +202,14 @@ uv run python gear_sonic/data_process/convert_soma_csv_to_motion_lib.py \
 ```
 
 ```bash
+uv run python gear_sonic/data_process/extract_soma_joints_from_bvh.py \
+  --input /home/ykj/Downloads/dataset/bones-seed/soma_uniform/bvh/210531 \
+  --output data/motion_lib_bones_seed/soma_uniform_smoke/210531 \
+  --fps 30 \
+  --num_workers 8
+```
+
+```bash
 WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
   gear_sonic/train_agent_trl.py \
   +exp=manager/universal_token/all_modes/sonic_release \
@@ -167,6 +221,38 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
   ++algo.config.num_learning_iterations=10 \
   ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke \
   ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy
+```
+
+```bash
+WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
+  gear_sonic/train_agent_trl.py \
+  +exp=manager/universal_token/all_modes/sonic_bones_seed \
+  use_mjlab=True \
+  sim_type=mjlab \
+  checkpoint=null \
+  num_envs=2 \
+  headless=True \
+  ++algo.config.num_learning_iterations=1 \
+  ++algo.config.num_steps_per_env=2 \
+  ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke \
+  ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy \
+  ++manager_env.commands.motion.motion_lib_cfg.soma_motion_file=dummy
+```
+
+```bash
+WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
+  gear_sonic/train_agent_trl.py \
+  +exp=manager/universal_token/all_modes/sonic_bones_seed \
+  use_mjlab=True \
+  sim_type=mjlab \
+  checkpoint=null \
+  num_envs=2 \
+  headless=True \
+  ++algo.config.num_learning_iterations=1 \
+  ++algo.config.num_steps_per_env=2 \
+  ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke \
+  ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy \
+  ++manager_env.commands.motion.motion_lib_cfg.soma_motion_file=data/motion_lib_bones_seed/soma_uniform_smoke
 ```
 
 ```bash
@@ -199,6 +285,25 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
   ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy
 ```
 
+```bash
+WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
+  gear_sonic/train_agent_trl.py \
+  +exp=manager/universal_token/all_modes/sonic_release \
+  use_mjlab=True \
+  sim_type=mjlab \
+  checkpoint=null \
+  num_envs=2 \
+  headless=True \
+  ++algo.config.num_learning_iterations=1 \
+  ++algo.config.num_steps_per_env=2 \
+  ++manager_env.commands.motion.variable_frames_enabled=true \
+  ++manager_env.commands.motion.variable_frames_min=4 \
+  ++manager_env.commands.motion.variable_frames_step=2 \
+  ++manager_env.commands.motion.sample_before_contact=true \
+  ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke \
+  ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy
+```
+
 ## 待解决问题
 
 ### 高优先级
@@ -207,7 +312,7 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
 - `physics_material` 目前只映射为 MuJoCo `geom_friction` 的滑动摩擦随机化；Isaac 里的 dynamic friction 和 restitution 还没有完整等价迁移。
 - `randomize_rigid_body_mass` 当前已对 `scale` 操作使用 mjlab `dr.pseudo_inertia`，比 Isaac 只缩放 mass 的事件更物理一致；后续长训练仍需观察该差异是否影响 SONIC 原始训练分布。
 - `TrackingCommand` 已初步对齐 adaptive sampling 和 evaluation mode；后续仍需核对 motion cache、paired motions、contact-based initialization 与更长训练下的 adaptive sampling 分布是否和原始 `gear_sonic` 一致。
-- `TrackingCommand` 已补齐基础 reset 随机化、start-time override、unique/paired motion 采样和 encoder multi-hot；后续还需迁移 contact-based initialization、variable future frames、SOMA encoder 的完整 4-encoder 采样分支。
+- `TrackingCommand` 已补齐基础 reset 随机化、start-time override、unique/paired motion 采样、encoder multi-hot、SOMA 4-encoder 基础采样、contact-before 初始化、contact 诊断缓存和 variable future frames 基础语义；后续仍需用真实 contact/object 数据验证 contact-based initialization，并使用带 mask 的 variable-frame actor config 验证 `command_num_frames` 到 tokenizer mask 的完整链路。
 
 ### 中优先级
 
@@ -218,6 +323,7 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
   - reset-time vs startup-time 随机化
   - body/geom/name 选择是否完全一致
 - `open3d` 当前未安装，mesh 加载做成缺失时跳过；mesh 可视化和精细 FK 相关能力后续需要补齐环境依赖或替代实现。
+- SOMA 已用 `/home/ykj/Downloads/dataset/bones-seed/soma_uniform` 的 210531 子集完成真实数据 smoke；后续仍需转换/验证全量 SOMA 数据，并在更长训练中观察 SOMA encoder 采样比例和数值稳定性。
 - 需要继续核对 motion_lib body/joint order、mjlab robot body/joint order、policy obs/action order 在更大数据集和 checkpoint 加载时是否完全一致。
 
 ### 低优先级
@@ -234,4 +340,6 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
 1. 对 events 做一次原 SONIC vs mjlab 的逐项对照表，明确哪些是等价实现、近似实现、暂未实现。
 2. 用 `sonic_release` checkpoint 或同结构 checkpoint 做加载 smoke，确认网络 key、obs dim、action dim 无破坏。
 3. 再跑更长一点的小规模训练，观察是否还有 `nefc overflow`、NaN、异常 reset 或 reward 退化。
-4. 继续核对 motion cache、paired motions、contact-based initialization 与原始 `gear_sonic` 的行为一致性。
+4. 继续核对 motion cache、paired motions、contact-based initialization 与原始 `gear_sonic` 的行为一致性，尤其是真实 contact/object 数据下的 first-contact key 匹配。
+5. 转换全量 `/home/ykj/Downloads/dataset/bones-seed/soma_uniform/bvh`，重跑更大 `sonic_bones_seed` smoke，检查 SOMA encoder 采样比例和 SOMA 观测数值。
+6. 准备或找到带 tokenizer `mask` 字段的 variable-frame actor 配置，验证 `command_num_frames` 到 `UniversalTokenModule` frame/token mask 的完整训练链路。
