@@ -683,7 +683,13 @@ class UniversalTokenModule(nn.Module):
 
         # quantize using quantizer
         if self.quantizer is not None:
+            latent_shape = latent.shape
+            if latent.ndim > 3:
+                latent = latent.reshape(-1, *latent.shape[-2:])
             quantized_codes, _ = self.quantizer(latent)
+            if len(latent_shape) > 3:
+                quantized_codes = quantized_codes.reshape(*latent_shape)
+                latent = latent.reshape(*latent_shape)
             encoded_tokens = quantized_codes.contiguous()
         else:
             encoded_tokens = latent

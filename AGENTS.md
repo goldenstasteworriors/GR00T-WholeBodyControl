@@ -7,6 +7,9 @@
 - `GR00T-WholeBodyControl/gear_sonic`、`gear_sonic_deploy`、`mjlab` 和 `InstinctMJ` 仓库默认仅用于参考。
 - 未经用户明确要求，不得修改原始 `mjlab`、`InstinctMJ` 或其它外部仓库。
 - 不得修改 CUDA、显卡驱动、Isaac Sim 底层安装或系统级 GPU 环境。
+- 本项目 SonicMJ 的 mjlab 迁移使用 uv 管理环境，不使用 conda。
+- SONIC 官方 Bones-SEED 数据集本机路径：`/home/ykj/Downloads/dataset/bones-seed`。
+- 人体模型/SMPL/SMPLX 相关资源本机路径：`/home/ykj/commonly_used/body_models`。
 - 如果遇到命名、资产选择、顺序映射、训练入口、依赖环境等不确定问题，必须先停止并询问用户，不要自行猜测。
 
 ## 核心目标
