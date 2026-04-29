@@ -67,8 +67,11 @@ def action_rate_l2(env) -> torch.Tensor:
     return mj_mdp.action_rate_l2(env)
 
 
-def joint_limit(env) -> torch.Tensor:
-    return mj_mdp.joint_pos_limits(env)
+def joint_limit(
+    env,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=(".*",)),
+) -> torch.Tensor:
+    return mj_mdp.joint_pos_limits(env, asset_cfg=asset_cfg)
 
 
 def feet_acc(

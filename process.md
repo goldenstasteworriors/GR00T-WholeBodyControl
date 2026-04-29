@@ -98,6 +98,11 @@
   - 按原 SONIC `ROUGH_TERRAINS_CFG` 当前启用项映射 `boxes` 和 `random_rough` 两个子地形。
   - 默认保留原 SONIC `20x20`、`size=8.0`、`border_width=20.0` 配置。
   - 增加 `rough_terrain_num_rows`、`rough_terrain_num_cols`、`rough_terrain_size`、`rough_terrain_border_width` override，便于 smoke test 使用小地形快速验证。
+- 已修正 mjlab reward 配置读取：
+  - `tracking_anchor_pos`、`tracking_anchor_ori`、`tracking_relative_body_pos`、`tracking_relative_body_ori`、`tracking_body_linvel`、`tracking_body_angvel`、`tracking_vr_5point_local`、`action_rate_l2`、`joint_limit`、`feet_acc` 均从原 Hydra reward term 读取 `weight`。
+  - tracking reward 的 `command_name` / `std` 参数从原配置透传到 mjlab reward term。
+  - `joint_limit`、`feet_acc` 会把原 Isaac `asset_cfg` 转成 mjlab `SceneEntityCfg`。
+  - 修正了此前 `tracking_vr_5point_local` 使用硬编码 `weight=1.0`、默认 `std=0.3` 的偏差；当前 `sonic_release` 读取为原 SONIC 的 `weight=2.0`、`std=0.1`。
 
 ## 已验证结果
 
@@ -255,6 +260,14 @@
   - 日志确认 `Terrain generation took 0.0056 seconds`，mjlab rough terrain generator 正常创建。
   - action dim 仍为 `29`，policy obs 仍为 `930`，critic obs 仍为 `1789`。
   - termination 日志中 `anchor_pos=0.0000`、`anchor_ori_full=0.0000`、`ee_body_pos=0.0000`、`foot_pos_xyz=0.0000`。
+- reward 配置读取修正后验证：
+  - `uv run python -m py_compile sonic_mj/env_cfg.py sonic_mj/mdp/rewards.py` 通过。
+  - 直接 compose `sonic_release` mjlab env cfg，确认 RewardTermCfg：
+    - `tracking_vr_5point_local`: `weight=2.0`、`params={"command_name": "motion", "std": 0.1}`
+    - `feet_acc`: `weight=-2.5e-06`、`asset_cfg.joint_names=[".*ankle.*"]`
+  - inline env reset/step smoke 通过：`actor_obs=(2, 930)`、`critic_obs=(2, 1789)`、action dim `29`、reward/done shape 均为 `(2,)`。
+  - RewardManager 表中 `tracking_vr_5point_local` 权重为 `2.0`，step 后读取 term params 为 `{"command_name": "motion", "std": 0.1}`。
+  - 一次 `accelerate` tiny training 在 motion_lib 初始化后超过常规等待时间无进一步输出，已停止该进程；随后用 inline env reset/step smoke 完成验证。
 
 ## 关键实现位置
 
@@ -306,6 +319,37 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
   ++algo.config.num_learning_iterations=10 \
   ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke \
   ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy
+```
+
+```bash
+uv run python -m py_compile sonic_mj/env_cfg.py sonic_mj/mdp/rewards.py
+```
+
+```bash
+uv run python - <<'PY'
+from hydra import compose, initialize_config_dir
+from pathlib import Path
+from gear_sonic.utils.config_utils import register_rl_resolvers
+from sonic_mj.env_cfg import make_sonic_mj_env_cfg
+
+register_rl_resolvers()
+with initialize_config_dir(version_base=None, config_dir=str(Path('gear_sonic/config').resolve())):
+    cfg = compose(config_name='base', overrides=[
+        '+exp=manager/universal_token/all_modes/sonic_release',
+        'use_mjlab=True',
+        'sim_type=mjlab',
+        'checkpoint=null',
+        'num_envs=2',
+        'headless=True',
+        '++algo.config.num_learning_iterations=1',
+        '++algo.config.num_steps_per_env=2',
+        '++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke',
+        '++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy',
+    ])
+env_cfg = make_sonic_mj_env_cfg(cfg)
+for name, term in env_cfg.rewards.items():
+    print(name, 'weight=', term.weight, 'params=', term.params or {})
+PY
 ```
 
 ```bash

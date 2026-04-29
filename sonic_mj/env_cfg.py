@@ -52,6 +52,26 @@ def _term_params(group_cfg, term_name: str):
     return _cfg_get(_cfg_get(group_cfg, term_name, None), "params", {}) or {}
 
 
+def _reward_weight(reward_cfg, term_name: str, default: float) -> float:
+    term_cfg = _cfg_get(reward_cfg, term_name, None)
+    return float(_cfg_get(term_cfg, "weight", default))
+
+
+def _reward_params(reward_cfg, term_name: str) -> dict:
+    return dict(_cfg_get(_cfg_get(reward_cfg, term_name, None), "params", {}) or {})
+
+
+def _scene_entity_from_cfg(asset_cfg, *, default_joint_names=None) -> SceneEntityCfg:
+    if asset_cfg is None:
+        return SceneEntityCfg("robot", joint_names=default_joint_names)
+    return SceneEntityCfg(
+        _cfg_get(asset_cfg, "name", _cfg_get(asset_cfg, "entity_name", "robot")),
+        joint_names=_cfg_get(asset_cfg, "joint_names", default_joint_names),
+        body_names=_cfg_get(asset_cfg, "body_names", None),
+        preserve_order=bool(_cfg_get(asset_cfg, "preserve_order", False)),
+    )
+
+
 def _scale_range_to_pseudo_inertia_alpha(
     scale_range: tuple[float, float] | list[float],
 ) -> tuple[float, float]:
@@ -320,6 +340,7 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
     critic_hist = int(_cfg_get(config, "critic_prop_history_length", 10))
     critic_action_hist = int(_cfg_get(config, "critic_actions_history_length", 10))
     termination_cfg = _cfg_get(manager_cfg, "terminations", {}) or {}
+    reward_cfg = _cfg_get(manager_cfg, "rewards", {}) or {}
     encoder_sample_probs = dict(_cfg_get(motion_cfg, "encoder_sample_probs", {}) or {})
     use_soma_encoder = "soma" in encoder_sample_probs
     use_variable_frames = bool(_cfg_get(motion_cfg, "variable_frames_enabled", False))
@@ -479,25 +500,64 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
         },
         observations=observations,
         rewards={
-            "tracking_anchor_pos": RewardTermCfg(func=rewards.tracking_anchor_pos, weight=0.5),
-            "tracking_anchor_ori": RewardTermCfg(func=rewards.tracking_anchor_ori, weight=0.5),
+            "tracking_anchor_pos": RewardTermCfg(
+                func=rewards.tracking_anchor_pos,
+                weight=_reward_weight(reward_cfg, "tracking_anchor_pos", 0.5),
+                params=_reward_params(reward_cfg, "tracking_anchor_pos"),
+            ),
+            "tracking_anchor_ori": RewardTermCfg(
+                func=rewards.tracking_anchor_ori,
+                weight=_reward_weight(reward_cfg, "tracking_anchor_ori", 0.5),
+                params=_reward_params(reward_cfg, "tracking_anchor_ori"),
+            ),
             "tracking_relative_body_pos": RewardTermCfg(
-                func=rewards.tracking_relative_body_pos, weight=1.0
+                func=rewards.tracking_relative_body_pos,
+                weight=_reward_weight(reward_cfg, "tracking_relative_body_pos", 1.0),
+                params=_reward_params(reward_cfg, "tracking_relative_body_pos"),
             ),
             "tracking_relative_body_ori": RewardTermCfg(
-                func=rewards.tracking_relative_body_ori, weight=1.0
+                func=rewards.tracking_relative_body_ori,
+                weight=_reward_weight(reward_cfg, "tracking_relative_body_ori", 1.0),
+                params=_reward_params(reward_cfg, "tracking_relative_body_ori"),
             ),
-            "tracking_body_linvel": RewardTermCfg(func=rewards.tracking_body_linvel, weight=1.0),
-            "tracking_body_angvel": RewardTermCfg(func=rewards.tracking_body_angvel, weight=1.0),
+            "tracking_body_linvel": RewardTermCfg(
+                func=rewards.tracking_body_linvel,
+                weight=_reward_weight(reward_cfg, "tracking_body_linvel", 1.0),
+                params=_reward_params(reward_cfg, "tracking_body_linvel"),
+            ),
+            "tracking_body_angvel": RewardTermCfg(
+                func=rewards.tracking_body_angvel,
+                weight=_reward_weight(reward_cfg, "tracking_body_angvel", 1.0),
+                params=_reward_params(reward_cfg, "tracking_body_angvel"),
+            ),
             "tracking_vr_5point_local": RewardTermCfg(
-                func=rewards.tracking_vr_5point_local, weight=1.0
+                func=rewards.tracking_vr_5point_local,
+                weight=_reward_weight(reward_cfg, "tracking_vr_5point_local", 2.0),
+                params=_reward_params(reward_cfg, "tracking_vr_5point_local"),
             ),
-            "action_rate_l2": RewardTermCfg(func=rewards.action_rate_l2, weight=-0.1),
-            "joint_limit": RewardTermCfg(func=rewards.joint_limit, weight=-10.0),
+            "action_rate_l2": RewardTermCfg(
+                func=rewards.action_rate_l2,
+                weight=_reward_weight(reward_cfg, "action_rate_l2", -0.1),
+            ),
+            "joint_limit": RewardTermCfg(
+                func=rewards.joint_limit,
+                weight=_reward_weight(reward_cfg, "joint_limit", -10.0),
+                params={
+                    "asset_cfg": _scene_entity_from_cfg(
+                        _reward_params(reward_cfg, "joint_limit").get("asset_cfg"),
+                        default_joint_names=(".*",),
+                    )
+                },
+            ),
             "feet_acc": RewardTermCfg(
                 func=rewards.feet_acc,
-                weight=float(_cfg_get(manager_cfg.rewards.feet_acc, "weight", -2.5e-6)),
-                params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*ankle.*",))},
+                weight=_reward_weight(reward_cfg, "feet_acc", -2.5e-6),
+                params={
+                    "asset_cfg": _scene_entity_from_cfg(
+                        _reward_params(reward_cfg, "feet_acc").get("asset_cfg"),
+                        default_joint_names=(".*ankle.*",),
+                    )
+                },
             ),
         },
         terminations={
