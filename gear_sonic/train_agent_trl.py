@@ -266,9 +266,13 @@ def main(config: OmegaConf):
         args_cli.device = device
 
         # Base kit args (quiet logs)
-        args_cli.kit_args = (
+        base_kit_args = (
             "--/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error"
         )
+        if args_cli.headless:
+            args_cli.kit_args = base_kit_args + " --no-window"
+        else:
+            args_cli.kit_args = base_kit_args
 
         # AppLauncher can't handle multiple processes creating it at the same time so we need a lock
         _lock_path = "/tmp/isaaclab_app_launcher.lock"
