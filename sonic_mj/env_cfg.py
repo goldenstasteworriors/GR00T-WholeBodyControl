@@ -9,6 +9,7 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as mj_mdp
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.action_manager import ActionTermCfg
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
@@ -16,6 +17,9 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
+from mjlab.terrains.config import TerrainEntityCfg, TerrainGeneratorCfg
+from mjlab.terrains.heightfield_terrains import HfRandomUniformTerrainCfg
+from mjlab.terrains.primitive_terrains import BoxRandomGridTerrainCfg
 
 from sonic_mj.assets import (
     SONIC_G1_ACTION_SCALE,
@@ -23,6 +27,7 @@ from sonic_mj.assets import (
     SONIC_G1_JOINT_NAMES,
     get_sonic_g1_robot_cfg,
 )
+from sonic_mj.mdp import curriculum as sonic_curriculum
 from sonic_mj.mdp import observations as obs
 from sonic_mj.mdp import events as sonic_events
 from sonic_mj.mdp import rewards, terminations
@@ -55,6 +60,53 @@ def _scale_range_to_pseudo_inertia_alpha(
     if low <= 0.0 or high <= 0.0:
         raise ValueError(f"Mass scale range must be positive, got {scale_range}.")
     return 0.5 * math.log(low), 0.5 * math.log(high)
+
+
+def _make_sonic_terrain_cfg(base_cfg, *, num_envs: int, seed: int) -> TerrainEntityCfg:
+    terrain_type = _cfg_get(base_cfg, "terrain_type", "plane")
+    env_spacing = float(_cfg_get(base_cfg, "env_spacing", 2.0))
+    if terrain_type == "plane":
+        return TerrainEntityCfg(
+            terrain_type="plane",
+            env_spacing=env_spacing,
+            num_envs=num_envs,
+        )
+    if terrain_type != "trimesh":
+        raise ValueError(f"Unsupported SonicMJ terrain_type: {terrain_type}")
+
+    num_rows = int(_cfg_get(base_cfg, "rough_terrain_num_rows", 20))
+    num_cols = int(_cfg_get(base_cfg, "rough_terrain_num_cols", 20))
+    terrain_size = float(_cfg_get(base_cfg, "rough_terrain_size", 8.0))
+    border_width = float(_cfg_get(base_cfg, "rough_terrain_border_width", 20.0))
+    return TerrainEntityCfg(
+        terrain_type="generator",
+        terrain_generator=TerrainGeneratorCfg(
+            seed=seed,
+            size=(terrain_size, terrain_size),
+            border_width=border_width,
+            num_rows=num_rows,
+            num_cols=num_cols,
+            sub_terrains={
+                "boxes": BoxRandomGridTerrainCfg(
+                    proportion=0.3,
+                    grid_width=0.45,
+                    grid_height_range=(0.001, 0.005),
+                    platform_width=2.0,
+                ),
+                "random_rough": HfRandomUniformTerrainCfg(
+                    proportion=0.05,
+                    noise_range=(0.001, 0.005),
+                    noise_step=0.02,
+                    border_width=0.25,
+                    horizontal_scale=0.1,
+                    vertical_scale=0.005,
+                ),
+            },
+        ),
+        env_spacing=env_spacing,
+        max_init_terrain_level=10,
+        num_envs=num_envs,
+    )
 
 
 def _uses_variable_frame_masks(config) -> bool:
@@ -147,13 +199,23 @@ def _make_sonic_events(manager_cfg):
     if physics_material_cfg is not None:
         params = _event_params(physics_material_cfg)
         events["physics_material"] = EventTermCfg(
-            func=mj_mdp.dr.geom_friction,
+            func=sonic_events.randomize_physics_material,
             mode=_cfg_get(physics_material_cfg, "mode", "startup"),
             params={
-                "asset_cfg": SceneEntityCfg("robot", geom_names=(".*",)),
-                "ranges": _as_tuple(_cfg_get(params, "static_friction_range", (0.3, 1.6))),
-                "operation": "abs",
-                "axes": [0],
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    body_names=_cfg_get(_cfg_get(params, "asset_cfg", {}), "body_names", ".*"),
+                ),
+                "static_friction_range": _as_tuple(
+                    _cfg_get(params, "static_friction_range", (0.3, 1.6))
+                ),
+                "dynamic_friction_range": _as_tuple(
+                    _cfg_get(params, "dynamic_friction_range", (0.3, 1.2))
+                ),
+                "restitution_range": _as_tuple(
+                    _cfg_get(params, "restitution_range", (0.0, 0.5))
+                ),
+                "num_buckets": int(_cfg_get(params, "num_buckets", 64)),
             },
         )
 
@@ -174,6 +236,70 @@ def _make_sonic_events(manager_cfg):
         )
 
     return events
+
+
+def _normalise_param_path(path: str | list[str | int] | tuple[str | int, ...]) -> list[str | int]:
+    if isinstance(path, str):
+        parts: list[str | int] = []
+        for part in path.replace("/", ".").split("."):
+            if not part:
+                continue
+            parts.append(int(part) if part.isdigit() else part)
+        return parts
+    return list(path)
+
+
+def _make_curriculum_param_path(params) -> list[str | int]:
+    path = _cfg_get(params, "param_path", None)
+    if path is not None:
+        return _normalise_param_path(path)
+    velocity_axis = _cfg_get(params, "velocity_axis", None)
+    bound_index = _cfg_get(params, "bound_index", None)
+    if velocity_axis is not None and bound_index is not None:
+        return ["velocity_range", str(velocity_axis), int(bound_index)]
+    target = _cfg_get(params, "target", None)
+    if isinstance(target, str) and "velocity_range" in target:
+        parts = target.replace("[", ".").replace("]", "").replace("'", "").replace('"', "")
+        parts = [part for part in parts.replace("/", ".").split(".") if part]
+        try:
+            velocity_index = parts.index("velocity_range")
+        except ValueError:
+            velocity_index = -1
+        if velocity_index >= 0:
+            return [
+                int(part) if part.isdigit() else part
+                for part in parts[velocity_index:]
+            ]
+    raise ValueError(
+        "SonicMJ curriculum terms need params.param_path or "
+        "params.velocity_axis + params.bound_index to modify mjlab event params."
+    )
+
+
+def _make_sonic_curriculum(manager_cfg):
+    source_curriculum = _cfg_get(manager_cfg, "curriculum", {}) or {}
+    curriculum = {}
+    term_specs = {
+        "force_push_curriculum": "step",
+        "force_push_linear_curriculum": "linear",
+    }
+    for term_name, mode in term_specs.items():
+        term_cfg = _cfg_get(source_curriculum, term_name, None)
+        if term_cfg is None:
+            continue
+        params = _event_params(term_cfg)
+        curriculum[term_name] = CurriculumTermCfg(
+            func=sonic_curriculum.event_param_curriculum,
+            params={
+                "event_name": _cfg_get(params, "event_name", "push_robot"),
+                "param_path": _make_curriculum_param_path(params),
+                "original_value": float(_cfg_get(params, "original_value", 0.0)),
+                "values": list(_cfg_get(params, "values", [])),
+                "num_steps": list(_cfg_get(params, "num_steps", [])),
+                "mode": mode,
+            },
+        )
+    return curriculum
 
 
 def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
@@ -198,6 +324,7 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
     use_soma_encoder = "soma" in encoder_sample_probs
     use_variable_frames = bool(_cfg_get(motion_cfg, "variable_frames_enabled", False))
     expose_variable_frame_mask = use_variable_frames and _uses_variable_frame_masks(config)
+    num_envs = int(config.num_envs)
 
     tokenizer_terms = {
         "encoder_index": ObservationTermCfg(func=obs.encoder_index),
@@ -278,8 +405,9 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
         episode_length_s=float(base_cfg.episode_length_s),
         seed=int(config.seed),
         scene=SceneCfg(
-            num_envs=int(config.num_envs),
+            num_envs=num_envs,
             env_spacing=float(base_cfg.env_spacing),
+            terrain=_make_sonic_terrain_cfg(base_cfg, num_envs=num_envs, seed=int(config.seed)),
             entities={"robot": get_sonic_g1_robot_cfg()},
         ),
         sim=SimulationCfg(
@@ -396,5 +524,6 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
             ),
         },
         events=_make_sonic_events(manager_cfg),
+        curriculum=_make_sonic_curriculum(manager_cfg),
         scale_rewards_by_dt=True,
     )

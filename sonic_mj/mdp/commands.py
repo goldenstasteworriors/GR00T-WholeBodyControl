@@ -57,6 +57,7 @@ class SonicMotionCommand(CommandTerm):
     def __init__(self, cfg: SonicMotionCommandCfg, env):
         super().__init__(cfg, env)
         self.robot = env.scene[cfg.entity_name]
+        self.cmd_body_names = cfg.body_names
         self.robot_anchor_body_index = self.robot.body_names.index(cfg.anchor_body)
         self.motion_anchor_body_index = cfg.body_names.index(cfg.anchor_body)
         self.body_indexes = torch.tensor(

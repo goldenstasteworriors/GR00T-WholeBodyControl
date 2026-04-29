@@ -1,6 +1,6 @@
 # SonicMJ 迁移进展记录
 
-更新时间：2026-04-28
+更新时间：2026-04-29
 
 ## 当前状态
 
@@ -20,10 +20,21 @@
   - `randomize_rigid_body_mass`
   - `physics_material`
   - `push_robot`
+- `physics_material` 已从单轴 `geom_friction` 随机化改为 SONIC 专用 mjlab event：
+  - 保留原 Isaac 配置的 `num_buckets` bucket 采样语义。
+  - 按 `asset_cfg.body_names` 选择对应 body 下的 MuJoCo geoms。
+  - `static_friction_range` 映射到 MuJoCo sliding friction。
+  - `dynamic_friction_range` 作为 MuJoCo torsional friction 的 best-effort 映射，仅在高维接触启用时生效。
+  - `restitution_range` 暂不映射到 MuJoCo solver 参数，避免无依据改变接触求解稳定性。
 - `randomize_rigid_body_mass` 已从 mjlab `dr.body_mass` 改为优先使用 `dr.pseudo_inertia`：
   - SONIC 的 `mass_distribution_params` scale range 会转换为 mjlab pseudo-inertia 的 `alpha_range`。
   - 当前 mass 与 inertia 会一起按密度尺度随机化，不再触发只改 mass、不改 inertia 的物理一致性警告。
 - `feet_acc` 已从占位零奖励改为 mjlab `joint_acc_l2`，只惩罚 `.*ankle.*` 关节加速度；`sonic_release` 实验覆盖权重保持 `-2.5e-6`。
+- 已补齐基础 push/randomization curriculum 迁移入口：
+  - 新增 mjlab 原生 curriculum term，保留原 SONIC `step_curriculum` / `linear_curriculum` 数值规则。
+  - 支持通过 `force_push_curriculum` / `force_push_linear_curriculum` 修改 mjlab `EventManager` 中已有 event 参数。
+  - `param_path` 统一归一为 list 路径，避免字符串路径在 env cfg 与 curriculum term 之间重复解析时行为不一致。
+  - 当前已验证可更新 `push_robot.params.velocity_range.x[0]`，后续可按相同路径扩展其它 push/randomization 参数。
 - termination 已进一步对齐原 SONIC 严格配置：
   - `anchor_pos` 使用 adaptive root height error。
   - `anchor_ori_full` 使用 squared quaternion error。
@@ -47,6 +58,18 @@
   - step 更新时调用 `motion_lib.update_adaptive_sampling(reset_terminated, motion_ids, cur_time_steps)`。
   - evaluation mode 下按 env id 确定性遍历 motion，并从第 0 帧开始。
   - `SonicMjEnvWrapper` 已补回 `sync_and_compute_adaptive_sampling()`、`get_env_state_dict()`、`load_env_state_dict()`，保持 TRL trainer 与 motion_lib 状态保存/恢复接口一致。
+- 已补齐 TRL eval callback 需要的 mjlab wrapper 评估序列接口：
+  - `SonicMjEnvWrapper` 维护 `start_idx`，与原 `ManagerEnvWrapper` 对齐。
+  - `set_is_evaluating(True, global_rank=...)` 会调用 `motion_lib.load_motions_for_evaluation(start_idx=...)` 并 reset。
+  - `forward_motion_samples(global_rank, world_size)` 会按 `world_size * num_envs` 推进 evaluation motion window。
+  - `set_is_training()` 会重新加载 training motion subset 并在需要时 reset。
+  - 已补齐 `motion_ids`、`get_env_data("ref_body_pos_extend")`、`get_env_data("rigid_body_pos_extend")` 和 `config.robot.actions_dim` 兼容面，供 `ImEvalCallback` 的评估循环读取。
+- `eval_agent_trl.py` 已支持 mjlab evaluation 路径：
+  - 顶层不再在缺少 IsaacLab 时直接退出；只有 IsaacSim evaluation 路径仍要求 IsaacLab。
+  - `use_mjlab=True` / `sim_type=mjlab` 时跳过 Isaac AppLauncher，复用 `train_agent_trl.create_manager_env()` 创建 SonicMJ env。
+  - `ImEvalCallback` 的 object scene 检测已兼容 mjlab scene 缺少 `rigid_objects` 的情况。
+  - `ImEvalCallback` 在 uv 环境缺少 `smpl_sim` 时提供本地 MPJPE fallback，保证 `mpjpe_g/mpjpe_l/mpjpe_pa` 指标链路不断；fallback 中 `mpjpe_pa` 暂按 local MPJPE 近似。
+  - SonicMJ command 暴露 `cmd_body_names`，wrapper 的 eval `get_env_data()` 已与原 `ManagerEnvWrapper` 的 body position 张量语义对齐。
 - 已继续补齐 `TrackingCommand` 的原 SONIC reset 语义：
   - reset 写入 MuJoCo 前会按 `pose_range`、`velocity_range`、`joint_position_range`、`joint_velocity_range` 对 root pose/velocity 和 joint pos/vel 做训练期随机化。
   - evaluation mode 会跳过上述 reset 随机化，保持可视化/评估起始帧稳定。
@@ -70,6 +93,11 @@
   - branch：`SONICMJ`
   - commit：`1b9cb72 Add SonicMJ mjlab migration path`
   - remote：`origin/SONICMJ`
+- 已补齐 mjlab rough terrain 基础迁移：
+  - `manager_env.config.terrain_type=trimesh` 会创建 mjlab `TerrainEntityCfg(terrain_type="generator")`。
+  - 按原 SONIC `ROUGH_TERRAINS_CFG` 当前启用项映射 `boxes` 和 `random_rough` 两个子地形。
+  - 默认保留原 SONIC `20x20`、`size=8.0`、`border_width=20.0` 配置。
+  - 增加 `rough_terrain_num_rows`、`rough_terrain_num_cols`、`rough_terrain_size`、`rough_terrain_border_width` override，便于 smoke test 使用小地形快速验证。
 
 ## 已验证结果
 
@@ -173,6 +201,60 @@
   - `git diff --check` 通过。
   - `sonic_release` tiny training 回归通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`。
   - `sample_before_contact=true` fallback smoke 通过；当前本机 `data` 与 `/home/ykj/Downloads/dataset/bones-seed` 下未找到明显真实 contact 文件，因此真实 contact/object 数据校验仍未完成。
+- physics material bucket 迁移后验证：
+  - `uv run python -m py_compile sonic_mj/mdp/events.py sonic_mj/env_cfg.py` 通过。
+  - `sonic_release` tiny training 回归通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`。
+  - EventManager 正常加载 `physics_material` startup event。
+  - action dim 仍为 `29`，policy obs 仍为 `930`，critic obs 仍为 `1789`。
+  - termination 日志中 `anchor_pos=0.0000`、`anchor_ori_full=0.0000`、`ee_body_pos=0.0000`、`foot_pos_xyz=0.0000`。
+- curriculum 迁移后验证：
+  - `uv run python -m py_compile sonic_mj/env_cfg.py sonic_mj/mdp/curriculum.py sonic_mj/mdp/events.py` 通过。
+  - 带 `force_push_curriculum` override 的 `sonic_release` tiny training 通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`。
+  - `CurriculumManager` 正常加载 `force_push_curriculum`。
+  - 训练日志出现 `Env/Curriculum/force_push_curriculum: -0.5000`，确认 curriculum term 能写入并上报状态。
+- curriculum 路径归一修正后回归验证：
+  - `uv run python -m py_compile sonic_mj/env_cfg.py sonic_mj/mdp/curriculum.py sonic_mj/mdp/events.py` 通过。
+  - `sonic_release` tiny training 回归通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`。
+  - 带 `force_push_curriculum` override 的 tiny training 回归通过，`CurriculumManager` 正常加载，日志仍上报 `Env/Curriculum/force_push_curriculum: -0.5000`。
+  - `sonic_release` `num_envs=16`、`num_learning_iterations=10`、默认 `num_steps_per_env=24` 短训练回归通过，完成 `Learning iteration 10`，total timesteps `3840`，未出现 NaN、`nefc overflow` 或训练崩溃。
+- eval wrapper 接口补齐后验证：
+  - `uv run python -m py_compile sonic_mj/wrapper.py sonic_mj/mdp/commands.py sonic_mj/env_cfg.py sonic_mj/mdp/curriculum.py sonic_mj/mdp/events.py` 通过。
+  - inline smoke 创建 `sonic_release` mjlab env，`num_envs=2`，`motion_file=data/motion_lib_bones_seed/robot_smoke`，`smpl_motion_file=dummy`。
+  - reset 后 `actor_obs=(2, 930)`、`critic_obs=(2, 1789)`、action space `(2, 29)`。
+  - `set_is_evaluating(True, global_rank=0)` 后 `start_idx=0`，`motion_ids=[0, 1]`。
+  - `forward_motion_samples(global_rank=0, world_size=1)` 后 `start_idx=2`，`motion_ids=[0, 1]`，说明 evaluation window 已前移且局部 motion id 仍按 env 顺序遍历。
+  - `set_is_training()` 后 `motion_command.is_evaluating=False`，可重新进入 training motion subset。
+  - `git diff --check` 通过。
+  - `sonic_release` tiny training 回归通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`，完成 `Learning iteration 1`，total timesteps `4`。
+  - tiny training 中 action dim 仍为 `29`，policy obs 仍为 `930`，critic obs 仍为 `1789`，termination 日志均为 `0.0000`。
+- eval callback 数据接口补齐后验证：
+  - `uv run python -m py_compile sonic_mj/wrapper.py sonic_mj/mdp/commands.py sonic_mj/env_cfg.py` 通过。
+  - inline smoke 中 `env.config.robot.actions_dim=29`，`get_env_data("ref_body_pos_extend")=(2, 30, 3)`，`get_env_data("rigid_body_pos_extend")=(2, 30, 3)`。
+  - `env.step({"obs": obs, "actions": zeros, "step": 0})` 能按 eval callback actor_state 形式执行，返回 reward/done shape 均为 `(2,)`。
+  - `set_is_evaluating(True, global_rank=0)` 后 `start_idx=0`、`motion_ids=[0, 1]`；`forward_motion_samples(global_rank=0, world_size=1)` 后 `start_idx=2`、`motion_ids=[0, 1]`。
+  - `sonic_release` tiny training 回归通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`，完成 `Learning iteration 1`，total timesteps `4`。
+- checkpoint 加载 smoke：
+  - 临时在 `/tmp/sonicmj_checkpoint_smoke` 用 `++callbacks.model_save.save_last_frequency=1` 生成同结构 `last.pt`。
+  - 随后以 `checkpoint=/tmp/sonicmj_checkpoint_smoke/last.pt` 启动 mjlab `sonic_release` tiny training。
+  - 日志确认 `Loading checkpoint from /tmp/sonicmj_checkpoint_smoke/last.pt` 和 `Loaded checkpoint from step 1`。
+  - 加载后训练完成 `Learning iteration 1`，total timesteps `4`，policy/value/env_state_dict 加载链路未报错。
+  - 临时目录 `/tmp/sonicmj_checkpoint_smoke` 和 `/tmp/sonicmj_checkpoint_smoke_load` 已删除。
+- 完整 eval callback smoke：
+  - 临时在 `/tmp/sonicmj_eval_callback_smoke` 生成同结构 `last.pt`。
+  - 使用 `gear_sonic/eval_agent_trl.py`、`use_mjlab=True`、`sim_type=mjlab`、`eval_callbacks=im_eval`、`run_eval_loop=False` 启动评估。
+  - 使用 `filter_motion_keys` 将 smoke 限制为 2 条 motion，`num_envs=2`。
+  - callback 成功完成 evaluation loop，写出 `/tmp/sonicmj_eval_callback_out/metrics_eval.json`。
+  - metrics 中包含 `eval/all/mpjpe_g`、`eval/all/mpjpe_l`、`eval/all_metrics_dict.motion_keys`、`sampling_prob` 等 eval 后处理所需字段。
+  - 因临时 checkpoint 基本未训练，2 条 motion 中有失败终止，`eval/success/*` 为 NaN；这属于 smoke policy 质量问题，不是链路错误。
+  - 临时目录 `/tmp/sonicmj_eval_callback_smoke` 和 `/tmp/sonicmj_eval_callback_out` 已删除。
+- rough terrain 小网格 smoke：
+  - `uv run python -m py_compile sonic_mj/env_cfg.py` 通过。
+  - `git diff --check` 通过。
+  - 使用 `terrain_type=trimesh` 默认路径，并 override `rough_terrain_num_rows=1`、`rough_terrain_num_cols=1`。
+  - tiny training 通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`。
+  - 日志确认 `Terrain generation took 0.0056 seconds`，mjlab rough terrain generator 正常创建。
+  - action dim 仍为 `29`，policy obs 仍为 `930`，critic obs 仍为 `1789`。
+  - termination 日志中 `anchor_pos=0.0000`、`anchor_ori_full=0.0000`、`ee_body_pos=0.0000`、`foot_pos_xyz=0.0000`。
 
 ## 关键实现位置
 
@@ -185,7 +267,10 @@
 - rewards：`sonic_mj/mdp/rewards.py`
 - terminations：`sonic_mj/mdp/terminations.py`
 - events：`sonic_mj/mdp/events.py`
+- curriculum：`sonic_mj/mdp/curriculum.py`
 - 训练入口分支：`gear_sonic/train_agent_trl.py`
+- eval 入口分支：`gear_sonic/eval_agent_trl.py`
+- eval callback 兼容：`gear_sonic/trl/callbacks/im_eval_callback.py`
 - UniversalTokenModule 兼容修复：`gear_sonic/trl/modules/universal_token_modules.py`
 - mjlab/uv 配置：`pyproject.toml`、`uv.lock`、`.python-version`
 
@@ -304,22 +389,56 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
   ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy
 ```
 
+```bash
+WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
+  gear_sonic/eval_agent_trl.py \
+  +checkpoint=/tmp/sonicmj_eval_callback_smoke/last.pt \
+  +headless=True \
+  ++use_mjlab=True \
+  ++sim_type=mjlab \
+  ++eval_callbacks=im_eval \
+  ++run_eval_loop=False \
+  ++num_envs=2 \
+  ++eval_output_dir=/tmp/sonicmj_eval_callback_out \
+  ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke \
+  ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy \
+  '++manager_env.commands.motion.motion_lib_cfg.filter_motion_keys=[rage_professionall_001__A002,walk_forward_hips_amplified_002__A001_M]'
+```
+
+```bash
+WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
+  gear_sonic/train_agent_trl.py \
+  +exp=manager/universal_token/all_modes/sonic_release \
+  use_mjlab=True \
+  sim_type=mjlab \
+  checkpoint=null \
+  num_envs=2 \
+  headless=True \
+  ++algo.config.num_learning_iterations=1 \
+  ++algo.config.num_steps_per_env=2 \
+  ++manager_env.config.rough_terrain_num_rows=1 \
+  ++manager_env.config.rough_terrain_num_cols=1 \
+  ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke \
+  ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy
+```
+
 ## 待解决问题
 
 ### 高优先级
 
 - termination 已按原 SONIC term 类型、body 选择和阈值来源对齐；body 映射、quaternion 顺序、reset 首帧 stale pose 和 DOF 写入顺序已修正。当前 reset FK 误差已到 `1e-6m` 量级，`ee_body_pos`、`foot_pos_xyz` 首帧误触发问题已解决；后续仍需在更长训练中观察随机动作导致的真实 tracking failure 分布。
-- `physics_material` 目前只映射为 MuJoCo `geom_friction` 的滑动摩擦随机化；Isaac 里的 dynamic friction 和 restitution 还没有完整等价迁移。
+- `physics_material` 已保留 bucket 采样，并完成 static friction 到 MuJoCo sliding friction 的明确映射；Isaac 的 dynamic friction/restitution 仍没有 MuJoCo 完全等价表达，目前 dynamic friction 只作为 torsional friction best-effort 映射，restitution 暂不映射。
 - `randomize_rigid_body_mass` 当前已对 `scale` 操作使用 mjlab `dr.pseudo_inertia`，比 Isaac 只缩放 mass 的事件更物理一致；后续长训练仍需观察该差异是否影响 SONIC 原始训练分布。
 - `TrackingCommand` 已初步对齐 adaptive sampling 和 evaluation mode；后续仍需核对 motion cache、paired motions、contact-based initialization 与更长训练下的 adaptive sampling 分布是否和原始 `gear_sonic` 一致。
 - `TrackingCommand` 已补齐基础 reset 随机化、start-time override、unique/paired motion 采样、encoder multi-hot、SOMA 4-encoder 基础采样、contact-before 初始化、contact 诊断缓存和 variable future frames 基础语义；后续仍需用真实 contact/object 数据验证 contact-based initialization，并使用带 mask 的 variable-frame actor config 验证 `command_num_frames` 到 tokenizer mask 的完整链路。
+- eval callback 已可在 mjlab 路径跑通并产出 metrics；当前 uv 环境缺少 `smpl_sim` 时使用本地 MPJPE fallback，`mpjpe_pa` 只是 local MPJPE 近似，若需要与原 Isaac/SMPL eval 完全一致，仍需按项目环境安装/接入官方 `smpl_sim`。
 
 ### 中优先级
 
-- rough terrain/trimesh terrain 尚未迁移；当前只保证 plane 训练闭环。
-- curriculum 尚未完整迁移，尤其是与 push/randomization 相关的课程项。
+- rough terrain/trimesh terrain 已补齐基础 generator 路径，并通过小网格 smoke；默认 `20x20` 大地形尚未做完整训练回归，后续需要确认启动耗时和接触稳定性。
+- curriculum 已补齐基础 push/randomization event 参数更新入口；尚未用真实课程配置覆盖所有 push/randomization 参数组合。
 - events/domain randomization 还需要更细致对齐原 IsaacLab：
-  - physics material bucket 语义
+  - physics material dynamic friction / restitution 的物理近似差异
   - reset-time vs startup-time 随机化
   - body/geom/name 选择是否完全一致
 - `open3d` 当前未安装，mesh 加载做成缺失时跳过；mesh 可视化和精细 FK 相关能力后续需要补齐环境依赖或替代实现。
@@ -338,8 +457,8 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
 ## 下一步建议
 
 1. 对 events 做一次原 SONIC vs mjlab 的逐项对照表，明确哪些是等价实现、近似实现、暂未实现。
-2. 用 `sonic_release` checkpoint 或同结构 checkpoint 做加载 smoke，确认网络 key、obs dim、action dim 无破坏。
-3. 再跑更长一点的小规模训练，观察是否还有 `nefc overflow`、NaN、异常 reset 或 reward 退化。
-4. 继续核对 motion cache、paired motions、contact-based initialization 与原始 `gear_sonic` 的行为一致性，尤其是真实 contact/object 数据下的 first-contact key 匹配。
-5. 转换全量 `/home/ykj/Downloads/dataset/bones-seed/soma_uniform/bvh`，重跑更大 `sonic_bones_seed` smoke，检查 SOMA encoder 采样比例和 SOMA 观测数值。
-6. 准备或找到带 tokenizer `mask` 字段的 variable-frame actor 配置，验证 `command_num_frames` 到 `UniversalTokenModule` frame/token mask 的完整训练链路。
+2. 再跑更长一点的小规模训练，观察是否还有 `nefc overflow`、NaN、异常 reset 或 reward 退化。
+3. 继续核对 motion cache、paired motions、contact-based initialization 与原始 `gear_sonic` 的行为一致性，尤其是真实 contact/object 数据下的 first-contact key 匹配。
+4. 转换全量 `/home/ykj/Downloads/dataset/bones-seed/soma_uniform/bvh`，重跑更大 `sonic_bones_seed` smoke，检查 SOMA encoder 采样比例和 SOMA 观测数值。
+5. 准备或找到带 tokenizer `mask` 字段的 variable-frame actor 配置，验证 `command_num_frames` 到 `UniversalTokenModule` frame/token mask 的完整训练链路。
+6. 如需要严格复现原 eval 的 PA-MPJPE，按项目 uv 环境补齐 `smpl_sim` 依赖并回归对比 fallback 与官方指标。

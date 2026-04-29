@@ -30,6 +30,7 @@ class SonicMjEnvWrapper:
         self.num_envs = env.num_envs
         self.is_manager_env = True
         self.is_evaluating = False
+        self.start_idx = 0
         self.motion_command = env.command_manager.get_term("motion")
         self._motion_lib = self.motion_command.motion_lib
         self.obs_buf_dict = {}
@@ -48,7 +49,8 @@ class SonicMjEnvWrapper:
         self.config["robot"]["algo_obs_dim_dict"] = _to_easydict(
             self.config["robot"].get("algo_obs_dim_dict", {})
         )
-        self.config.robot.setdefault("actions_dim", env.action_space.shape[-1])
+        if "actions_dim" not in self.config.robot:
+            self.config.robot.actions_dim = env.action_space.shape[-1]
         self.config["rewards"] = _to_easydict(_container_or_empty(self.config.get("rewards", {})))
         self.config.rewards.setdefault("num_critics", 1)
         self.use_symmetry = False
@@ -118,22 +120,56 @@ class SonicMjEnvWrapper:
             if getattr(self._motion_lib, "use_adaptive_sampling", False):
                 self.resample_motion()
 
-    def set_is_evaluating(self, is_evaluating=True, *_, **__):
+    def set_is_evaluating(self, is_evaluating=True, global_rank=0, *_, **__):
         self.is_evaluating = is_evaluating
         if hasattr(self.motion_command, "set_is_evaluating"):
             self.motion_command.set_is_evaluating(is_evaluating)
         elif hasattr(self.motion_command, "is_evaluating"):
             self.motion_command.is_evaluating = is_evaluating
+        if is_evaluating:
+            self.begin_seq_motion_samples(global_rank=global_rank)
 
     def set_is_training(self):
         self.set_is_evaluating(False)
+        if hasattr(self._motion_lib, "load_motions_for_training"):
+            loaded = self._motion_lib.load_motions_for_training(
+                max_num_seqs=min(self.num_envs, self.motion_command.max_num_load_motions)
+            )
+            if loaded:
+                self.reset_all()
 
     def resample_motion(self):
         env_ids = torch.arange(self.num_envs, device=self.device)
         self.motion_command._resample_command(env_ids)
 
+    def begin_seq_motion_samples(self, global_rank=0):
+        self.start_idx = int(global_rank) * self.num_envs
+        if hasattr(self._motion_lib, "load_motions_for_evaluation"):
+            self._motion_lib.load_motions_for_evaluation(start_idx=self.start_idx)
+        self.reset_all()
+
+    def forward_motion_samples(self, global_rank=0, world_size=1):
+        del global_rank
+        self.start_idx += int(world_size) * self.num_envs
+        if hasattr(self._motion_lib, "load_motions_for_evaluation"):
+            self._motion_lib.load_motions_for_evaluation(start_idx=self.start_idx)
+        self.reset_all()
+
     def reinit_dr(self):
         return None
+
+    def get_env_data(self, key):
+        if key == "ref_body_pos_extend":
+            return self.motion_command.robot_body_pos_w
+        if key == "rigid_body_pos_extend":
+            return self.motion_command.body_pos_w
+        if hasattr(self.env, "get_env_data"):
+            return self.env.get_env_data(key)
+        raise KeyError(f"Unsupported SonicMJ env data key: {key}")
+
+    @property
+    def motion_ids(self):
+        return self.motion_command.motion_ids
 
     def sync_and_compute_adaptive_sampling(self, accelerator, sync_across_gpus=False):
         if self._motion_lib is not None:
