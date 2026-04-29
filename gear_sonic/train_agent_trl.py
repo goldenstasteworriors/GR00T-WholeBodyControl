@@ -266,9 +266,12 @@ def main(config: OmegaConf):
         args_cli.device = device
 
         # Base kit args (quiet logs)
+        extra_kit_args = os.environ.get("SONIC_ISAAC_KIT_ARGS", "")
         base_kit_args = (
             "--/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error"
         )
+        if extra_kit_args:
+            base_kit_args = f"{base_kit_args} {extra_kit_args}"
         if args_cli.headless:
             args_cli.kit_args = base_kit_args + " --no-window"
         else:
