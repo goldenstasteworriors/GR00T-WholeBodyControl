@@ -72,6 +72,25 @@ def _scene_entity_from_cfg(asset_cfg, *, default_joint_names=None) -> SceneEntit
     )
 
 
+def _event_asset_cfg(params, *, default_joint_names=None, default_body_names=None) -> SceneEntityCfg:
+    asset_cfg = _cfg_get(params, "asset_cfg", None)
+    if asset_cfg is None:
+        return SceneEntityCfg(
+            "robot",
+            joint_names=default_joint_names,
+            body_names=default_body_names,
+        )
+    return SceneEntityCfg(
+        _cfg_get(asset_cfg, "name", _cfg_get(asset_cfg, "entity_name", "robot")),
+        joint_names=_cfg_get(asset_cfg, "joint_names", default_joint_names),
+        body_names=_cfg_get(asset_cfg, "body_names", default_body_names),
+        geom_names=_cfg_get(asset_cfg, "geom_names", None),
+        site_names=_cfg_get(asset_cfg, "site_names", None),
+        actuator_names=_cfg_get(asset_cfg, "actuator_names", None),
+        preserve_order=bool(_cfg_get(asset_cfg, "preserve_order", False)),
+    )
+
+
 def _scale_range_to_pseudo_inertia_alpha(
     scale_range: tuple[float, float] | list[float],
 ) -> tuple[float, float]:
@@ -156,11 +175,12 @@ def _make_sonic_events(manager_cfg):
             func=sonic_events.randomize_joint_default_pos,
             mode=_cfg_get(add_joint_cfg, "mode", "startup"),
             params={
-                "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
+                "asset_cfg": _event_asset_cfg(params, default_joint_names=(".*",)),
                 "pos_distribution_params": _as_tuple(
                     _cfg_get(params, "pos_distribution_params", (-0.01, 0.01))
                 ),
                 "operation": _cfg_get(params, "operation", "add"),
+                "distribution": _cfg_get(params, "distribution", "uniform"),
             },
         )
 
@@ -168,47 +188,53 @@ def _make_sonic_events(manager_cfg):
     if base_com_cfg is not None:
         params = _event_params(base_com_cfg)
         com_range = _cfg_get(params, "com_range", {})
+        base_com_params = {
+            "asset_cfg": _event_asset_cfg(params, default_body_names=("torso_link",)),
+            "ranges": {
+                0: _as_tuple(_cfg_get(com_range, "x", (0.0, 0.0))),
+                1: _as_tuple(_cfg_get(com_range, "y", (0.0, 0.0))),
+                2: _as_tuple(_cfg_get(com_range, "z", (0.0, 0.0))),
+            },
+            "operation": _cfg_get(params, "operation", "add"),
+            "distribution": _cfg_get(params, "distribution", "uniform"),
+        }
+        if _cfg_get(params, "axes", None) is not None:
+            base_com_params["axes"] = list(_cfg_get(params, "axes"))
+        if _cfg_get(params, "shared_random", None) is not None:
+            base_com_params["shared_random"] = bool(_cfg_get(params, "shared_random"))
         events["base_com"] = EventTermCfg(
             func=mj_mdp.dr.body_com_offset,
             mode=_cfg_get(base_com_cfg, "mode", "startup"),
-            params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-                "ranges": {
-                    0: _as_tuple(_cfg_get(com_range, "x", (0.0, 0.0))),
-                    1: _as_tuple(_cfg_get(com_range, "y", (0.0, 0.0))),
-                    2: _as_tuple(_cfg_get(com_range, "z", (0.0, 0.0))),
-                },
-                "operation": "add",
-            },
+            params=base_com_params,
         )
 
     mass_cfg = _cfg_get(source_events, "randomize_rigid_body_mass", None)
     if mass_cfg is not None:
         params = _event_params(mass_cfg)
-        asset_cfg = _cfg_get(params, "asset_cfg", {})
         mass_distribution_params = _as_tuple(
             _cfg_get(params, "mass_distribution_params", (0.8, 1.2))
         )
         operation = _cfg_get(params, "operation", "scale")
+        asset_cfg = _event_asset_cfg(params, default_body_names=".*")
         if operation == "scale":
             mass_func = mj_mdp.dr.pseudo_inertia
             mass_params = {
-                "asset_cfg": SceneEntityCfg(
-                    "robot",
-                    body_names=_cfg_get(asset_cfg, "body_names", ".*"),
-                ),
+                "asset_cfg": asset_cfg,
                 "alpha_range": _scale_range_to_pseudo_inertia_alpha(mass_distribution_params),
+                "distribution": _cfg_get(params, "distribution", "uniform"),
             }
         else:
             mass_func = mj_mdp.dr.body_mass
             mass_params = {
-                "asset_cfg": SceneEntityCfg(
-                    "robot",
-                    body_names=_cfg_get(asset_cfg, "body_names", ".*"),
-                ),
+                "asset_cfg": asset_cfg,
                 "ranges": mass_distribution_params,
                 "operation": operation,
+                "distribution": _cfg_get(params, "distribution", "uniform"),
             }
+            if _cfg_get(params, "axes", None) is not None:
+                mass_params["axes"] = list(_cfg_get(params, "axes"))
+            if _cfg_get(params, "shared_random", None) is not None:
+                mass_params["shared_random"] = bool(_cfg_get(params, "shared_random"))
         events["randomize_rigid_body_mass"] = EventTermCfg(
             func=mass_func,
             mode=_cfg_get(mass_cfg, "mode", "startup"),
@@ -222,10 +248,7 @@ def _make_sonic_events(manager_cfg):
             func=sonic_events.randomize_physics_material,
             mode=_cfg_get(physics_material_cfg, "mode", "startup"),
             params={
-                "asset_cfg": SceneEntityCfg(
-                    "robot",
-                    body_names=_cfg_get(_cfg_get(params, "asset_cfg", {}), "body_names", ".*"),
-                ),
+                "asset_cfg": _event_asset_cfg(params, default_body_names=".*"),
                 "static_friction_range": _as_tuple(
                     _cfg_get(params, "static_friction_range", (0.3, 1.6))
                 ),
@@ -252,7 +275,10 @@ def _make_sonic_events(manager_cfg):
             interval_range_s=_as_tuple(
                 _cfg_get(push_cfg, "interval_range_s", (4.0, 6.0))
             ),
-            params={"velocity_range": velocity_range},
+            params={
+                "velocity_range": velocity_range,
+                "asset_cfg": _event_asset_cfg(params),
+            },
         )
 
     return events

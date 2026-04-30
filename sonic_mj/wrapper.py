@@ -6,6 +6,12 @@ import easydict
 from omegaconf import OmegaConf
 import torch
 
+from sonic_mj.assets import (
+    SONIC_G1_BODY_NAMES,
+    SONIC_G1_JOINT_NAMES,
+    SONIC_G1_MOTION_DOF_TO_MUJOCO,
+)
+
 
 def _to_easydict(value):
     if isinstance(value, dict):
@@ -54,6 +60,145 @@ class SonicMjEnvWrapper:
         self.config["rewards"] = _to_easydict(_container_or_empty(self.config.get("rewards", {})))
         self.config.rewards.setdefault("num_critics", 1)
         self.use_symmetry = False
+        self._train_only_event_names = tuple(self.config.get("train_only_events", []) or [])
+        self._disabled_train_only_events = {}
+
+    def _set_train_only_events_enabled(self, enabled: bool) -> None:
+        if not self._train_only_event_names or not hasattr(self.env, "event_manager"):
+            return
+        if enabled:
+            for event_name in self._train_only_event_names:
+                self._restore_event_term(event_name)
+        else:
+            for event_name in self._train_only_event_names:
+                self._remove_event_term(event_name)
+
+    def _remove_event_term(self, event_name: str) -> None:
+        if event_name in self._disabled_train_only_events:
+            return
+        manager = self.env.event_manager
+        for mode, names in list(manager._mode_term_names.items()):
+            if event_name not in names:
+                continue
+            index = names.index(event_name)
+            term_cfg = manager._mode_term_cfgs[mode][index]
+            removed = {
+                "mode": mode,
+                "index": index,
+                "term_cfg": term_cfg,
+                "class_index": None,
+                "interval_time_left": None,
+                "reset_last_step": None,
+                "reset_triggered_once": None,
+            }
+            names.pop(index)
+            manager._mode_term_cfgs[mode].pop(index)
+            class_terms = manager._mode_class_term_cfgs.get(mode, [])
+            for class_index, class_term_cfg in enumerate(class_terms):
+                if class_term_cfg is term_cfg:
+                    removed["class_index"] = class_index
+                    class_terms.pop(class_index)
+                    break
+            if mode == "interval":
+                removed["interval_time_left"] = manager._interval_term_time_left.pop(index)
+            elif mode == "reset":
+                removed["reset_last_step"] = manager._reset_term_last_triggered_step_id.pop(index)
+                removed["reset_triggered_once"] = manager._reset_term_last_triggered_once.pop(index)
+            self._disabled_train_only_events[event_name] = removed
+            return
+
+    def _restore_event_term(self, event_name: str) -> None:
+        removed = self._disabled_train_only_events.pop(event_name, None)
+        if removed is None:
+            return
+        manager = self.env.event_manager
+        mode = removed["mode"]
+        manager._mode_term_names.setdefault(mode, [])
+        manager._mode_term_cfgs.setdefault(mode, [])
+        manager._mode_class_term_cfgs.setdefault(mode, [])
+        index = min(removed["index"], len(manager._mode_term_names[mode]))
+        term_cfg = removed["term_cfg"]
+        manager._mode_term_names[mode].insert(index, event_name)
+        manager._mode_term_cfgs[mode].insert(index, term_cfg)
+        if removed["class_index"] is not None:
+            class_index = min(
+                removed["class_index"],
+                len(manager._mode_class_term_cfgs[mode]),
+            )
+            manager._mode_class_term_cfgs[mode].insert(class_index, term_cfg)
+        if mode == "interval":
+            manager._interval_term_time_left.insert(index, removed["interval_time_left"])
+        elif mode == "reset":
+            manager._reset_term_last_triggered_step_id.insert(index, removed["reset_last_step"])
+            manager._reset_term_last_triggered_once.insert(index, removed["reset_triggered_once"])
+
+    def get_order_diagnostics(self):
+        robot = self.env.scene["robot"]
+        action_joint_names = ()
+        try:
+            action_joint_names = tuple(self.env.action_manager.get_term("joint_pos").target_names)
+        except Exception:
+            pass
+        obs_shapes = {}
+        for group_name, space in self.env.observation_space.items():
+            if hasattr(space, "shape"):
+                obs_shapes[group_name] = tuple(space.shape)
+            elif hasattr(space, "spaces"):
+                obs_shapes[group_name] = {
+                    term_name: tuple(term_space.shape)
+                    for term_name, term_space in space.spaces.items()
+                }
+        diagnostics = {
+            "robot_joint_names": tuple(robot.joint_names),
+            "robot_body_names": tuple(robot.body_names),
+            "motion_body_names": tuple(self.motion_command.cfg.body_names),
+            "motion_dof_to_mujoco": tuple(SONIC_G1_MOTION_DOF_TO_MUJOCO),
+            "action_joint_names": action_joint_names,
+            "policy_joint_pos_order": tuple(robot.joint_names),
+            "policy_joint_vel_order": tuple(robot.joint_names),
+            "policy_action_order": action_joint_names,
+            "action_dim": int(self.env.action_space.shape[-1]),
+            "observation_shapes": obs_shapes,
+        }
+        diagnostics["checks"] = {
+            "robot_joints_match_sonic_mujoco": diagnostics["robot_joint_names"]
+            == SONIC_G1_JOINT_NAMES,
+            "robot_bodies_match_sonic_mujoco": diagnostics["robot_body_names"]
+            == SONIC_G1_BODY_NAMES,
+            "motion_bodies_match_sonic_mujoco": diagnostics["motion_body_names"]
+            == SONIC_G1_BODY_NAMES,
+            "action_joints_match_sonic_mujoco": diagnostics["action_joint_names"]
+            == SONIC_G1_JOINT_NAMES,
+            "policy_joint_pos_order_matches_sonic_mujoco": diagnostics["policy_joint_pos_order"]
+            == SONIC_G1_JOINT_NAMES,
+            "policy_joint_vel_order_matches_sonic_mujoco": diagnostics["policy_joint_vel_order"]
+            == SONIC_G1_JOINT_NAMES,
+            "policy_action_order_matches_sonic_mujoco": diagnostics["policy_action_order"]
+            == SONIC_G1_JOINT_NAMES,
+            "motion_dof_mapping_identity": diagnostics["motion_dof_to_mujoco"]
+            == tuple(range(len(SONIC_G1_JOINT_NAMES))),
+            "action_dim_is_29": diagnostics["action_dim"] == 29,
+        }
+        return diagnostics
+
+    def print_order_diagnostics(self):
+        diagnostics = self.get_order_diagnostics()
+        print("[SonicMJ] structured order diagnostics:")
+        for key in (
+            "robot_joint_names",
+            "robot_body_names",
+            "motion_body_names",
+            "action_joint_names",
+            "policy_joint_pos_order",
+            "policy_joint_vel_order",
+            "policy_action_order",
+            "motion_dof_to_mujoco",
+            "action_dim",
+            "observation_shapes",
+            "checks",
+        ):
+            print(f"[SonicMJ]   {key}: {diagnostics[key]}")
+        return diagnostics
 
     def reset(self, flatten_dict_obs=True):
         obs, _info = self.env.reset()
@@ -122,6 +267,7 @@ class SonicMjEnvWrapper:
 
     def set_is_evaluating(self, is_evaluating=True, global_rank=0, *_, **__):
         self.is_evaluating = is_evaluating
+        self._set_train_only_events_enabled(not is_evaluating)
         if hasattr(self.motion_command, "set_is_evaluating"):
             self.motion_command.set_is_evaluating(is_evaluating)
         elif hasattr(self.motion_command, "is_evaluating"):
@@ -133,9 +279,10 @@ class SonicMjEnvWrapper:
         self.set_is_evaluating(False)
         if hasattr(self._motion_lib, "load_motions_for_training"):
             loaded = self._motion_lib.load_motions_for_training(
-                max_num_seqs=min(self.num_envs, self.motion_command.max_num_load_motions)
+                max_num_seqs=self.motion_command.max_num_load_motions
             )
             if loaded:
+                self.motion_command.refresh_after_motion_lib_reload()
                 self.reset_all()
 
     def resample_motion(self):
@@ -146,6 +293,7 @@ class SonicMjEnvWrapper:
         self.start_idx = int(global_rank) * self.num_envs
         if hasattr(self._motion_lib, "load_motions_for_evaluation"):
             self._motion_lib.load_motions_for_evaluation(start_idx=self.start_idx)
+            self.motion_command.refresh_after_motion_lib_reload()
         self.reset_all()
 
     def forward_motion_samples(self, global_rank=0, world_size=1):
@@ -153,6 +301,7 @@ class SonicMjEnvWrapper:
         self.start_idx += int(world_size) * self.num_envs
         if hasattr(self._motion_lib, "load_motions_for_evaluation"):
             self._motion_lib.load_motions_for_evaluation(start_idx=self.start_idx)
+            self.motion_command.refresh_after_motion_lib_reload()
         self.reset_all()
 
     def reinit_dr(self):

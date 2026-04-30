@@ -19,7 +19,12 @@ from mjlab.utils.lab_api.math import (
     yaw_quat,
 )
 
-from sonic_mj.assets import G1_ISAACLAB_JOINTS, SONIC_G1_MOTION_DOF_TO_MUJOCO
+from sonic_mj.assets import (
+    G1_ISAACLAB_JOINTS,
+    SONIC_G1_BODY_NAMES,
+    SONIC_G1_JOINT_NAMES,
+    SONIC_G1_MOTION_DOF_TO_MUJOCO,
+)
 from gear_sonic.utils.motion_lib import motion_lib_robot
 
 
@@ -112,7 +117,10 @@ class SonicMotionCommand(CommandTerm):
             motion_cfg, self.num_envs, self.device
         )
         self.motion_target_fps = int(motion_cfg.target_fps)
-        self.max_num_load_motions = min(self.num_envs, cfg.max_num_load_motions)
+        if cfg.use_paired_motions:
+            self.max_num_load_motions = self.motion_lib._num_unique_motions
+        else:
+            self.max_num_load_motions = min(self.num_envs, cfg.max_num_load_motions)
         self.motion_lib.load_motions_for_training(max_num_seqs=self.max_num_load_motions)
         self._motion_lib = self.motion_lib
         self.use_adaptive_sampling = bool(getattr(self.motion_lib, "use_adaptive_sampling", False))
@@ -519,6 +527,17 @@ class SonicMotionCommand(CommandTerm):
             contact_per_frame = (contact_tensor != 0).reshape(contact_tensor.shape[0], -1).any(dim=1)
             self._motion_contact_flags[motion_idx] = contact_per_frame.bool()
 
+    def refresh_after_motion_lib_reload(self) -> None:
+        self.use_adaptive_sampling = bool(getattr(self.motion_lib, "use_adaptive_sampling", False))
+        num_loaded_motions = int(getattr(self.motion_lib, "_num_motions", 0))
+        if num_loaded_motions <= 0:
+            raise RuntimeError("[SonicMJ] Motion lib reload left no motions loaded.")
+        self.motion_ids.remainder_(num_loaded_motions)
+        self.motion_num_steps = self.motion_lib.get_motion_num_steps(self.motion_ids)
+        self._load_contact_data()
+        self._update_per_env_first_contact(torch.arange(self.num_envs, device=self.device))
+        self._refresh_motion_state()
+
     def _update_per_env_first_contact(self, env_ids: torch.Tensor) -> None:
         if self._first_contact_lookup is None or len(env_ids) == 0:
             return
@@ -742,10 +761,38 @@ class SonicMotionCommand(CommandTerm):
         )
 
     def _print_order_summary(self) -> None:
-        print("[SonicMJ] robot joint names/order:", self.robot.joint_names)
-        print("[SonicMJ] robot body names/order:", self.robot.body_names)
-        print("[SonicMJ] motion body names/order:", self.cfg.body_names)
-        print("[SonicMJ] action term joint order should follow SONIC MuJoCo actuator order.")
+        robot_joint_names = tuple(self.robot.joint_names)
+        robot_body_names = tuple(self.robot.body_names)
+        motion_body_names = tuple(self.cfg.body_names)
+        action_joint_names = ()
+        if hasattr(self._env, "action_manager"):
+            try:
+                action_joint_names = tuple(self._env.action_manager.get_term("joint_pos").target_names)
+            except Exception:
+                action_joint_names = ()
+
+        print("[SonicMJ] robot joint names/order:", robot_joint_names)
+        print("[SonicMJ] robot body names/order:", robot_body_names)
+        print("[SonicMJ] motion body names/order:", motion_body_names)
+        print("[SonicMJ] action term joint names/order:", action_joint_names)
+        print("[SonicMJ] motion DOF -> MuJoCo mapping:", tuple(SONIC_G1_MOTION_DOF_TO_MUJOCO))
+        order_checks = {
+            "robot_joints_match_sonic_mujoco": robot_joint_names == SONIC_G1_JOINT_NAMES,
+            "robot_bodies_match_sonic_mujoco": robot_body_names == SONIC_G1_BODY_NAMES,
+            "motion_bodies_match_sonic_mujoco": motion_body_names == SONIC_G1_BODY_NAMES,
+            "motion_dof_mapping_identity": tuple(SONIC_G1_MOTION_DOF_TO_MUJOCO)
+            == tuple(range(len(SONIC_G1_JOINT_NAMES))),
+        }
+        if action_joint_names:
+            order_checks["action_joints_match_sonic_mujoco"] = (
+                action_joint_names == SONIC_G1_JOINT_NAMES
+            )
+        else:
+            order_checks["action_joints_match_sonic_mujoco"] = "pending_action_manager_init"
+        print(
+            "[SonicMJ] order checks:",
+            order_checks,
+        )
 
     def set_is_evaluating(self, is_evaluating: bool = True) -> None:
         self.is_evaluating = is_evaluating

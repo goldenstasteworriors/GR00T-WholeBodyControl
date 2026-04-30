@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 import torch
@@ -41,6 +42,7 @@ def randomize_joint_default_pos(
     asset_cfg: SceneEntityCfg,
     pos_distribution_params: tuple[float, float] | list[float] | None = None,
     operation: Literal["add", "scale", "abs"] = "add",
+    distribution: Literal["uniform", "log_uniform", "gaussian"] = "uniform",
 ):
     asset = env.scene[asset_cfg.name]
     env_ids_tensor = _as_env_ids(env, env_ids)
@@ -49,13 +51,33 @@ def randomize_joint_default_pos(
     if pos_distribution_params is None:
         return
 
+    if not hasattr(asset.data, "default_joint_pos_nominal"):
+        asset.data.default_joint_pos_nominal = torch.clone(asset.data.default_joint_pos[0])
+
     low, high = float(pos_distribution_params[0]), float(pos_distribution_params[1])
-    random_value = sample_uniform(
-        low,
-        high,
-        (len(env_ids_tensor), len(joint_ids)),
-        device=env.device,
-    )
+    sample_shape = (len(env_ids_tensor), len(joint_ids))
+    if distribution == "uniform":
+        random_value = sample_uniform(low, high, sample_shape, device=env.device)
+    elif distribution == "log_uniform":
+        if low <= 0.0 or high <= 0.0:
+            raise ValueError(
+                f"log_uniform joint default position params must be positive, got {pos_distribution_params}."
+            )
+        log_low = math.log(low)
+        log_high = math.log(high)
+        random_value = torch.exp(
+            torch.empty(sample_shape, device=env.device).uniform_(log_low, log_high)
+        )
+    elif distribution == "gaussian":
+        random_value = torch.normal(
+            mean=low,
+            std=high,
+            size=sample_shape,
+            device=env.device,
+        )
+    else:
+        raise ValueError(f"Unsupported joint default position distribution: {distribution}")
+
     current = asset.data.default_joint_pos[env_ids_tensor[:, None], joint_ids]
 
     if operation == "add":
