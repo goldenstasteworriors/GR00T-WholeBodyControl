@@ -28,18 +28,7 @@ if _repo_root not in sys.path:
 try:
     import isaaclab  # noqa: F401
 except ImportError:
-    print(
-        "\n"
-        "ERROR: Isaac Lab is required for training but not installed.\n"
-        "\n"
-        "Isaac Lab is not a pip dependency — it must be installed separately.\n"
-        "Follow the official guide:\n"
-        "  https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html\n"
-        "\n"
-        "After installing, activate the Isaac Lab conda/venv environment\n"
-        "before running this script.\n"
-    )
-    sys.exit(1)
+    isaaclab = None
 
 import glob
 import logging
@@ -95,8 +84,20 @@ def resume_checkpoint(config):
 
 
 def create_manager_env(config, device, args_cli):
+    if config.get("use_mjlab", False) or config.get("sim_type", None) == "mjlab":
+        from sonic_mj.train import create_mjlab_manager_env
+
+        return create_mjlab_manager_env(config, device)
 
     # import wandb
+    if isaaclab is None:
+        print(
+            "\n"
+            "ERROR: Isaac Lab is required for IsaacSim training but not installed.\n"
+            "Use `use_mjlab=True sim_type=mjlab` for the SonicMJ mjlab backend, "
+            "or install Isaac Lab following the official guide.\n"
+        )
+        sys.exit(1)
 
     from isaaclab.envs import (
         ManagerBasedRLEnv,
@@ -154,7 +155,7 @@ def create_manager_env(config, device, args_cli):
 
 @hydra.main(config_path="config", config_name="base", version_base="1.1")
 def main(config: OmegaConf):
-    simulator_type = "IsaacSim"
+    simulator_type = "MjLab" if config.get("use_mjlab", False) else "IsaacSim"
     env_config = config.manager_env
     from transformers import HfArgumentParser
     from trl import ModelConfig, PPOConfig, ScriptArguments
@@ -225,6 +226,7 @@ def main(config: OmegaConf):
 
     # Setup simulator similar to train_agent.py
 
+    args_cli = None
     if simulator_type == "IsaacSim":
         try:
             with open("./rl/simulator/isaacsim/.isaacsim_version", encoding="utf-8") as f:
@@ -266,16 +268,9 @@ def main(config: OmegaConf):
         args_cli.device = device
 
         # Base kit args (quiet logs)
-        extra_kit_args = os.environ.get("SONIC_ISAAC_KIT_ARGS", "")
-        base_kit_args = (
+        args_cli.kit_args = (
             "--/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error"
         )
-        if extra_kit_args:
-            base_kit_args = f"{base_kit_args} {extra_kit_args}"
-        if args_cli.headless:
-            args_cli.kit_args = base_kit_args + " --no-window"
-        else:
-            args_cli.kit_args = base_kit_args
 
         # AppLauncher can't handle multiple processes creating it at the same time so we need a lock
         _lock_path = "/tmp/isaaclab_app_launcher.lock"
@@ -325,6 +320,11 @@ def main(config: OmegaConf):
     env_config.config.save_rendering_dir = str(Path(config.experiment_dir) / "renderings_training")
     env_config.config.experiment_dir = str(Path(config.experiment_dir))
 
+    if args_cli is None:
+        class _MjlabArgs:
+            headless = True
+
+        args_cli = _MjlabArgs()
     env = create_manager_env(config, device, args_cli)
     if config.get("replay", False):
         _save_video_path = config.get("replay_save_video", None)

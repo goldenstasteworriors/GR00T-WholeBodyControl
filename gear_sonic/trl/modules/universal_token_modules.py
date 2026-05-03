@@ -457,9 +457,15 @@ class UniversalTokenModule(nn.Module):
         num_frames_flat = num_frames.reshape(-1, 1)  # [B*seq, 1]
         frame_mask = self._frame_indices < num_frames_flat  # [B*seq, max_frames]
 
-        frames_per_token = 2**self.down_t
-        token_frame_mask = frame_mask.reshape(-1, self.max_num_tokens, frames_per_token)
-        token_mask = token_frame_mask.all(dim=-1)  # [B*seq, max_tokens]
+        token_indices = torch.arange(
+            self.max_num_tokens,
+            device=num_frames.device,
+            dtype=num_frames_flat.dtype,
+        ).unsqueeze(0)
+        valid_tokens = torch.ceil(
+            num_frames_flat * float(self.max_num_tokens) / float(self.num_future_frames)
+        ).clamp(min=1, max=self.max_num_tokens)
+        token_mask = token_indices < valid_tokens  # [B*seq, max_tokens]
 
         return frame_mask, token_mask
 
@@ -683,7 +689,13 @@ class UniversalTokenModule(nn.Module):
 
         # quantize using quantizer
         if self.quantizer is not None:
+            latent_shape = latent.shape
+            if latent.ndim > 3:
+                latent = latent.reshape(-1, *latent.shape[-2:])
             quantized_codes, _ = self.quantizer(latent)
+            if len(latent_shape) > 3:
+                quantized_codes = quantized_codes.reshape(*latent_shape)
+                latent = latent.reshape(*latent_shape)
             encoded_tokens = quantized_codes.contiguous()
         else:
             encoded_tokens = latent

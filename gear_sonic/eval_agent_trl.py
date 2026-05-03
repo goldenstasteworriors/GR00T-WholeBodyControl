@@ -16,19 +16,7 @@
 try:
     import isaaclab  # noqa: F401
 except ImportError:
-    print(
-        "\n"
-        "ERROR: Isaac Lab is required for evaluation but not installed.\n"
-        "\n"
-        "Isaac Lab is not a pip dependency — it must be installed separately.\n"
-        "Follow the official guide:\n"
-        "  https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html\n"
-        "\n"
-        "After installing, activate the Isaac Lab conda/venv environment\n"
-        "before running this script.\n"
-    )
-    import sys
-    sys.exit(1)
+    isaaclab = None
 
 import filelock  # noqa: I001
 import json
@@ -155,7 +143,11 @@ def main(override_config: omegaconf.OmegaConf):
             print(f"Using encoder: {use_encoder}")  # noqa: T201
             print(f"Encoder sample probs: {encoder_sample_probs}")  # noqa: T201
 
-    simulator_type = "IsaacSim"
+    simulator_type = (
+        "MjLab"
+        if config.get("use_mjlab", False) or config.get("sim_type", None) == "mjlab"
+        else "IsaacSim"
+    )
     env_config = config.manager_env
 
     import datetime as dt
@@ -200,7 +192,16 @@ def main(override_config: omegaconf.OmegaConf):
 
     render_gpu_idx = _pick_display_gpu_index(default_idx=0)
 
+    args_cli = None
     if simulator_type == "IsaacSim":
+        if isaaclab is None:
+            print(
+                "\n"
+                "ERROR: Isaac Lab is required for IsaacSim evaluation but not installed.\n"
+                "Use `use_mjlab=True sim_type=mjlab` for the SonicMJ mjlab backend, "
+                "or install Isaac Lab following the official guide.\n"
+            )
+            sys.exit(1)
         try:
             with open("./rl/simulator/isaacsim/.isaacsim_version", encoding="utf-8") as f:
                 DEFAULT_ISAACSIM_VERSION = f.read().strip()

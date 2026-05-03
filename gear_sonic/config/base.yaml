@@ -42,6 +42,10 @@ global_rank: 0
 
 ### Simulation
 sim_type: isaacsim
+use_mjlab: false
+mjlab:
+  nconmax: 512
+  njmax: 2048
 env_spacing: 20
 output_dir: ${experiment_dir}/output
 

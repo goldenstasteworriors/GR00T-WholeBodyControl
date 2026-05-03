@@ -11,6 +11,28 @@ from transformers import TrainerCallback
 import wandb
 
 
+def _compute_metrics_lite(pred_pos, gt_pos, concatenate=False):
+    try:
+        from smpl_sim.smpllib.smpl_eval import compute_metrics_lite
+
+        return compute_metrics_lite(pred_pos, gt_pos, concatenate=concatenate)
+    except ModuleNotFoundError:
+        metrics = {"mpjpe_g": [], "mpjpe_l": [], "mpjpe_pa": []}
+        for pred, gt in zip(pred_pos, gt_pos, strict=False):
+            pred_arr = np.asarray(pred)
+            gt_arr = np.asarray(gt)
+            global_err = np.linalg.norm(pred_arr - gt_arr, axis=-1)
+            pred_local = pred_arr - pred_arr[:, :1, :]
+            gt_local = gt_arr - gt_arr[:, :1, :]
+            local_err = np.linalg.norm(pred_local - gt_local, axis=-1)
+            metrics["mpjpe_g"].append(global_err)
+            metrics["mpjpe_l"].append(local_err)
+            metrics["mpjpe_pa"].append(local_err)
+        if concatenate:
+            return {key: np.concatenate(value, axis=0) for key, value in metrics.items()}
+        return metrics
+
+
 def create_html_table(metrics_dict):
     """
     Create a sortable HTML table for metrics logging using DataTables.
@@ -294,7 +316,7 @@ class ImEvalCallback(TrainerCallback):
         self._has_object = (
             hasattr(self.env, "env")
             and hasattr(self.env.env, "scene")
-            and "object" in self.env.env.scene.rigid_objects
+            and "object" in getattr(self.env.env.scene, "rigid_objects", {})
             and hasattr(self.env, "motion_command")
             and self.env.motion_command is not None
         )
@@ -594,20 +616,17 @@ class ImEvalCallback(TrainerCallback):
                     g[:, other_upper_bodies_indices, :] for g in self.gt_pos_all
                 ]
 
-                # Lazy import to avoid cffi version conflict with IsaacSim
-                from smpl_sim.smpllib.smpl_eval import compute_metrics_lite
-
-                metrics_all = compute_metrics_lite(
+                metrics_all = _compute_metrics_lite(
                     self.pred_pos_all, self.gt_pos_all, concatenate=False
                 )  # list of length N_env
-                metrics_legs = compute_metrics_lite(pred_pos_legs, gt_pos_legs, concatenate=False)
-                metrics_vr_3points = compute_metrics_lite(
+                metrics_legs = _compute_metrics_lite(pred_pos_legs, gt_pos_legs, concatenate=False)
+                metrics_vr_3points = _compute_metrics_lite(
                     pred_pos_vr_3points, gt_pos_vr_3points, concatenate=False
                 )
-                metrics_other_upper_bodies = compute_metrics_lite(
+                metrics_other_upper_bodies = _compute_metrics_lite(
                     pred_pos_other_upper_bodies, gt_pos_other_upper_bodies, concatenate=False
                 )
-                metrics_foot = compute_metrics_lite(pred_pos_foot, gt_pos_foot, concatenate=False)
+                metrics_foot = _compute_metrics_lite(pred_pos_foot, gt_pos_foot, concatenate=False)
 
                 # Rename keys for subset metrics
                 metrics_legs = {f"{k}_legs": v for k, v in metrics_legs.items()}
