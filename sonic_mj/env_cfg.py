@@ -16,6 +16,7 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
+from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains.config import TerrainEntityCfg, TerrainGeneratorCfg
 from mjlab.terrains.heightfield_terrains import HfRandomUniformTerrainCfg
@@ -59,6 +60,10 @@ def _reward_weight(reward_cfg, term_name: str, default: float) -> float:
 
 def _reward_params(reward_cfg, term_name: str) -> dict:
     return dict(_cfg_get(_cfg_get(reward_cfg, term_name, None), "params", {}) or {})
+
+
+def _cfg_has(cfg, key: str) -> bool:
+    return _cfg_get(cfg, key, None) is not None
 
 
 def _scene_entity_from_cfg(asset_cfg, *, default_joint_names=None) -> SceneEntityCfg:
@@ -117,6 +122,29 @@ def _make_sonic_terrain_cfg(base_cfg, *, num_envs: int, seed: int) -> TerrainEnt
     num_cols = int(_cfg_get(base_cfg, "rough_terrain_num_cols", 20))
     terrain_size = float(_cfg_get(base_cfg, "rough_terrain_size", 8.0))
     border_width = float(_cfg_get(base_cfg, "rough_terrain_border_width", 20.0))
+    boxes_backend = _cfg_get(base_cfg, "rough_terrain_boxes_backend", "hfield")
+    if boxes_backend == "box":
+        boxes_terrain = BoxRandomGridTerrainCfg(
+            proportion=0.3,
+            grid_width=0.45,
+            grid_height_range=(0.001, 0.005),
+            platform_width=2.0,
+        )
+    elif boxes_backend == "hfield":
+        boxes_terrain = HfRandomUniformTerrainCfg(
+            proportion=0.3,
+            noise_range=(0.001, 0.005),
+            noise_step=0.005,
+            downsampled_scale=0.45,
+            border_width=0.25,
+            horizontal_scale=0.1,
+            vertical_scale=0.005,
+        )
+    else:
+        raise ValueError(
+            "Unsupported rough_terrain_boxes_backend: "
+            f"{boxes_backend}. Expected 'hfield' or 'box'."
+        )
     return TerrainEntityCfg(
         terrain_type="generator",
         terrain_generator=TerrainGeneratorCfg(
@@ -126,12 +154,7 @@ def _make_sonic_terrain_cfg(base_cfg, *, num_envs: int, seed: int) -> TerrainEnt
             num_rows=num_rows,
             num_cols=num_cols,
             sub_terrains={
-                "boxes": BoxRandomGridTerrainCfg(
-                    proportion=0.3,
-                    grid_width=0.45,
-                    grid_height_range=(0.001, 0.005),
-                    platform_width=2.0,
-                ),
+                "boxes": boxes_terrain,
                 "random_rough": HfRandomUniformTerrainCfg(
                     proportion=0.05,
                     noise_range=(0.001, 0.005),
@@ -348,6 +371,152 @@ def _make_sonic_curriculum(manager_cfg):
     return curriculum
 
 
+def _make_sonic_rewards(manager_cfg):
+    reward_cfg = _cfg_get(manager_cfg, "rewards", {}) or {}
+    reward_builders = {
+        "tracking_anchor_pos": lambda: RewardTermCfg(
+            func=rewards.tracking_anchor_pos,
+            weight=_reward_weight(reward_cfg, "tracking_anchor_pos", 0.5),
+            params=_reward_params(reward_cfg, "tracking_anchor_pos"),
+        ),
+        "tracking_anchor_ori": lambda: RewardTermCfg(
+            func=rewards.tracking_anchor_ori,
+            weight=_reward_weight(reward_cfg, "tracking_anchor_ori", 0.5),
+            params=_reward_params(reward_cfg, "tracking_anchor_ori"),
+        ),
+        "tracking_relative_body_pos": lambda: RewardTermCfg(
+            func=rewards.tracking_relative_body_pos,
+            weight=_reward_weight(reward_cfg, "tracking_relative_body_pos", 1.0),
+            params=_reward_params(reward_cfg, "tracking_relative_body_pos"),
+        ),
+        "tracking_relative_body_ori": lambda: RewardTermCfg(
+            func=rewards.tracking_relative_body_ori,
+            weight=_reward_weight(reward_cfg, "tracking_relative_body_ori", 1.0),
+            params=_reward_params(reward_cfg, "tracking_relative_body_ori"),
+        ),
+        "tracking_body_linvel": lambda: RewardTermCfg(
+            func=rewards.tracking_body_linvel,
+            weight=_reward_weight(reward_cfg, "tracking_body_linvel", 1.0),
+            params=_reward_params(reward_cfg, "tracking_body_linvel"),
+        ),
+        "tracking_body_angvel": lambda: RewardTermCfg(
+            func=rewards.tracking_body_angvel,
+            weight=_reward_weight(reward_cfg, "tracking_body_angvel", 1.0),
+            params=_reward_params(reward_cfg, "tracking_body_angvel"),
+        ),
+        "tracking_vr_5point_local": lambda: RewardTermCfg(
+            func=rewards.tracking_vr_5point_local,
+            weight=_reward_weight(reward_cfg, "tracking_vr_5point_local", 2.0),
+            params=_reward_params(reward_cfg, "tracking_vr_5point_local"),
+        ),
+        "action_rate_l2": lambda: RewardTermCfg(
+            func=rewards.action_rate_l2,
+            weight=_reward_weight(reward_cfg, "action_rate_l2", -0.1),
+        ),
+        "joint_limit": lambda: RewardTermCfg(
+            func=rewards.joint_limit,
+            weight=_reward_weight(reward_cfg, "joint_limit", -10.0),
+            params={
+                "asset_cfg": _scene_entity_from_cfg(
+                    _reward_params(reward_cfg, "joint_limit").get("asset_cfg"),
+                    default_joint_names=(".*",),
+                )
+            },
+        ),
+        "feet_acc": lambda: RewardTermCfg(
+            func=rewards.feet_acc,
+            weight=_reward_weight(reward_cfg, "feet_acc", -2.5e-6),
+            params={
+                "asset_cfg": _scene_entity_from_cfg(
+                    _reward_params(reward_cfg, "feet_acc").get("asset_cfg"),
+                    default_joint_names=(".*ankle.*",),
+                )
+            },
+        ),
+        "anti_shake_ang_vel": lambda: RewardTermCfg(
+            func=rewards.anti_shake_ang_vel,
+            weight=_reward_weight(reward_cfg, "anti_shake_ang_vel", -5e-3),
+            params=_reward_params(reward_cfg, "anti_shake_ang_vel"),
+        ),
+        "undesired_contacts": lambda: RewardTermCfg(
+            func=rewards.undesired_contacts,
+            weight=_reward_weight(reward_cfg, "undesired_contacts", -0.1),
+            params={
+                "sensor_name": "undesired_contacts",
+                "threshold": float(
+                    _reward_params(reward_cfg, "undesired_contacts").get("threshold", 1.0)
+                ),
+            },
+        ),
+    }
+    return {
+        term_name: build()
+        for term_name, build in reward_builders.items()
+        if _cfg_has(reward_cfg, term_name)
+    }
+
+
+def _make_sonic_terminations(manager_cfg):
+    termination_cfg = _cfg_get(manager_cfg, "terminations", {}) or {}
+    terminations_cfg = {}
+    if _cfg_has(termination_cfg, "time_out"):
+        terminations_cfg["time_out"] = TerminationTermCfg(
+            func=terminations.time_out,
+            time_out=True,
+        )
+    if _cfg_has(termination_cfg, "anchor_pos"):
+        terminations_cfg["anchor_pos"] = TerminationTermCfg(
+            func=terminations.anchor_pos,
+            params=_term_params(termination_cfg, "anchor_pos"),
+        )
+    if _cfg_has(termination_cfg, "anchor_ori_full"):
+        terminations_cfg["anchor_ori_full"] = TerminationTermCfg(
+            func=terminations.anchor_ori_full,
+            params={
+                key: value
+                for key, value in _term_params(termination_cfg, "anchor_ori_full").items()
+                if key != "asset_cfg"
+            },
+        )
+    if _cfg_has(termination_cfg, "ee_body_pos"):
+        terminations_cfg["ee_body_pos"] = TerminationTermCfg(
+            func=terminations.ee_body_pos,
+            params=_term_params(termination_cfg, "ee_body_pos"),
+        )
+    if _cfg_has(termination_cfg, "foot_pos_xyz"):
+        terminations_cfg["foot_pos_xyz"] = TerminationTermCfg(
+            func=terminations.foot_pos_xyz,
+            params=_term_params(termination_cfg, "foot_pos_xyz"),
+        )
+    return terminations_cfg
+
+
+def _make_sonic_sensors(manager_cfg):
+    reward_cfg = _cfg_get(manager_cfg, "rewards", {}) or {}
+    sensors = []
+    if _cfg_has(reward_cfg, "undesired_contacts"):
+        params = _reward_params(reward_cfg, "undesired_contacts")
+        sensor_cfg = _cfg_get(params, "sensor_cfg", {}) or {}
+        body_names = _cfg_get(sensor_cfg, "body_names", (".*",))
+        if isinstance(body_names, str):
+            body_names = (body_names,)
+        else:
+            body_names = tuple(body_names)
+        sensors.append(
+            ContactSensorCfg(
+                name="undesired_contacts",
+                primary=ContactMatch(
+                    mode="body",
+                    pattern=body_names,
+                    entity="robot",
+                ),
+                fields=("found", "force"),
+                reduce="netforce",
+            )
+        )
+    return tuple(sensors)
+
+
 def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
     manager_cfg = config.manager_env
     base_cfg = manager_cfg.config
@@ -365,8 +534,6 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
     actor_action_hist = int(_cfg_get(config, "actor_actions_history_length", 10))
     critic_hist = int(_cfg_get(config, "critic_prop_history_length", 10))
     critic_action_hist = int(_cfg_get(config, "critic_actions_history_length", 10))
-    termination_cfg = _cfg_get(manager_cfg, "terminations", {}) or {}
-    reward_cfg = _cfg_get(manager_cfg, "rewards", {}) or {}
     encoder_sample_probs = dict(_cfg_get(motion_cfg, "encoder_sample_probs", {}) or {})
     use_soma_encoder = "soma" in encoder_sample_probs
     use_variable_frames = bool(_cfg_get(motion_cfg, "variable_frames_enabled", False))
@@ -456,6 +623,7 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
             env_spacing=float(base_cfg.env_spacing),
             terrain=_make_sonic_terrain_cfg(base_cfg, num_envs=num_envs, seed=int(config.seed)),
             entities={"robot": get_sonic_g1_robot_cfg()},
+            sensors=_make_sonic_sensors(manager_cfg),
         ),
         sim=SimulationCfg(
             nconmax=None if nconmax is None else int(nconmax),
@@ -480,6 +648,8 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
                 motion_lib_cfg=motion_lib_cfg,
                 anchor_body="pelvis",
                 body_names=SONIC_G1_BODY_NAMES,
+                vr_3point_body=tuple(motion_cfg.vr_3point_body),
+                vr_3point_body_offset=tuple(tuple(v) for v in motion_cfg.vr_3point_body_offset),
                 reward_point_body=tuple(motion_cfg.reward_point_body),
                 reward_point_body_offset=tuple(tuple(v) for v in motion_cfg.reward_point_body_offset),
                 num_future_frames=int(motion_cfg.num_future_frames),
@@ -525,90 +695,8 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
             )
         },
         observations=observations,
-        rewards={
-            "tracking_anchor_pos": RewardTermCfg(
-                func=rewards.tracking_anchor_pos,
-                weight=_reward_weight(reward_cfg, "tracking_anchor_pos", 0.5),
-                params=_reward_params(reward_cfg, "tracking_anchor_pos"),
-            ),
-            "tracking_anchor_ori": RewardTermCfg(
-                func=rewards.tracking_anchor_ori,
-                weight=_reward_weight(reward_cfg, "tracking_anchor_ori", 0.5),
-                params=_reward_params(reward_cfg, "tracking_anchor_ori"),
-            ),
-            "tracking_relative_body_pos": RewardTermCfg(
-                func=rewards.tracking_relative_body_pos,
-                weight=_reward_weight(reward_cfg, "tracking_relative_body_pos", 1.0),
-                params=_reward_params(reward_cfg, "tracking_relative_body_pos"),
-            ),
-            "tracking_relative_body_ori": RewardTermCfg(
-                func=rewards.tracking_relative_body_ori,
-                weight=_reward_weight(reward_cfg, "tracking_relative_body_ori", 1.0),
-                params=_reward_params(reward_cfg, "tracking_relative_body_ori"),
-            ),
-            "tracking_body_linvel": RewardTermCfg(
-                func=rewards.tracking_body_linvel,
-                weight=_reward_weight(reward_cfg, "tracking_body_linvel", 1.0),
-                params=_reward_params(reward_cfg, "tracking_body_linvel"),
-            ),
-            "tracking_body_angvel": RewardTermCfg(
-                func=rewards.tracking_body_angvel,
-                weight=_reward_weight(reward_cfg, "tracking_body_angvel", 1.0),
-                params=_reward_params(reward_cfg, "tracking_body_angvel"),
-            ),
-            "tracking_vr_5point_local": RewardTermCfg(
-                func=rewards.tracking_vr_5point_local,
-                weight=_reward_weight(reward_cfg, "tracking_vr_5point_local", 2.0),
-                params=_reward_params(reward_cfg, "tracking_vr_5point_local"),
-            ),
-            "action_rate_l2": RewardTermCfg(
-                func=rewards.action_rate_l2,
-                weight=_reward_weight(reward_cfg, "action_rate_l2", -0.1),
-            ),
-            "joint_limit": RewardTermCfg(
-                func=rewards.joint_limit,
-                weight=_reward_weight(reward_cfg, "joint_limit", -10.0),
-                params={
-                    "asset_cfg": _scene_entity_from_cfg(
-                        _reward_params(reward_cfg, "joint_limit").get("asset_cfg"),
-                        default_joint_names=(".*",),
-                    )
-                },
-            ),
-            "feet_acc": RewardTermCfg(
-                func=rewards.feet_acc,
-                weight=_reward_weight(reward_cfg, "feet_acc", -2.5e-6),
-                params={
-                    "asset_cfg": _scene_entity_from_cfg(
-                        _reward_params(reward_cfg, "feet_acc").get("asset_cfg"),
-                        default_joint_names=(".*ankle.*",),
-                    )
-                },
-            ),
-        },
-        terminations={
-            "time_out": TerminationTermCfg(func=terminations.time_out, time_out=True),
-            "anchor_pos": TerminationTermCfg(
-                func=terminations.anchor_pos,
-                params=_term_params(termination_cfg, "anchor_pos"),
-            ),
-            "anchor_ori_full": TerminationTermCfg(
-                func=terminations.anchor_ori_full,
-                params={
-                    key: value
-                    for key, value in _term_params(termination_cfg, "anchor_ori_full").items()
-                    if key != "asset_cfg"
-                },
-            ),
-            "ee_body_pos": TerminationTermCfg(
-                func=terminations.ee_body_pos,
-                params=_term_params(termination_cfg, "ee_body_pos"),
-            ),
-            "foot_pos_xyz": TerminationTermCfg(
-                func=terminations.foot_pos_xyz,
-                params=_term_params(termination_cfg, "foot_pos_xyz"),
-            ),
-        },
+        rewards=_make_sonic_rewards(manager_cfg),
+        terminations=_make_sonic_terminations(manager_cfg),
         events=_make_sonic_events(manager_cfg),
         curriculum=_make_sonic_curriculum(manager_cfg),
         scale_rewards_by_dt=True,

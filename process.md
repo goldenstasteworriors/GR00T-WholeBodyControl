@@ -104,6 +104,8 @@
   - mjlab `TrackingCommand` 会过滤 contact keys 到当前 loaded motion keys。
   - 支持 contact/motion 帧数容差校验，默认 `contact_frame_tolerance=3`。
   - 构建 `_motion_contact_flags`、`_first_contact_lookup` 和 `_per_env_first_contact`，便于后续真实 contact/object 数据 smoke 与调试。
+  - `contact_file` key 匹配已从 exact-only 扩展为 exact、basename/stem 和非歧义 substring 匹配；single pkl 若直接保存 `{object/body: ...}`，会用文件名作为 motion key 候选。
+  - `SonicMotionCommand.get_contact_diagnostics()` 和 wrapper 顺序诊断会输出 contact source、加载数、匹配数、未匹配 key 和缺失 motion key，方便真实 contact/object 数据回归时定位命名问题。
 - 已提交并推送到远程：
   - branch：`SONICMJ`
   - commit：`1b9cb72 Add SonicMJ mjlab migration path`
@@ -113,6 +115,7 @@
   - 按原 SONIC `ROUGH_TERRAINS_CFG` 当前启用项映射 `boxes` 和 `random_rough` 两个子地形。
   - 默认保留原 SONIC `20x20`、`size=8.0`、`border_width=20.0` 配置。
   - 增加 `rough_terrain_num_rows`、`rough_terrain_num_cols`、`rough_terrain_size`、`rough_terrain_border_width` override，便于 smoke test 使用小地形快速验证。
+  - 默认 `boxes` 子地形已从大量 MuJoCo box geoms 改为 heightfield 近似，避免默认 `20x20` rough terrain 在 `TerrainGenerator.compile()` geom 命名/编译阶段长时间卡住；如需旧路径可设置 `rough_terrain_boxes_backend=box`。
 - 已补齐顺序核对诊断入口：
   - `SonicMotionCommand` 初始化时打印 robot joint/body order、motion body order、motion DOF mapping 和 order checks。
   - `SonicMjEnvWrapper.get_order_diagnostics()` 返回结构化诊断，覆盖 mjlab robot joint/body order、motion body order、action term joint order、policy `joint_pos` / `joint_vel` / `actions` 顺序、action dim 和 observation shapes。
@@ -123,6 +126,21 @@
   - tracking reward 的 `command_name` / `std` 参数从原配置透传到 mjlab reward term。
   - `joint_limit`、`feet_acc` 会把原 Isaac `asset_cfg` 转成 mjlab `SceneEntityCfg`。
   - 修正了此前 `tracking_vr_5point_local` 使用硬编码 `weight=1.0`、默认 `std=0.3` 的偏差；当前 `sonic_release` 读取为原 SONIC 的 `weight=2.0`、`std=0.1`。
+- 已继续修正 reward/termination 配置选择：
+  - mjlab rewards/terminations 改为只注入当前 Hydra 配置实际启用的 term，避免基础 reward 配置被静默加入 `tracking_vr_5point_local` / `feet_acc` 等未启用项。
+  - 补齐 `anti_shake_ang_vel` reward，复用原 SONIC deadzone angular-velocity penalty 语义；当前 SONIC MuJoCo body 表不包含 `head_link`，因此默认配置实际作用于左右 wrist。
+  - 补齐 `undesired_contacts` reward：在 mjlab scene 中按原 `sensor_cfg.body_names` 创建 MuJoCo `ContactSensorCfg`，使用 `netforce` contact force 和原阈值计数语义，不再以零奖励伪装缺口。
+- 已修正 5-point/VR tracking offset 与 local-frame 语义：
+  - `TrackingCommand` 补齐 `reward_point_body_pos_w`、`vr_3point_body_pos_w`、`robot_reward_point_body_pos_w`、`robot_vr_3point_pos_w` 等属性，统一按原 SONIC 使用 body quat 旋转 point offset。
+  - `tracking_vr_5point_local` 改为与原 SONIC 一致，在 reference anchor local frame 与 robot anchor local frame 中比较带 offset 的 reward points，不再用 body origin 的 world/relative 位置近似。
+  - tokenizer 的 `vr_3point_local_target` / `vr_3point_local_orn_target` 改为复用 command 当前帧 VR point 属性，保持 teleop encoder 输入和 reward 使用同一套 offset 语义。
+  - 继续修正 mjlab command 配置透传，`vr_3point_body` / `vr_3point_body_offset` 现在读取原 Hydra 配置，不再落入 command dataclass 默认值。
+  - `vr_3point_local_target` 已改回原 SONIC 的 reference-anchor local frame；`vr_3point_local_orn_target` 已改回原 SONIC 的 local quaternion 形式，tokenizer 形状为 `(12,)`。
+  - 补齐 `vr_3point_body_pos_w_multi_future` / `vr_3point_body_quat_w_multi_future`，multi-future VR reference 不再简单重复当前帧。
+- 已补齐 eval/object reference 只读兼容接口：
+  - `SonicMotionCommand` 暴露 `object_root_pos`、`object_root_quat`、`object_root_pos_multi_future`、`object_root_quat_multi_future`，供 `ImEvalCallback` 对象跟踪指标路径读取 reference object state。
+  - 补齐 `object_contact_center_left/right` 与 `get_in_contact()`，复用 motion_lib 的 object contact center / in-contact 标签。
+  - 当前本地 `robot_smoke` / `robot_medium` 数据没有 object root 字段；SonicMJ 会保持显式 `AttributeError`，让 eval callback 的现有容错逻辑跳过对象指标，不伪造 object state。
 
 ## 已验证结果
 
@@ -211,6 +229,10 @@
   - 真实 SOMA PKL smoke training 通过：
     `++manager_env.commands.motion.motion_lib_cfg.soma_motion_file=data/motion_lib_bones_seed/soma_uniform_smoke`。
   - 抽查转换产物 `soma_joints` 为非零数据，例如 shape `(1027, 26, 3)`、`abs_mean=0.1964`、`abs_max=0.9877`；`soma_root_quat` shape `(1027, 4)`。
+  - 已继续转换 3-session 中等数据子集（210531、210707、211117）用于更大 SOMA smoke：
+    - `data/motion_lib_bones_seed/robot_medium`：970 条 G1 robot motion，270M。
+    - `data/motion_lib_bones_seed/soma_uniform_medium`：970 条 SOMA motion，312M。
+    - robot / SOMA motion key 覆盖为 970/970，无缺失 key。
 - variable frames / contact-before 基础路径验证：
   - `uv run python -m py_compile sonic_mj/mdp/commands.py sonic_mj/mdp/observations.py sonic_mj/env_cfg.py` 通过。
   - `git diff --check` 通过。
@@ -414,6 +436,115 @@
     - inline reset/step smoke 使用 `num_envs=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy` 通过。
     - reset 后 `actor_obs=(2, 930)`、`critic_obs=(2, 1789)`，action space `(2, 29)`，step 返回 reward/done shape 均为 `(2,)`。
     - `get_order_diagnostics()["checks"]` 全部为 `True`，确认 robot/motion/action/policy 顺序和 action dim 没有因恢复工作树回退。
+- reward/termination 配置选择修正后验证：
+  - `uv run python -m py_compile sonic_mj/env_cfg.py sonic_mj/mdp/rewards.py` 通过。
+  - Hydra compose 检查确认 `sonic_release` mjlab rewards 为：
+    `tracking_anchor_pos`、`tracking_anchor_ori`、`tracking_relative_body_pos`、`tracking_relative_body_ori`、`tracking_body_linvel`、`tracking_body_angvel`、`tracking_vr_5point_local`、`action_rate_l2`、`joint_limit`、`feet_acc`、`anti_shake_ang_vel`、`undesired_contacts`。
+  - `anti_shake_ang_vel` 读取为 `weight=-0.005`、`threshold=1.5`、`body_names=["left_wrist_yaw_link","right_wrist_yaw_link","head_link"]`；其中 `head_link` 当前未匹配 SonicMJ G1 body。
+  - inline `sonic_release` reset/step smoke 通过：`num_envs=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy`，reset 后 `actor_obs=(2, 930)`、`critic_obs=(2, 1789)`，step 后 reward/done shape 均为 `(2,)`，reward 全部 finite。
+  - `sonic_release` tiny training 通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`、`terrain_type=plane`，完成 `Learning iteration 1`，RewardManager 正常加载 12 个 reward term，训练日志包含 `Env/Episode_Reward/anti_shake_ang_vel` 和 `Env/Episode_Reward/undesired_contacts`。
+- `undesired_contacts` 迁移后验证：
+  - `uv run python -m py_compile sonic_mj/env_cfg.py sonic_mj/mdp/rewards.py` 通过。
+  - `git diff --check` 通过。
+  - Hydra compose 检查确认 `sonic_release` mjlab rewards 现在包含 `undesired_contacts`，scene sensors 包含 `undesired_contacts` contact sensor；primary body regex 保留原配置：
+    `^(?!left_ankle_roll_link$)(?!right_ankle_roll_link$)(?!left_wrist_yaw_link$)(?!right_wrist_yaw_link$)(?!left_elbow_link$)(?!right_elbow_link$).+$`。
+  - inline reset/step smoke 通过：`num_envs=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy`；RewardManager 加载 12 个 reward term，`undesired_contacts` contact force shape 为 `(2, 24, 3)`，reward finite。
+  - `sonic_release` tiny training 通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`、`terrain_type=plane`，完成 `Learning iteration 1`，训练日志包含 `Env/Episode_Reward/undesired_contacts`。
+- 5-point/VR offset 与 local-frame 语义修正后验证：
+  - `uv run python -m py_compile sonic_mj/mdp/commands.py sonic_mj/mdp/rewards.py sonic_mj/mdp/observations.py sonic_mj/env_cfg.py` 通过。
+  - `git diff --check` 通过。
+  - inline reset/step smoke 通过：`num_envs=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy`。
+  - reset 后 `actor_obs=(2, 930)`、`critic_obs=(2, 1789)`、action dim `29`。
+  - `reward_point_body_pos_w`、`robot_reward_point_body_pos_w`、`vr_3point_body_pos_w` 形状均为 `(2, 3, 3)`，单步 reward finite。
+  - `sonic_release` tiny training 通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`、`terrain_type=plane`，完成 `Learning iteration 1`，RewardManager 正常加载 12 个 reward term，训练日志包含 `Env/Episode_Reward/tracking_vr_5point_local`。
+- 2026-05-03 VR tokenizer 语义复查后验证：
+  - `uv run python -m py_compile sonic_mj/mdp/commands.py sonic_mj/mdp/observations.py sonic_mj/mdp/rewards.py sonic_mj/env_cfg.py` 通过。
+  - `git diff --check` 通过。
+  - inline reset/step smoke 通过：`num_envs=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy`。
+  - reset 后 `actor_obs=(2, 930)`、`critic_obs=(2, 1789)`、action space `(2, 29)`。
+  - `vr_3point_body=("left_wrist_yaw_link","right_wrist_yaw_link","torso_link")`，offset 为原配置 `((0.18,-0.025,0.0),(0.18,0.025,0.0),(0.0,0.0,0.35))`。
+  - `vr_3point_body_pos_w=(2,3,3)`、`vr_3point_body_pos_w_multi_future=(2,10,3,3)`。
+  - tokenizer 中 `vr_3point_local_target=(2,9)`、`vr_3point_local_orn_target=(2,12)`，与原 SONIC quaternion 观测语义一致。
+  - `sonic_release` tiny PPO training 通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`、`terrain_type=plane`，完成 `Learning iteration 1`，UniversalTokenModule 成功初始化 teleop encoder。
+- 2026-05-03 最新 reward/contact/VR 修改后短训回归：
+  - `uv run python -m py_compile sonic_mj/env_cfg.py sonic_mj/wrapper.py sonic_mj/mdp/commands.py sonic_mj/mdp/observations.py sonic_mj/mdp/rewards.py sonic_mj/mdp/terminations.py sonic_mj/mdp/events.py sonic_mj/mdp/curriculum.py gear_sonic/train_agent_trl.py` 通过。
+  - `git diff --check` 通过。
+  - `sonic_release` mjlab 短训通过：`num_envs=16`、`num_learning_iterations=10`、`num_steps_per_env=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy`。
+  - 完成 `Learning iteration 10`，total timesteps `320`；未出现 NaN、`nefc overflow` 或训练崩溃。
+  - RewardManager 正常加载 12 个 term，训练日志包含 `tracking_vr_5point_local`、`anti_shake_ang_vel`、`undesired_contacts`。
+  - observation/action 仍保持 `policy=(930,)`、`critic=(1789,)`、tokenizer `encoder_index=(3,)`、action dim `29`。
+- 2026-05-03 默认 rollout 长度回归：
+  - 复查原 `gear_sonic` 确认 `vr_3point_local_target` / `vr_3point_local_orn_target` 使用 reference anchor local frame；future VR local target 也使用当前 reference anchor 做 canonicalization，当前 mjlab 语义与原实现一致。
+  - `sonic_release` mjlab 短训通过：`num_envs=16`、默认 `num_steps_per_env=24`、`num_learning_iterations=10`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy`。
+  - 完成 `Learning iteration 10`，total timesteps `3840`；未出现 NaN、`nefc overflow` 或训练崩溃。
+  - RewardManager 正常加载 12 个 term，训练日志包含 `tracking_vr_5point_local`、`anti_shake_ang_vel`、`undesired_contacts`。
+  - observation/action 仍保持 `policy=(930,)`、`critic=(1789,)`、tokenizer `encoder_index=(3,)`、action dim `29`。
+- 2026-05-03 真实 SMPL 数据短训回归：
+  - `uv run python -m py_compile sonic_mj/env_cfg.py sonic_mj/wrapper.py sonic_mj/mdp/commands.py sonic_mj/mdp/observations.py sonic_mj/mdp/rewards.py sonic_mj/mdp/terminations.py sonic_mj/mdp/events.py sonic_mj/mdp/curriculum.py gear_sonic/train_agent_trl.py gear_sonic/eval_agent_trl.py gear_sonic/trl/callbacks/im_eval_callback.py gear_sonic/trl/modules/universal_token_modules.py` 通过。
+  - `git diff --check` 通过。
+  - `sonic_release` mjlab 短训通过：`num_envs=16`、默认 `num_steps_per_env=24`、`num_learning_iterations=10`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=data/smpl_filtered`。
+  - 完成 `Learning iteration 10`，total timesteps `3840`；未出现 NaN、`nefc overflow` 或训练崩溃。
+  - RewardManager 正常加载 12 个 term，observation/action 仍保持 `policy=(930,)`、`critic=(1789,)`、tokenizer `encoder_index=(3,)`、action dim `29`。
+- 2026-05-03 默认 rough terrain 启动复查：
+  - 使用 `sonic_release` 默认 `terrain_type=trimesh`、默认 `20x20` rough terrain、`num_envs=16`、`num_learning_iterations=2`、`num_steps_per_env=2` 启动短训。
+  - terrain generation 完成，耗时 `106.6752s`。
+  - 随后进程在 `mjlab.terrains.terrain_generator.TerrainGenerator.compile()` 中遍历/命名 terrain geoms 阶段长时间 CPU 100% 且未进入 env manager 初始化，等待约 4 分钟后手动中断。
+  - 结论：默认大网格 rough terrain 目前仍是启动性能风险；`plane` 与 `rough_terrain_num_rows=1` / `rough_terrain_num_cols=1` 小网格仍是当前可验证训练路径。
+- 2026-05-03 默认 rough terrain 启动优化后回归：
+  - `boxes` 子地形默认使用 heightfield 近似，仍保留 `20x20`、`size=8.0`、`border_width=20.0` 和原 `grid_width/noise height` 量级。
+  - Hydra compose 检查确认默认 `sonic_release` mjlab env cfg 中 `sub_terrains["boxes"]` 为 `HfRandomUniformTerrainCfg`；`rough_terrain_boxes_backend=box` 可回退旧的 `BoxRandomGridTerrainCfg`。
+  - `uv run python -m py_compile sonic_mj/env_cfg.py` 通过。
+  - `git diff --check` 通过。
+  - 默认 `terrain_type=trimesh`、默认 `20x20` rough terrain、`num_envs=16`、`num_learning_iterations=2`、`num_steps_per_env=2` 短训通过。
+  - terrain generation 耗时从此前约 `106.6752s` 降到 `0.5214s`。
+  - 首次 hfield 接触 kernel 编译额外耗时约 37s，随后 env manager 正常初始化并完成 `Learning iteration 2`，total timesteps `64`。
+  - RewardManager 正常加载 12 个 term，observation/action 仍保持 `policy=(930,)`、`critic=(1789,)`、tokenizer `encoder_index=(3,)`、action dim `29`。
+- 2026-05-03 SOMA 中等数据子集回归：
+  - 全量 SOMA BVH 目录共有 142220 个 `.bvh`，输入目录约 277G；当前 `/home` 可用空间约 139G，因此未盲目转换全量，先转换可控的 3-session 中等子集。
+  - `uv run python gear_sonic/data_process/convert_soma_csv_to_motion_lib.py ... --individual` 转换 `210531`、`210707`、`211117` G1 CSV 成功：970/970 converted，0 failed。
+  - `uv run python gear_sonic/data_process/extract_soma_joints_from_bvh.py ... --skip_existing` 转换对应 SOMA BVH 成功：970 converted，0 failed，耗时约 26.3s。
+  - 覆盖检查：`robot=970`、`soma=970`、`overlap=970`、`robot_only=0`、`soma_only=0`。
+  - `sonic_bones_seed` mjlab 4-encoder tiny training 通过：
+    `num_envs=4`、`num_learning_iterations=1`、`num_steps_per_env=2`、`terrain_type=plane`、
+    `motion_file=data/motion_lib_bones_seed/robot_medium`、
+    `soma_motion_file=data/motion_lib_bones_seed/soma_uniform_medium`、
+    `smpl_motion_file=dummy`。
+  - 训练加载 970 条 motion，并从中采样 4 条当前 motion；完成 `Learning iteration 1`，total timesteps `8`。
+  - tokenizer `encoder_index=(4,)`，SOMA tokenizer terms 仍为：
+    `soma_joints_multi_future_local_nonflat=(10,78)`、`soma_root_ori_b_multi_future=(10,6)`、`joint_pos_multi_future_wrist_for_soma=(10,6)`。
+  - UniversalTokenModule 成功初始化 `g1`、`teleop`、`smpl`、`soma` 四个 encoder；RewardManager 正常加载 12 个 term，observation/action 仍保持 `policy=(930,)`、`critic=(1789,)`、action dim `29`。
+- 2026-05-03 contact key 匹配诊断补齐后验证：
+  - `uv run python -m py_compile sonic_mj/mdp/commands.py sonic_mj/wrapper.py sonic_mj/env_cfg.py` 通过。
+  - `git diff --check` 通过。
+  - 内联检查覆盖 contact key exact、basename/stem、非歧义 substring 匹配；歧义 substring 会保留在 `unmatched_contact_keys`，避免误配。
+  - `sonic_release` mjlab tiny training 通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy`。
+  - 完成 `Learning iteration 1`；RewardManager 正常加载 12 个 term，observation/action 仍保持 `policy=(930,)`、`critic=(1789,)`、tokenizer `encoder_index=(3,)`、action dim `29`。
+- 2026-05-03 `robot_medium` motion set 回归：
+  - `sonic_release` mjlab 短训通过：`num_envs=16`、`num_learning_iterations=2`、`num_steps_per_env=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_medium`、`smpl_motion_file=dummy`。
+  - motion_lib 加载 970 条 motion，当前采样 16 条 motion，完成 `Learning iteration 2`，total timesteps `64`。
+  - 未出现 NaN、`nefc overflow` 或训练崩溃；RewardManager 正常加载 12 个 term，observation/action 仍保持 `policy=(930,)`、`critic=(1789,)`、tokenizer `encoder_index=(3,)`、action dim `29`。
+  - 极短随机动作训练中出现非零 `anchor_ori_full`、`ee_body_pos`、`foot_pos_xyz` termination 计数，属于后续长训需要继续观察的 tracking failure 分布。
+- 2026-05-04 `robot_medium` + 真实 SMPL 默认 rollout 回归：
+  - `uv run python -m py_compile sonic_mj/env_cfg.py sonic_mj/wrapper.py sonic_mj/mdp/commands.py sonic_mj/mdp/observations.py sonic_mj/mdp/rewards.py sonic_mj/mdp/terminations.py sonic_mj/mdp/events.py sonic_mj/mdp/curriculum.py gear_sonic/train_agent_trl.py gear_sonic/eval_agent_trl.py gear_sonic/trl/callbacks/im_eval_callback.py gear_sonic/trl/modules/universal_token_modules.py` 通过。
+  - `sonic_release` mjlab 短训通过：`num_envs=16`、默认 `num_steps_per_env=24`、`num_learning_iterations=10`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_medium`、`smpl_motion_file=data/smpl_filtered`。
+  - motion_lib 加载 970 条 robot motion，当前采样 16 条 motion；SMPL 路径使用本地真实 `data/smpl_filtered`。
+  - 完成 `Learning iteration 10`，total timesteps `3840`；未出现 NaN、`nefc overflow` 或训练崩溃。
+  - RewardManager 正常加载 12 个 term，训练日志包含 `tracking_vr_5point_local`、`anti_shake_ang_vel`、`undesired_contacts`。
+  - observation/action 保持 `policy=(930,)`、`critic=(1789,)`、tokenizer `encoder_index=(3,)`、action dim `29`。
+- 2026-05-04 `sonic_bones_seed` 4-encoder 中等数据并行回归：
+  - `sonic_bones_seed` mjlab 短训通过：`num_envs=16`、`num_steps_per_env=24`、`num_learning_iterations=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_medium`、`soma_motion_file=data/motion_lib_bones_seed/soma_uniform_medium`、`smpl_motion_file=dummy`。
+  - motion_lib 加载 970 条 robot motion，当前采样 16 条 motion；SOMA medium 与 robot medium key 覆盖仍为 970/970。
+  - tokenizer `encoder_index=(4,)`，SOMA tokenizer terms 正常出现：
+    `soma_joints_multi_future_local_nonflat=(10,78)`、`soma_root_ori_b_multi_future=(10,6)`、`joint_pos_multi_future_wrist_for_soma=(10,6)`。
+  - UniversalTokenModule 成功初始化 `g1`、`teleop`、`smpl`、`soma` 四个 encoder。
+  - 完成 `Learning iteration 2`，total timesteps `768`；未出现 NaN、`nefc overflow` 或训练崩溃。
+  - RewardManager 正常加载 12 个 term，observation/action 保持 `policy=(930,)`、`critic=(1789,)`、action dim `29`。
+- 2026-05-04 eval/object reference 兼容接口验证：
+  - `uv run python -m py_compile sonic_mj/mdp/commands.py sonic_mj/wrapper.py gear_sonic/trl/callbacks/im_eval_callback.py` 通过。
+  - `git diff --check` 通过。
+  - inline `sonic_release` mjlab reset/step smoke 通过：`num_envs=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy`。
+  - reset 后 `actor_obs=(2, 930)`、`critic_obs=(2, 1789)`、action dim `29`，step 返回 reward/done shape 均为 `(2,)`。
+  - 当前 smoke motion 无 object root 字段，访问 `motion_command.object_root_pos` 返回 `AttributeError`，与 `ImEvalCallback._collect_object_tracking_errors()` 的容错路径一致。
 
 ## 关键实现位置
 
@@ -466,6 +597,42 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
   ++algo.config.num_learning_iterations=10 \
   ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke \
   ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy
+```
+
+```bash
+uv run python gear_sonic/data_process/convert_soma_csv_to_motion_lib.py \
+  --input /tmp/sonicmj_bones_seed_medium/g1_csv \
+  --output data/motion_lib_bones_seed/robot_medium \
+  --fps 30 \
+  --fps_source 120 \
+  --individual \
+  --num_workers 8
+```
+
+```bash
+uv run python gear_sonic/data_process/extract_soma_joints_from_bvh.py \
+  --input /tmp/sonicmj_bones_seed_medium/soma_bvh \
+  --output data/motion_lib_bones_seed/soma_uniform_medium \
+  --fps 30 \
+  --num_workers 8 \
+  --skip_existing
+```
+
+```bash
+WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
+  gear_sonic/train_agent_trl.py \
+  +exp=manager/universal_token/all_modes/sonic_bones_seed \
+  use_mjlab=True \
+  sim_type=mjlab \
+  checkpoint=null \
+  num_envs=4 \
+  headless=True \
+  ++algo.config.num_learning_iterations=1 \
+  ++algo.config.num_steps_per_env=2 \
+  ++manager_env.config.terrain_type=plane \
+  ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_medium \
+  ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy \
+  ++manager_env.commands.motion.motion_lib_cfg.soma_motion_file=data/motion_lib_bones_seed/soma_uniform_medium
 ```
 
 ```bash
@@ -613,6 +780,53 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
   ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy
 ```
 
+```bash
+WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
+  gear_sonic/train_agent_trl.py \
+  +exp=manager/universal_token/all_modes/sonic_release \
+  use_mjlab=True \
+  sim_type=mjlab \
+  checkpoint=null \
+  num_envs=16 \
+  headless=True \
+  ++algo.config.num_learning_iterations=2 \
+  ++algo.config.num_steps_per_env=2 \
+  ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke \
+  ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy
+```
+
+```bash
+WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
+  gear_sonic/train_agent_trl.py \
+  +exp=manager/universal_token/all_modes/sonic_release \
+  use_mjlab=True \
+  sim_type=mjlab \
+  checkpoint=null \
+  num_envs=16 \
+  headless=True \
+  ++algo.config.num_learning_iterations=10 \
+  ++manager_env.config.terrain_type=plane \
+  ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_medium \
+  ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=data/smpl_filtered
+```
+
+```bash
+WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
+  gear_sonic/train_agent_trl.py \
+  +exp=manager/universal_token/all_modes/sonic_bones_seed \
+  use_mjlab=True \
+  sim_type=mjlab \
+  checkpoint=null \
+  num_envs=16 \
+  headless=True \
+  ++algo.config.num_learning_iterations=2 \
+  ++algo.config.num_steps_per_env=24 \
+  ++manager_env.config.terrain_type=plane \
+  ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_medium \
+  ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=dummy \
+  ++manager_env.commands.motion.motion_lib_cfg.soma_motion_file=data/motion_lib_bones_seed/soma_uniform_medium
+```
+
 ## 待解决问题
 
 ### 高优先级
@@ -627,14 +841,15 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
 
 ### 中优先级
 
-- rough terrain/trimesh terrain 已补齐基础 generator 路径，并通过小网格 smoke；默认 `20x20` 大地形尚未做完整训练回归，后续需要确认启动耗时和接触稳定性。
+- rough terrain/trimesh terrain 已补齐默认 `20x20` 短训路径；`boxes` 子地形当前用 heightfield 近似替代大量 MuJoCo box geoms，解决启动性能问题。后续仍需在更长训练中观察 heightfield 近似与原 Isaac `MeshRandomGridTerrainCfg` 的地形分布差异。
 - curriculum 已补齐基础 push/randomization event 参数更新入口；尚未用真实课程配置覆盖所有 push/randomization 参数组合。
 - events/domain randomization 还需要更细致对齐原 IsaacLab：
   - physics material dynamic friction / restitution 的物理近似差异
   - reset-time vs startup-time 随机化
   - body/geom/name 选择、push asset 选择和 mjlab 支持的 distribution/axes/shared_random 参数已按当前 SONIC event 配置透传；后续如果新增 hand/object event，还需要逐项复查对应资产命名。
+- `undesired_contacts` 已用 mjlab ContactSensor 补齐；后续仍需在更长训练中观察 MuJoCo net contact force 与原 Isaac contact sensor 的数值分布差异。
 - `open3d` 当前未安装，mesh 加载做成缺失时跳过；mesh 可视化和精细 FK 相关能力后续需要补齐环境依赖或替代实现。
-- SOMA 已用 `/home/ykj/Downloads/dataset/bones-seed/soma_uniform` 的 210531 子集完成真实数据 smoke；后续仍需转换/验证全量 SOMA 数据，并在更长训练中观察 SOMA encoder 采样比例和数值稳定性。
+- SOMA 已用 `/home/ykj/Downloads/dataset/bones-seed/soma_uniform` 的 210531 smoke 子集和 3-session 中等子集完成真实数据 smoke；全量 142220 条 BVH 因当前磁盘余量不足暂未转换，后续需要规划输出位置或清理空间后再做全量转换/验证。
 - 已新增结构化顺序诊断入口，当前 smoke 中 motion_lib body/joint order、mjlab robot body/joint order、policy obs/action order 均核对通过；后续仍需在更大数据集和 checkpoint 加载场景下周期性调用该诊断确认未回退。
 
 ### 低优先级
@@ -648,8 +863,8 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
 
 ## 下一步建议
 
-1. 再跑更长一点的小规模训练，观察是否还有 `nefc overflow`、NaN、异常 reset 或 reward 退化。
-2. 继续核对 motion cache、paired motions、contact-based initialization 与原始 `gear_sonic` 的行为一致性，尤其是真实 contact/object 数据下的 first-contact key 匹配。
-3. 转换全量 `/home/ykj/Downloads/dataset/bones-seed/soma_uniform/bvh`，重跑更大 `sonic_bones_seed` smoke，检查 SOMA encoder 采样比例和 SOMA 观测数值。
-4. 准备或找到带 tokenizer `mask` 字段的 variable-frame actor 配置，验证 `command_num_frames` 到 `UniversalTokenModule` frame/token mask 的完整训练链路。
+1. 继续用真实 contact/object 数据核对 contact-based initialization 的 first-contact 帧分布；当前 key 匹配和诊断入口已补齐，但本机尚未找到明显真实 contact 文件。
+2. 规划全量 `/home/ykj/Downloads/dataset/bones-seed/soma_uniform/bvh` 的输出位置或清理磁盘空间后再转换，重跑更大 `sonic_bones_seed` smoke，检查 SOMA encoder 采样比例和 SOMA 观测数值。
+3. 继续扩展到完整 `data/motion_lib_bones_seed/robot_filtered` 或更大 robot/SOMA 子集做 `sonic_release` / `sonic_bones_seed` mjlab 短训；当前 `robot_medium` 970 条 + 真实 `data/smpl_filtered` 已完成 16 env 默认 rollout 回归。
+4. 用默认 `20x20` rough terrain 跑更长短训或小规模正式训练，观察 heightfield 近似后的接触稳定性和 tracking failure 分布。
 5. 如需要严格复现原 eval 的 PA-MPJPE，按项目 uv 环境补齐 `smpl_sim` 依赖并回归对比 fallback 与官方指标。

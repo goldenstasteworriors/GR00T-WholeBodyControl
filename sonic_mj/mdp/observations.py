@@ -141,36 +141,36 @@ def command_num_frames(env, command_name: str = "motion") -> torch.Tensor:
 
 def vr_3point_local_target(env, command_name: str = "motion") -> torch.Tensor:
     cmd = _motion(env, command_name)
-    future = cmd.future_state(num_frames=1)
-    pts = future["body_pos_w"][:, 0, cmd.vr_3point_body_indices_motion]
-    pos_b, _ = subtract_frame_transforms(
-        cmd.robot_anchor_pos_w[:, None, :].repeat(1, pts.shape[1], 1),
-        cmd.robot_anchor_quat_w[:, None, :].repeat(1, pts.shape[1], 1),
-        pts,
-        future["body_quat_w"][:, 0, cmd.vr_3point_body_indices_motion],
-    )
+    root_quat = cmd.anchor_quat_w[:, None, :].repeat(1, len(cmd.cfg.vr_3point_body), 1)
+    diff = cmd.vr_3point_body_pos_w - cmd.anchor_pos_w[:, None, :]
+    pos_b = quat_apply(quat_inv(root_quat), diff)
     return pos_b.reshape(env.num_envs, -1)
 
 
 def vr_3point_local_target_multi_future(env, command_name: str = "motion") -> torch.Tensor:
     cmd = _motion(env, command_name)
-    pos = vr_3point_local_target(env, command_name)
-    return pos[:, None, :].repeat(1, cmd.cfg.num_future_frames, 1)
+    root_quat = cmd.anchor_quat_w[:, None, None, :].repeat(
+        1, cmd.cfg.num_future_frames, len(cmd.cfg.vr_3point_body), 1
+    )
+    diff = cmd.vr_3point_body_pos_w_multi_future - cmd.anchor_pos_w[:, None, None, :]
+    pos_b = quat_apply(quat_inv(root_quat), diff)
+    return pos_b.reshape(env.num_envs, cmd.cfg.num_future_frames, -1)
 
 
 def vr_3point_local_orn_target(env, command_name: str = "motion") -> torch.Tensor:
     cmd = _motion(env, command_name)
-    future = cmd.future_state(num_frames=1)
-    q = future["body_quat_w"][:, 0, cmd.vr_3point_body_indices_motion]
-    robot_q = cmd.robot_anchor_quat_w[:, None, :].repeat(1, q.shape[1], 1)
-    mat = matrix_from_quat(quat_mul(quat_inv(robot_q), q))
-    return mat[..., :2].reshape(env.num_envs, -1)
+    q = cmd.vr_3point_body_quat_w
+    root_q = cmd.anchor_quat_w[:, None, :].repeat(1, q.shape[1], 1)
+    return quat_mul(quat_inv(root_q), q).reshape(env.num_envs, -1)
 
 
 def vr_3point_local_orn_target_multi_future(env, command_name: str = "motion") -> torch.Tensor:
     cmd = _motion(env, command_name)
-    orn = vr_3point_local_orn_target(env, command_name)
-    return orn[:, None, :].repeat(1, cmd.cfg.num_future_frames, 1)
+    q = cmd.vr_3point_body_quat_w_multi_future
+    root_q = cmd.anchor_quat_w[:, None, None, :].repeat(
+        1, cmd.cfg.num_future_frames, len(cmd.cfg.vr_3point_body), 1
+    )
+    return quat_mul(quat_inv(root_q), q).reshape(env.num_envs, cmd.cfg.num_future_frames, -1)
 
 
 def motion_anchor_ori_b_multi_future_current(env, command_name: str = "motion") -> torch.Tensor:

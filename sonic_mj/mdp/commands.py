@@ -32,6 +32,10 @@ def _as_tensor(value, *, device: str, dtype=torch.float32) -> torch.Tensor:
     return torch.as_tensor(value, dtype=dtype, device=device)
 
 
+def _apply_offset(quat: torch.Tensor, offset: torch.Tensor) -> torch.Tensor:
+    return quat_apply(quat, offset.expand(*quat.shape[:-1], 3))
+
+
 def _init_variable_frames(
     enabled: bool,
     min_frames: int,
@@ -54,6 +58,15 @@ def _init_variable_frames(
         (num_envs,), num_future_frames, device=device, dtype=torch.long
     )
     return per_env_num_frames, frame_choices
+
+
+def _contact_key_aliases(key: str) -> tuple[str, ...]:
+    key = str(key)
+    normalized = key.replace("\\", "/")
+    basename = os.path.basename(normalized)
+    stem = os.path.splitext(basename)[0]
+    aliases = (key, normalized, basename, stem)
+    return tuple(dict.fromkeys(alias for alias in aliases if alias))
 
 
 class SonicMotionCommand(CommandTerm):
@@ -81,6 +94,9 @@ class SonicMotionCommand(CommandTerm):
         ).view(1, -1, 3)
         self.vr_3point_body_indices_motion = [
             cfg.body_names.index(name) for name in cfg.vr_3point_body
+        ]
+        self.vr_3point_body_indices = [
+            self.robot.body_names.index(name) for name in cfg.vr_3point_body
         ]
         self.vr_3point_body_offsets = _as_tensor(
             cfg.vr_3point_body_offset, device=self.device
@@ -235,6 +251,123 @@ class SonicMotionCommand(CommandTerm):
     def body_ang_vel_w(self) -> torch.Tensor:
         return self._motion_state["body_ang_vel_w"]
 
+    def _current_motion_steps(self) -> torch.Tensor:
+        return self.motion_start_time_steps + self.time_steps
+
+    def _require_motion_lib_field(self, field_name: str) -> None:
+        if not hasattr(self.motion_lib, field_name):
+            raise AttributeError(f"motion_lib does not provide {field_name}")
+
+    @property
+    def object_root_pos(self) -> torch.Tensor:
+        self._require_motion_lib_field("_motion_object_root_pos")
+        object_root_pos = self.motion_lib.get_object_root_pos(
+            self.motion_ids, self._current_motion_steps()
+        )
+        return object_root_pos + self._env.scene.env_origins[:, None, :]
+
+    @property
+    def object_root_quat(self) -> torch.Tensor:
+        self._require_motion_lib_field("_motion_object_root_quat")
+        return self.motion_lib.get_object_root_quat(self.motion_ids, self._current_motion_steps())
+
+    @property
+    def object_root_pos_multi_future(self) -> torch.Tensor:
+        self._require_motion_lib_field("_motion_object_root_pos")
+        num_frames = self.cfg.num_future_frames
+        frame_offsets = torch.round(
+            torch.arange(num_frames, device=self.device, dtype=torch.float32)
+            * self.cfg.dt_future_ref_frames
+            * self.motion_target_fps
+        ).long()
+        motion_steps = self._current_motion_steps()[:, None] + frame_offsets[None, :]
+        flat_ids = self.motion_ids[:, None].expand(-1, num_frames).reshape(-1)
+        flat_steps = motion_steps.reshape(-1)
+        object_root_pos = self.motion_lib.get_object_root_pos(flat_ids, flat_steps)
+        return object_root_pos.reshape(self.num_envs, num_frames, -1, 3) + self._env.scene.env_origins[
+            :, None, None, :
+        ]
+
+    @property
+    def object_root_quat_multi_future(self) -> torch.Tensor:
+        self._require_motion_lib_field("_motion_object_root_quat")
+        num_frames = self.cfg.num_future_frames
+        frame_offsets = torch.round(
+            torch.arange(num_frames, device=self.device, dtype=torch.float32)
+            * self.cfg.dt_future_ref_frames
+            * self.motion_target_fps
+        ).long()
+        motion_steps = self._current_motion_steps()[:, None] + frame_offsets[None, :]
+        flat_ids = self.motion_ids[:, None].expand(-1, num_frames).reshape(-1)
+        flat_steps = motion_steps.reshape(-1)
+        object_root_quat = self.motion_lib.get_object_root_quat(flat_ids, flat_steps)
+        return object_root_quat.reshape(self.num_envs, num_frames, -1, 4)
+
+    def _get_contact_center_world(self, hand: str) -> torch.Tensor | None:
+        contact_center = self.motion_lib.get_object_contact_center(
+            self.motion_ids, self._current_motion_steps(), hand=hand
+        )
+        if contact_center is None:
+            return None
+        object_root_pos = self.object_root_pos[:, 0]
+        object_root_quat = self.object_root_quat[:, 0]
+        return quat_apply(object_root_quat, contact_center) + object_root_pos
+
+    @property
+    def object_contact_center_left(self) -> torch.Tensor | None:
+        return self._get_contact_center_world("left_hand")
+
+    @property
+    def object_contact_center_right(self) -> torch.Tensor | None:
+        return self._get_contact_center_world("right_hand")
+
+    def get_in_contact(self, hand: str = "right_hand") -> torch.Tensor | None:
+        return self.motion_lib.get_object_in_contact(
+            self.motion_ids, self._current_motion_steps(), hand=hand
+        )
+
+    @property
+    def reward_point_body_quat_w(self) -> torch.Tensor:
+        return self.body_quat_w[:, self.reward_point_body_indices_motion]
+
+    @property
+    def reward_point_body_pos_w(self) -> torch.Tensor:
+        return (
+            self.body_pos_w[:, self.reward_point_body_indices_motion]
+            + _apply_offset(self.reward_point_body_quat_w, self.reward_point_body_offsets)
+        )
+
+    @property
+    def vr_3point_body_quat_w(self) -> torch.Tensor:
+        return self.body_quat_w[:, self.vr_3point_body_indices_motion]
+
+    @property
+    def vr_3point_body_pos_w(self) -> torch.Tensor:
+        return (
+            self.body_pos_w[:, self.vr_3point_body_indices_motion]
+            + _apply_offset(self.vr_3point_body_quat_w, self.vr_3point_body_offsets)
+        )
+
+    @property
+    def vr_3point_body_quat_w_multi_future(self) -> torch.Tensor:
+        future = self.future_state()
+        return future["body_quat_w"][:, :, self.vr_3point_body_indices_motion]
+
+    @property
+    def vr_3point_body_pos_w_multi_future(self) -> torch.Tensor:
+        future = self.future_state()
+        body_pos = (
+            future["body_pos_w"][:, :, self.vr_3point_body_indices_motion]
+            + self._env.scene.env_origins[:, None, None, :]
+        )
+        offsets = self.vr_3point_body_offsets[:, None].expand(
+            self.num_envs,
+            self.cfg.num_future_frames,
+            len(self.cfg.vr_3point_body),
+            3,
+        )
+        return body_pos + quat_apply(self.vr_3point_body_quat_w_multi_future, offsets)
+
     @property
     def anchor_pos_w(self) -> torch.Tensor:
         return self.body_pos_w[:, self.motion_anchor_body_index]
@@ -266,6 +399,26 @@ class SonicMotionCommand(CommandTerm):
     @property
     def robot_body_ang_vel_w(self) -> torch.Tensor:
         return self.robot.data.body_link_ang_vel_w[:, self.body_indexes]
+
+    @property
+    def robot_reward_point_body_pos_w(self) -> torch.Tensor:
+        return (
+            self.robot.data.body_link_pos_w[:, self.reward_point_body_indices]
+            + _apply_offset(
+                self.robot.data.body_link_quat_w[:, self.reward_point_body_indices],
+                self.reward_point_body_offsets,
+            )
+        )
+
+    @property
+    def robot_vr_3point_pos_w(self) -> torch.Tensor:
+        return (
+            self.robot.data.body_link_pos_w[:, self.vr_3point_body_indices]
+            + _apply_offset(
+                self.robot.data.body_link_quat_w[:, self.vr_3point_body_indices],
+                self.vr_3point_body_offsets,
+            )
+        )
 
     @property
     def robot_anchor_pos_w(self) -> torch.Tensor:
@@ -422,6 +575,14 @@ class SonicMotionCommand(CommandTerm):
     def _load_contact_data(self) -> None:
         self._first_contact_frame = None
         self._contact_data = None
+        self._contact_key_to_motion_key = {}
+        self._contact_diagnostics = {
+            "source": self.cfg.contact_file,
+            "loaded": 0,
+            "matched": 0,
+            "unmatched_contact_keys": (),
+            "missing_motion_keys": (),
+        }
         self._first_contact_lookup = None
         self._per_env_first_contact = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.long
@@ -435,6 +596,11 @@ class SonicMotionCommand(CommandTerm):
 
         if os.path.isfile(self.cfg.contact_file):
             contact_data = joblib.load(self.cfg.contact_file)
+            if isinstance(contact_data, dict) and (
+                "object" in contact_data or "body" in contact_data
+            ):
+                key = os.path.splitext(os.path.basename(self.cfg.contact_file))[0]
+                contact_data = {key: contact_data}
         elif os.path.isdir(self.cfg.contact_file):
             contact_data = {}
             for pkl_file in sorted(glob.glob(os.path.join(self.cfg.contact_file, "*.pkl"))):
@@ -442,21 +608,27 @@ class SonicMotionCommand(CommandTerm):
                 data = joblib.load(pkl_file)
                 if isinstance(data, dict) and key in data:
                     contact_data[key] = data[key]
+                elif isinstance(data, dict) and ("object" in data or "body" in data):
+                    contact_data[key] = data
         else:
             return
 
-        motion_keys = set(getattr(self.motion_lib, "curr_motion_keys", []))
-        if motion_keys:
-            contact_data = {
-                motion_name: motion_data
-                for motion_name, motion_data in contact_data.items()
-                if motion_name in motion_keys
-            }
+        motion_keys = tuple(getattr(self.motion_lib, "curr_motion_keys", []))
+        contact_data, key_map, unmatched = self._match_contact_data_to_motion_keys(
+            contact_data, motion_keys
+        )
+        missing = tuple(motion_key for motion_key in motion_keys if motion_key not in contact_data)
+        self._contact_key_to_motion_key = key_map
+        self._contact_diagnostics = {
+            "source": self.cfg.contact_file,
+            "loaded": len(key_map) + len(unmatched),
+            "matched": len(contact_data),
+            "unmatched_contact_keys": unmatched,
+            "missing_motion_keys": missing,
+        }
         self._contact_data = contact_data
         first_contact_frame = {}
         for motion_name, motion_data in contact_data.items():
-            if motion_keys and motion_name not in motion_keys:
-                continue
             object_contact = motion_data.get("object") if isinstance(motion_data, dict) else None
             if object_contact is None:
                 first_contact_frame[motion_name] = 0
@@ -471,6 +643,47 @@ class SonicMotionCommand(CommandTerm):
         self._validate_contact_frame_counts(contact_data)
         self._build_first_contact_lookup()
         self._build_motion_contact_flags()
+
+    def _match_contact_data_to_motion_keys(
+        self, contact_data: dict, motion_keys: tuple[str, ...]
+    ) -> tuple[dict, dict, tuple[str, ...]]:
+        if not motion_keys:
+            return contact_data, {key: key for key in contact_data}, ()
+
+        alias_to_motion_keys = {}
+        for motion_key in motion_keys:
+            for alias in _contact_key_aliases(motion_key):
+                alias_to_motion_keys.setdefault(alias, []).append(motion_key)
+
+        matched = {}
+        key_map = {}
+        unmatched = []
+        for contact_key, motion_data in contact_data.items():
+            candidates = []
+            for alias in _contact_key_aliases(contact_key):
+                candidates.extend(alias_to_motion_keys.get(alias, []))
+            candidates = list(dict.fromkeys(candidates))
+
+            if not candidates:
+                contact_aliases = _contact_key_aliases(contact_key)
+                for motion_key in motion_keys:
+                    motion_aliases = _contact_key_aliases(motion_key)
+                    if any(
+                        contact_alias in motion_alias or motion_alias in contact_alias
+                        for contact_alias in contact_aliases
+                        for motion_alias in motion_aliases
+                    ):
+                        candidates.append(motion_key)
+                candidates = list(dict.fromkeys(candidates))
+
+            if len(candidates) == 1:
+                motion_key = candidates[0]
+                matched[motion_key] = motion_data
+                key_map[contact_key] = motion_key
+            else:
+                unmatched.append(str(contact_key))
+
+        return matched, key_map, tuple(unmatched)
 
     def _derive_first_contact_from_in_contact_labels(self) -> None:
         hand = self.cfg.sample_before_contact_hand
@@ -496,6 +709,14 @@ class SonicMotionCommand(CommandTerm):
                 int(contact_frames[0].item()) if len(contact_frames) > 0 else num_frames
             )
         self._contact_data = None
+        self._contact_key_to_motion_key = {key: key for key in first_contact_frame}
+        self._contact_diagnostics = {
+            "source": f"motion_lib.{attr}",
+            "loaded": len(first_contact_frame),
+            "matched": len(first_contact_frame),
+            "unmatched_contact_keys": (),
+            "missing_motion_keys": (),
+        }
         self._first_contact_frame = first_contact_frame or None
         self._build_first_contact_lookup()
 
@@ -796,6 +1017,9 @@ class SonicMotionCommand(CommandTerm):
 
     def set_is_evaluating(self, is_evaluating: bool = True) -> None:
         self.is_evaluating = is_evaluating
+
+    def get_contact_diagnostics(self) -> dict:
+        return dict(getattr(self, "_contact_diagnostics", {}))
 
 
 @dataclass(kw_only=True)

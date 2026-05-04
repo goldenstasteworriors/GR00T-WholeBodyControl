@@ -68,6 +68,41 @@
 - terrain 先支持 `plane`，再迁移 rough terrain/trimesh；不要在基础训练未通之前扩展复杂地形。
 - camera、render、teleop、object/table/HOI 逻辑不作为第一阶段训练迁移阻塞项，除非目标实验明确依赖。
 
+## 参考 InstinctMJ 判断问题优先级
+
+- 遇到 mjlab/MuJoCo 后端语义不等价问题时，必须先参考本机 `InstinctMJ` 里的已迁移实现，再判断是否需要解决：
+  `/home/ykj/project/project_instinct_ws/InstinctMJ`。
+- `InstinctMJ` 只能作为 mjlab 后端实现模式参考，不得照搬其机器人资产、root/body 语义或 joint order；SONIC 的 G1 XML、pelvis anchor、motion_lib order 和 checkpoint 兼容约束仍以本项目为准。
+- 如果 `InstinctMJ` 已把某类 Isaac/PhysX 语义降级为 MuJoCo 近似，并且 SONIC 目标实验不依赖更严格行为，则该问题应记录为“已知后端差异/非阻塞限制”，不应阻塞 `sonic_release` 在 mjlab 上训练。
+- `physics_material`：
+  - 参考 `InstinctMJ/src/instinct_mj/envs/mdp/events/randomization.py` 的 `randomize_rigid_body_material`。
+  - MuJoCo 没有 Isaac/PhysX 的 per-geom restitution 等完全等价字段；InstinctMJ 做法是将 static/dynamic friction 合并或映射到 MuJoCo friction，并忽略 restitution。
+  - 因此 SONICMJ 中 dynamic friction / restitution 的近似差异通常不需要继续“修到完全等价”，但必须在 `process.md` 或相关文档中明确记录。
+- `undesired_contacts`：
+  - 参考 InstinctMJ scene 中 `ContactSensorCfg(... reduce="netforce")` / `reduce="maxforce"` 的用法，以及 `envs/mdp/rewards/regularizations.py::undesired_contacts`。
+  - mjlab 路径使用 `ContactSensorCfg` + force threshold 计数是可接受迁移方式；后续重点是检查 body 选择、sensor 名称、force shape 和训练曲线，而不是追求 Isaac contact sensor 数值逐点一致。
+- `randomize_rigid_body_mass` / inertia：
+  - InstinctMJ 部分任务直接使用 `mdp.dr.body_mass`，因此 mass/inertia 不能逐字等价 Isaac 不应自动视为阻塞。
+  - SONICMJ 若使用 `pseudo_inertia` 同步缩放 mass/inertia，可作为更物理一致的 MuJoCo 实现；只需通过 smoke/短训和长训稳定性验证。
+- terrain：
+  - InstinctMJ whole-body/shadowing 任务中 `plane` 是有效训练路径；SONICMJ 也应先把 `plane` 训练闭环视为主路径验收标准。
+  - rough terrain/trimesh 默认大网格的启动耗时、mesh 生成和接触稳定性属于后续扩展验证；除非目标实验明确依赖 rough terrain，否则不阻塞 `sonic_release` plane 训练。
+- reset / reference tracking：
+  - 可参考 InstinctMJ reset-by-reference、motion reference command 和 local-frame reward 的组织方式。
+  - 但 SONICMJ 必须保留 `TrackingCommand`、future reference、encoder sampling、contact-before sampling 和 SONIC root/anchor 语义，不能替换为 InstinctMJ 的 motion reference 管理器语义。
+- 真正需要优先解决的问题应满足至少一项：
+  - `sonic_release` mjlab 环境不能 reset/step。
+  - actor/critic/tokenizer obs 维度或 action dim 与原配置不一致。
+  - motion_lib、robot、action 或 policy observation 顺序检查失败。
+  - 核心 reward/termination term 缺失、名称错误或明显使用了错误坐标系/body offset。
+  - tiny training 或 `num_envs=16` 短训练崩溃、出现 NaN、频繁 `nefc overflow`、checkpoint 加载失败。
+  - full data 或目标实验明确依赖的 SOMA/contact/eval/rough terrain 链路不可用。
+- 非阻塞但必须记录的问题包括：
+  - MuJoCo 与 PhysX 接触/摩擦/材质数值分布差异。
+  - `smpl_sim` 缺失时 eval 指标 fallback 与官方 PA-MPJPE 的差异。
+  - rough terrain 默认大网格生成耗时。
+  - full data、SOMA 全量、长训练尚未验证。
+
 ## SONIC 机器人资产与顺序约束
 
 - 不得直接复用 InstinctMJ 的 `g1_29dof_torsobase_popsicle.xml` 作为 SONIC 默认资产。
