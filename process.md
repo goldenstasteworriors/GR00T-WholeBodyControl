@@ -1,6 +1,6 @@
 # SonicMJ 迁移进展记录
 
-更新时间：2026-05-03
+更新时间：2026-05-05
 
 ## 当前状态
 
@@ -141,6 +141,10 @@
   - `SonicMotionCommand` 暴露 `object_root_pos`、`object_root_quat`、`object_root_pos_multi_future`、`object_root_quat_multi_future`，供 `ImEvalCallback` 对象跟踪指标路径读取 reference object state。
   - 补齐 `object_contact_center_left/right` 与 `get_in_contact()`，复用 motion_lib 的 object contact center / in-contact 标签。
   - 当前本地 `robot_smoke` / `robot_medium` 数据没有 object root 字段；SonicMJ 会保持显式 `AttributeError`，让 eval callback 的现有容错逻辑跳过对象指标，不伪造 object state。
+- 已继续补齐 object reference 配置透传：
+  - `SonicMotionCommandCfg` 新增原 SONIC command 配置中的 `object_z_offset`、`object_position_randomize`、`object_position_randomization` 字段。
+  - `object_z_offset` 已应用到当前帧和 multi-future `object_root_pos`，与原 SONIC object reference z-offset 语义对齐。
+  - `env_cfg` 已从 Hydra `manager_env.commands.motion` 透传上述 object 配置；`object_position_randomize` 暂作为后续 mjlab 真实 object scene reset 支持的兼容字段保留，当前无 object scene 时不影响主训练闭环。
 
 ## 已验证结果
 
@@ -545,6 +549,13 @@
   - inline `sonic_release` mjlab reset/step smoke 通过：`num_envs=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy`。
   - reset 后 `actor_obs=(2, 930)`、`critic_obs=(2, 1789)`、action dim `29`，step 返回 reward/done shape 均为 `(2,)`。
   - 当前 smoke motion 无 object root 字段，访问 `motion_command.object_root_pos` 返回 `AttributeError`，与 `ImEvalCallback._collect_object_tracking_errors()` 的容错路径一致。
+- 2026-05-05 object reference 配置透传验证：
+  - `uv run python -m py_compile sonic_mj/mdp/commands.py sonic_mj/env_cfg.py` 通过。
+  - `git diff --check` 通过。
+  - Hydra compose 检查确认 `++manager_env.commands.motion.object_z_offset=-0.05`、`object_position_randomize=true`、`object_position_randomization.x=0.02` 能进入 `SonicMotionCommandCfg`。
+  - 抽查 `data/motion_lib_bones_seed/robot_smoke` / `robot_medium` motion pkl，未发现 object/contact 字段；`/home/ykj/Downloads/dataset/bones-seed` 下也未找到现成 pkl/npz/json contact/object 标注。
+  - `sonic_release` mjlab tiny training 回归通过：`num_envs=2`、`num_learning_iterations=1`、`num_steps_per_env=2`、`terrain_type=plane`、`motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=dummy`。
+  - 完成 `Learning iteration 1`，total timesteps `4`；RewardManager 正常加载 12 个 term，observation/action 保持 `policy=(930,)`、`critic=(1789,)`、tokenizer `encoder_index=(3,)`、action dim `29`。
 
 ## 关键实现位置
 
@@ -836,6 +847,7 @@ WANDB_MODE=disabled uv run accelerate launch --num_processes=1 \
 - `randomize_rigid_body_mass` 当前已对 `scale` 操作使用 mjlab `dr.pseudo_inertia`，比 Isaac 只缩放 mass 的事件更物理一致；后续长训练仍需观察该差异是否影响 SONIC 原始训练分布。
 - `TrackingCommand` 已初步对齐 adaptive sampling、evaluation mode、paired motion 完整加载和 motion reload 后的 contact 缓存刷新；后续仍需核对真实 contact/object 数据下的 contact-based initialization，以及更长训练下的 adaptive sampling 分布是否和原始 `gear_sonic` 一致。
 - `TrackingCommand` 已补齐基础 reset 随机化、start-time override、unique/paired motion 采样、encoder multi-hot、SOMA 4-encoder 基础采样、contact-before 初始化、contact 诊断缓存和 variable future frames 基础语义；`command_num_frames` 到 tokenizer mask 的 mjlab 完整链路已用带 mask actor config 跑通，后续仍需用真实 contact/object 数据验证 contact-based initialization。
+- object reference 已补齐只读 eval 兼容接口和 `object_z_offset` 配置透传；当前仍缺少 mjlab 真实 object scene spawn/reset 迁移，以及可用于 smoke 的真实 object/contact motion 数据。
 - eval callback 已可在 mjlab 路径跑通并产出 metrics；当前 uv 环境缺少 `smpl_sim` 时使用本地 MPJPE fallback，`mpjpe_pa` 只是 local MPJPE 近似，若需要与原 Isaac/SMPL eval 完全一致，仍需按项目环境安装/接入官方 `smpl_sim`。
 - 训练中的 eval callback 现在会在 `set_is_evaluating(True)` 阶段临时禁用 `train_only_events` 并在返回训练模式时恢复；当前已验证 `push_robot` 不会在 evaluation interval 中触发。
 

@@ -264,6 +264,9 @@ class SonicMotionCommand(CommandTerm):
         object_root_pos = self.motion_lib.get_object_root_pos(
             self.motion_ids, self._current_motion_steps()
         )
+        if self.cfg.object_z_offset != 0.0:
+            object_root_pos = object_root_pos.clone()
+            object_root_pos[..., 2] += self.cfg.object_z_offset
         return object_root_pos + self._env.scene.env_origins[:, None, :]
 
     @property
@@ -284,9 +287,11 @@ class SonicMotionCommand(CommandTerm):
         flat_ids = self.motion_ids[:, None].expand(-1, num_frames).reshape(-1)
         flat_steps = motion_steps.reshape(-1)
         object_root_pos = self.motion_lib.get_object_root_pos(flat_ids, flat_steps)
-        return object_root_pos.reshape(self.num_envs, num_frames, -1, 3) + self._env.scene.env_origins[
-            :, None, None, :
-        ]
+        object_root_pos = object_root_pos.reshape(self.num_envs, num_frames, -1, 3)
+        if self.cfg.object_z_offset != 0.0:
+            object_root_pos = object_root_pos.clone()
+            object_root_pos[..., 2] += self.cfg.object_z_offset
+        return object_root_pos + self._env.scene.env_origins[:, None, None, :]
 
     @property
     def object_root_quat_multi_future(self) -> torch.Tensor:
@@ -1068,6 +1073,9 @@ class SonicMotionCommandCfg(CommandTermCfg):
     sample_before_contact_margin: int = 10
     sample_before_contact_hand: str = "right_hand"
     contact_frame_tolerance: int = 3
+    object_position_randomize: bool = False
+    object_position_randomization: dict[str, float] | None = None
+    object_z_offset: float = 0.0
     pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     joint_position_range: tuple[float, float] = (-0.1, 0.1)

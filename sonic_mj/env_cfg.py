@@ -684,6 +684,14 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
                     _cfg_get(motion_cfg, "sample_before_contact_hand", "right_hand")
                 ),
                 contact_frame_tolerance=int(_cfg_get(motion_cfg, "contact_frame_tolerance", 3)),
+                object_position_randomize=bool(
+                    _cfg_get(motion_cfg, "object_position_randomize", False)
+                ),
+                object_position_randomization=dict(
+                    _cfg_get(motion_cfg, "object_position_randomization", {}) or {}
+                )
+                or None,
+                object_z_offset=float(_cfg_get(motion_cfg, "object_z_offset", 0.0)),
                 pose_range=dict(_cfg_get(motion_cfg, "pose_range", {}) or {}),
                 velocity_range=dict(_cfg_get(motion_cfg, "velocity_range", {}) or {}),
                 joint_position_range=_as_tuple(
