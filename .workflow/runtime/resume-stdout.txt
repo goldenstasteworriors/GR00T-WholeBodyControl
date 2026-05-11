@@ -1,0 +1,17 @@
+已恢复 workflow 并完成本轮判断：当前必须停止在阻塞状态。
+
+原因是 `.workflow/artifacts/open_questions.json` 里已有 `blocking: true` 的 `Q0001`，而当前 `TASK.md` 仍只有占位需求，`PLAN.md` 未生成，`task.json.request_text=null`。本轮消息也没有提供具体迁移任务或确认按 `AGENTS.md` 建议迁移顺序生成计划，所以不能擅自改代码、跑训练或补计划。
+
+已写回：
+- [PROGRESS.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/PROGRESS.md)：追加本轮读取依据、命令结果、判断和 `blocked_reason`
+- [task.json](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/task.json)：更新 `blocked_reason` 和 `updated_at`
+
+未运行测试，因为没有可执行代码任务，且当前处于 workflow blocking 状态。
+
+用户需要提供其一：
+1. 本轮要推进的具体 SonicMJ/mjlab 迁移目标；或
+2. 明确确认：“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
+
+修改/添加的文件：
+- 修改：`PROGRESS.md`
+- 修改：`task.json`

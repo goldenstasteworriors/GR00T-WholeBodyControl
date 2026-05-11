@@ -1,0 +1,28 @@
+已按 `PLAN.md` 继续执行代码/验证阶段，并把结论写回项目文档：
+
+- 记录在 [PROGRESS.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/PROGRESS.md:173)
+- 阶段状态同步到 [TASK.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/TASK.md:9)
+- 计划状态同步到 [PLAN.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/PLAN.md:3)
+- 摘要同步到 [task.json](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/task.json:6)
+
+验证结果：
+- `uv run python --version`：通过，Python 3.10.20。
+- `mjlab / torch / mujoco` 导入：通过，torch `2.11.0+cu130`，mujoco `3.8.1`。
+- `uv run python -m compileall sonic_mj gear_sonic/train_agent_trl.py`：通过。
+- 默认 `sonic_release` 不覆盖参数训练命令已尝试：进入入口，但默认 rough terrain 生成超过 109s 后仍卡在 `TerrainGenerator.compile`，已中断并记录堆栈。
+- 非 smoke 正常训练已跑通：`num_envs=64`、`robot_medium + smpl_filtered`、`plane terrain`、`100 iterations`，完成 `153600` timesteps，reward finite，保存 checkpoint：
+  `logs_rl/TRL_G1_Track/manager/universal_token/all_modes/sonic_release_test-20260508_230400/last.pt`
+
+未验证项已记录：
+- 默认完整数据路径 `robot_filtered` / `bones_seed_smpl` 当前不存在。
+- 默认 rough terrain 完整训练未完成，当前限制是 terrain 生成耗时。
+- 未验证 `num_envs=4096`、多 GPU、多进程、resume/export/render/W&B 在线。
+
+本轮没有修改 Python 源码，没有安装依赖，没有触碰 CUDA/显卡驱动/系统 GPU 组件，也没有创建遗留临时测试脚本。
+
+修改/添加文件：
+- 修改：`PROGRESS.md`
+- 修改：`TASK.md`
+- 修改：`PLAN.md`
+- 修改：`task.json`
+- 既有未提交/未跟踪 workflow 文件仍在工作区；当前 `git status` 仍显示 `M AGENTS.md` 以及 `.workflow/`、`PERSON.md`、`PLAN.md`、`PROGRESS.md`、`TASK.md`、`task.json` 未跟踪。

@@ -142,3 +142,17 @@
 - 修改或添加文件/代码后，回答最后必须列出修改/添加了哪些文件/代码。
 - 不得删除非自己创建或明确属于本次任务的文件内容。
 - 每一步代码修改操作后都需要关注 git 状态；是否提交、推送或上传到远程必须按用户明确指令执行。
+
+<!-- AGENTIC-WORKFLOW:BEGIN -->
+## WORKFLOW Runtime Rules
+
+以下规则只适用于当前目标项目被 `workflow` skill 接管后的 agent 会话；维护 workflow skill 本身时不适用。
+
+1. 启动后先读 `PERSON.md`、`TASK.md`、`PLAN.md`、`PROGRESS.md`、`task.json` 和当前项目的 `AGENTS.md`。
+2. 先处理 `PERSON.md` 中仍为 `open` 的条目；问题要回答，新增要求或修正要同步进 `TASK.md` 或 `PLAN.md`。
+3. 不依赖历史对话上下文，必须通过项目文档和 git 状态恢复进度。
+4. `task.json` 只是轻量运行摘要，不是状态机；不要靠旧 gate/milestone 字段推进。
+5. 代码修改后必须运行与风险匹配的测试，并把命令和结果写入 `PROGRESS.md`。
+6. 不得修改 CUDA、显卡驱动、系统级 GPU 组件；依赖只能安装在项目指定 conda/uv 环境中，不能装到 base。
+7. workflow 源码仓库 `/home/ykj/tool/WORKFLOW` 对目标项目 agent 只读，除非用户明确要求维护 workflow 工具本身。
+<!-- AGENTIC-WORKFLOW:END -->

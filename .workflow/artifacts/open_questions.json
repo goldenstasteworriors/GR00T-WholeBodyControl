@@ -1,0 +1,44 @@
+{
+  "questions": [
+    {
+      "id": "Q20260511-001",
+      "timestamp": "2026-05-11T12:01:50+08:00",
+      "blocking": false,
+      "status": "resolved",
+      "question": "是否确认按 PLAN.md 执行服务器兼容化与 H20 smoke test？",
+      "context": "用户已确认按计划执行；预备服务器测试和 AutoDL H20 GPU 阶段测试均已完成。"
+    },
+    {
+      "id": "Q20260511-002",
+      "timestamp": "2026-05-11T12:01:50+08:00",
+      "blocking": false,
+      "status": "resolved",
+      "question": "服务器上是否允许删除并重建项目内 .venv？",
+      "context": "已在项目目录内配置远端 .venv，未修改 base、系统 CUDA 或驱动。"
+    },
+    {
+      "id": "Q20260511-003",
+      "timestamp": "2026-05-11T12:01:50+08:00",
+      "blocking": false,
+      "status": "resolved",
+      "question": "服务器 smoke test 是否优先使用默认 robot_filtered + bones_seed_smpl，还是固定使用 robot_smoke + smpl_filtered？",
+      "context": "已先用 robot_smoke/smpl_filtered 完成 reset/step、单卡和双卡 smoke；随后用默认 robot_filtered 完成双卡短训练。bones_seed_smpl 本地和远端为空或缺失，完整 SMPL 默认数据验证未完成。"
+    },
+    {
+      "id": "Q20260511-004",
+      "timestamp": "2026-05-11T15:03:52+08:00",
+      "blocking": false,
+      "status": "resolved",
+      "question": "是否需要补齐 data/bones_seed_smpl 后再做一次完整默认 sonic_release 多卡训练验证？",
+      "context": "已将本机 data/smpl_filtered 同步到 AutoDL 默认路径 data/bones_seed_smpl，并完成 sonic_release 默认路径双卡 10 iteration 训练。"
+    },
+    {
+      "id": "Q20260511-005",
+      "timestamp": "2026-05-11T15:32:27+08:00",
+      "blocking": false,
+      "status": "open",
+      "question": "正式训练前是否清理 AutoDL /root/autodl-tmp 或换更大数据盘？",
+      "context": "补齐 data/bones_seed_smpl 后 /root/autodl-tmp 剩余约 2.0G；小规模 smoke 已通过，但正式训练产生 checkpoint 和日志时有写满磁盘风险。"
+    }
+  ]
+}

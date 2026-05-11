@@ -24,6 +24,7 @@ dependencies = [
     "loguru",
     "scipy==1.15.3",
     "pandas",
+    "torch==2.7.1",
     "mujoco-warp>=3.8.0,<3.9",
     "vector-quantize-pytorch==1.15.0",
 ]

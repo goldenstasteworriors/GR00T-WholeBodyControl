@@ -1,0 +1,1333 @@
+OpenAI Codex v0.129.0 (research preview)
+--------
+workdir: /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e07c0-2bfd-7b41-95ca-abfc56c69ef0
+--------
+user
+你是由 workflow skill 启动的短生命周期 Codex agent。你在目标项目内工作，不维护 workflow 工具源码本身。
+
+硬规则：
+- 先读 AGENTS.md、PERSON.md、TASK.md、PLAN.md、PROGRESS.md、task.json 和必要的 README / docs。
+- 使用项目指定 Python 环境；不确定时先在 open_questions.json 或 PROGRESS.md 中记录阻塞，不要安装到 base。
+- 不修改 CUDA、显卡驱动、系统级 GPU 组件。
+- 不修改 workflow 源码仓库，除非当前任务明确是维护 /home/ykj/tool/WORKFLOW。
+- 所有结论必须写回项目文档，不能只写在终端输出里。
+
+阶段目标：恢复 workflow。不要依赖历史对话，也不要按旧状态机字段推进。
+
+你必须在目标项目 /home/ykj/project/SONICMJ/GR00T-WholeBodyControl 内完成：
+1. 读取项目文档、.workflow/artifacts、task.json 和 git status。
+2. 判断现在应该继续处理 PERSON.md、补计划、执行代码、跑测试、修复阻塞还是总结完成。
+3. 执行最合理的下一步，并把依据、命令、结果写入 PROGRESS.md。
+4. 如需停止，写清楚 blocked_reason 和用户需要提供的具体信息。
+codex
+我会按 `workflow` skill 接管规则恢复现场，先读取项目文档、workflow 产物和 git 状态，再决定下一步并把结论写回 `PROGRESS.md`。
+exec
+/bin/bash -lc "sed -n '1,220p' /home/ykj/tool/WORKFLOW/skills/workflow/SKILL.md" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+---
+name: workflow
+description: |
+  仅当用户明确提到“workflow”、明确要求使用 workflow skill、要求“按 workflow 跑”、或者明确要求恢复已有 PERSON.md / TASK.md / PLAN.md / task.json 工作流时使用。
+  如果用户没有显式点名 workflow，本 skill 绝对不要自动调用。
+---
+
+# WORKFLOW Tool
+
+这个 skill 是目标项目里的显式 opt-in 总入口。不要让用户回到 `/home/ykj/tool/WORKFLOW` 手工跑脚本。
+
+维护或修改 `/home/ykj/tool/WORKFLOW` 这个 skill / launcher / 工具源码本身时，不适用本 skill 生成的目标项目运行结构；那只是普通工具仓库开发。
+
+## 什么时候用
+
+- 用户明确说“用 workflow”“使用 workflow skill”“按 workflow 跑”“恢复 workflow”“继续 workflow”。
+- 当前仓库里已经有 `PERSON.md` / `TASK.md` / `PLAN.md` / `task.json`，且用户明确要求恢复或继续这套工作流。
+- 用户明确要求把新增要求写入 `PERSON.md`，并由 workflow 接着推进后续阶段。
+
+## 什么时候不要用
+
+- 用户只是普通地让你实现功能、修 bug、读论文、搭原型，不要因为任务规模像项目启动就自动使用本 skill。
+- 用户没有明确提到 `workflow` 时，不要把这个 skill 当成默认项目入口。
+- 不要因为目标项目里存在 `TASK.md`、`PLAN.md`、`PROGRESS.md` 等文件就自动调用；必须有用户显式恢复/继续 workflow 的指令。
+
+## 执行方式
+
+1. 默认把当前目录当成目标仓库。
+2. `scripts/run-workflow.sh` 指的是这个 skill 目录自带的脚本，不是目标仓库 `$PWD/scripts/run-workflow.sh`。
+   执行时必须先把它解析成当前 skill 目录下的绝对路径，再调用；不要直接在目标仓库里运行 `bash scripts/run-workflow.sh ...`，除非你已经确认目标仓库里确实存在兼容 wrapper。
+   可把命令里的 `<workflow-skill-dir>` 理解为“当前这个 `SKILL.md` 所在目录”。
+3. 一旦决定使用本 skill，首次触发时必须直接进入 workflow 主流程；禁止先手工改 `TASK.md` / `PLAN.md` / `PROGRESS.md` 再脱离 workflow。
+   禁止把 `bootstrap-workspace` 当成首次入口；正常第一次启动必须使用 `run`。
+4. 首次触发时，用用户当前消息作为 request，运行：
+
+```bash
+bash "<workflow-skill-dir>/scripts/run-workflow.sh" run --workspace "$PWD" --request "<用户当前这次的完整要求>"
+```
+
+5. 如果当前仓库已经存在 workflow 状态文件，且用户明确让你继续 workflow，则运行：
+
+```bash
+bash "<workflow-skill-dir>/scripts/run-workflow.sh" resume --workspace "$PWD"
+```
+
+6. 当 workflow 生成并 review 完 `PLAN.md` 后：
+   - 先把 `PLAN.md` 展示给用户。
+   - 允许用户直接修改 `PLAN.md`，或者把补充意见写进 `PERSON.md`。
+   - 如果用户明确确认 plan，并给出环境类型、环境名和 setup mode，则运行：
+
+```bash
+bash "<workflow-skill-dir>/scripts/run-workflow.sh" approve-plan --workspace "$PWD" --env-kind "<conda|uv>" --python-env "<env|.venv>" --setup-mode "<existing|new|from-guide>"
+```
+
+7. 新版 workflow 全程只使用 Codex 多角色 prompt，不要引入 Claude review 或旧状态机 gate。
+8. 正常路径下不要要求用户反复说“继续”。除了 plan 确认、阻塞和最终结果展示，workflow 应自动连续执行。
+   - 主流程是 agentic：`grounding -> plan -> review -> plan confirm -> code/test`。
+   - `task.json` 只是轻量摘要，不是状态机；恢复时由新 agent 读项目文档和 git 状态判断下一步。
+   - 如果 `.workflow/artifacts/open_questions.json` 中存在 `blocking: true` 的问题，停下来等待用户补充决策。
+   - 从目标项目里运行 workflow 时，源码仓库 `/home/ykj/tool/WORKFLOW` 和它的 `skills/` / `scripts/` 目录只允许读取，不允许直接修改。
+9. 如果只是想看当前状态，只有在用户明确问 workflow 状态时才运行 `status`；`status` 不推进任务。
+
+## 常用辅助命令
+
+```bash
+bash "<workflow-skill-dir>/scripts/run-workflow.sh" status --workspace "$PWD"
+```
+
+codex
+`workflow` skill 要求在已有状态文件的仓库里恢复时读取项目状态并自主判断；我先并行查看根目录文档、`.workflow/artifacts` 和当前 git 变更。
+exec
+/bin/bash -lc "sed -n '1,260p' AGENTS.md" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+exec
+/bin/bash -lc "sed -n '1,240p' PERSON.md" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+# Agent 指南 - GR00T-WholeBodyControl/gear_sonic 到 mjlab 迁移（SonicMJ）
+
+## 作用范围
+
+- 本指南适用于 SonicMJ 分支/项目下的全部内容。
+- 除非用户明确要求跨项目修改，否则改动应限制在当前项目内。
+- `GR00T-WholeBodyControl/gear_sonic`、`gear_sonic_deploy`、`mjlab` 和 `InstinctMJ` 仓库默认仅用于参考。
+- 未经用户明确要求，不得修改原始 `mjlab`、`InstinctMJ` 或其它外部仓库。
+- 不得修改 CUDA、显卡驱动、Isaac Sim 底层安装或系统级 GPU 环境。
+- 本项目 SonicMJ 的 mjlab 迁移使用 uv 管理环境，不使用 conda。
+- SONIC 官方 Bones-SEED 数据集本机路径：`/home/ykj/Downloads/dataset/bones-seed`。
+- 人体模型/SMPL/SMPLX 相关资源本机路径：`/home/ykj/commonly_used/body_models`。
+- 如果遇到命名、资产选择、顺序映射、训练入口、依赖环境等不确定问题，必须先停止并询问用户，不要自行猜测。
+
+## 核心目标
+
+- 在 `SonicMJ` 内以 mjlab 原生方式复现 `gear_sonic` 的 SONIC 训练环境。
+- 优先迁移训练闭环：motion command、环境 reset/step、观测、动作、奖励、终止、事件随机化、课程学习。
+- 保留 SONIC 的训练语义：G1/teleop/SMPL/SOMA 多编码器、motion_lib PKL 数据、future reference frames、Universal Token policy 输入输出约定。
+- 文件/模块命名在可行范围内贴近原 `gear_sonic` 结构；Python 包名建议使用小写，例如 `sonic_mj`。
+- 迁移时优先参考 `mjlab` 中相似实现，采用 mjlab 原生接口与组织方式。
+
+## 源训练链路
+
+- 训练入口来自 `gear_sonic/train_agent_trl.py`。
+- 默认实验配置来自 `gear_sonic/config/exp/manager/universal_token/all_modes/sonic_release.yaml`。
+- 环境配置来自 `gear_sonic/envs/manager_env/modular_tracking_env_cfg.py`。
+- MDP term 来自 `gear_sonic/envs/manager_env/mdp/`：
+  - `commands.py`：`TrackingCommand`，负责 motion_lib 加载、参考帧推进、编码器模式采样。
+  - `observations.py`：policy/critic/tokenizer/teacher 等观测组。
+  - `rewards.py`：motion tracking 奖励。
+  - `terminations.py`：tracking 失败和 timeout 终止。
+  - `events.py`：reset、randomization、push、domain randomization。
+  - `actions.py`：关节位置动作。
+- 机器人配置来自 `gear_sonic/envs/manager_env/robots/g1.py`，其中包含 G1 资产、PD 参数、action scale、IsaacLab 与 MuJoCo 顺序映射。
+- 策略与训练器来自 `gear_sonic/trl/`。第一阶段不要重写 `UniversalTokenModule`、PPO trainer 或辅助损失。
+
+## 迁移规则
+
+- 先迁移环境与 manager terms，再接入现有 TRL 训练；不要一开始重写策略网络。
+- 优先复用 `gear_sonic` 的函数职责和类层级；原实现有明确类/函数边界时，迁移后保持对应结构。
+- 不得无依据新增兼容层、桥接层、adapter shim 或过渡包装。
+- 不得以“更简洁”为由合并或隐藏原版关键逻辑，尤其是 motion command、坐标变换、关节顺序映射、采样策略。
+- reward 必须改为 mjlab reward-term 表达；其他 manager 若存在表达差异，也按 mjlab manager/config 模式迁移。
+- 地形、reset、command、观测、动作、终止、事件随机化、课程学习必须保持行为一致。
+- 迁移后清理 Isaac Lab 接口残留，包括 import、类型、字段、注释和路径。
+- SONIC 特有命名保持稳定，仅在 mjlab 必要字段映射处改名。
+
+## 旧框架到 mjlab 对齐要点
+
+- Isaac Lab 的 `ManagerBasedRLEnvCfg` 对齐到 mjlab 的 RL env config。
+- Isaac Lab 的 `InteractiveSceneCfg` 对齐到 mjlab `SceneCfg` 和 MuJoCo 资产配置。
+- Isaac Lab 的 `ArticulationCfg`、`UrdfFileCfg`、`ContactSensorCfg`、`TerrainImporterCfg` 不应原样保留。
+- 原 `prim_path="{ENV_REGEX_NS}/Robot"`、USD/URDF spawn 逻辑迁移为 mjlab/MuJoCo 资产加载方式。
+- `asset_name`、`sensor_name` 等旧字段迁移时按 mjlab 要求改为 `entity_name` / `SceneEntityCfg` 等原生表达。
+- manager 均采用 mjlab 字典式配置：`actions`、`observations`、`commands`、`rewards`、`terminations`、`events`、`curriculum`。
+- `TrackingCommand` 必须保留以下能力：
+  - 加载 robot/SMPL/SOMA motion PKL。
+  - 每个 env 采样 motion id 和 start time。
+  - 维护当前帧与 multi-future reference。
+  - 支持 G1/teleop/SMPL/SOMA encoder sampling。
+  - 支持 adaptive sampling。
+  - 输出 reward/observation/termination 所需的 reference tensors。
+- observation group 需要保持名称和顺序稳定，尤其是 `policy`、`critic`、tokenizer 输入项和 `actor_obs` 维度。
+- reward term 名称尽量保持原名，例如 `tracking_anchor_pos`、`tracking_relative_body_pos`、`tracking_vr_5point_local`、`feet_acc`。
+- termination term 名称尽量保持原名，例如 `time_out`、`anchor_pos`、`anchor_ori_full`、`ee_body_pos`、`foot_pos_xyz`。
+- events/domain randomization 迁移时先实现训练必要项：joint default offset、mass randomization、physics material、push robot。
+- terrain 先支持 `plane`，再迁移 rough terrain/trimesh；不要在基础训练未通之前扩展复杂地形。
+- camera、render、teleop、object/table/HOI 逻辑不作为第一阶段训练迁移阻塞项，除非目标实验明确依赖。
+
+## SONIC 机器人资产与顺序约束
+
+- 不得直接复用 InstinctMJ 的 `g1_29dof_torsobase_popsicle.xml` 作为 SONIC 默认资产。
+- SONIC 默认 MuJoCo 资产应优先使用：
+  `gear_sonic/data/assets/robot_description/mjcf/g1_29dof_rev_1_0.xml`。
+- SONIC motion_lib PKL 的 29-DOF joint order 以 `g1_29dof_rev_1_0.xml` actuator order 为准：
+  left leg 6、right leg 6、waist 3、left arm 7、right arm 7。
+- InstinctMJ 的 G1 XML 使用 torso-base/popsicle 结构，joint order 从 waist 开始；该顺序不得作为 SONIC motion_lib、policy action 或 checkpoint 的默认顺序。
+- 迁移到 mjlab 后必须明确一个 canonical order：
+  - 第一阶段建议使用 SONIC MuJoCo order 作为 canonical order。
+  - 只有在兼容旧 IsaacLab checkpoint/config 时，才保留 IsaacLab 与 MuJoCo 映射。
+- 不得删除或弱化以下映射语义：
+  `isaaclab_to_mujoco_dof`、`mujoco_to_isaaclab_dof`、`isaaclab_to_mujoco_body`、`mujoco_to_isaaclab_body`。
+  若 mjlab 环境内部已使用 SONIC MuJoCo order，这些映射可以退化为兼容检查/加载旧配置用，但必须显式验证。
+- root/anchor 语义以 SONIC 为准：
+  - `anchor_body` 默认保持 `pelvis`。
+  - `TrackingCommand`、reward、termination、reset 中的 root pose 不得改成 InstinctMJ 的 torso-root 语义，除非同步重做 motion_lib 和 checkpoint 兼容策略。
+- 初始姿态、默认关节位置、action scale、PD/armature/effort/velocity limit 优先从 `gear_sonic/envs/manager_env/robots/g1.py` 迁移。
+- `JointPositionAction` 必须保持 SONIC 语义：
+  `target_joint_pos = default_joint_pos + action * action_scale`。
+- 资产迁移完成后必须打印并核对：
+  - mjlab robot joint names/order
+  - mjlab robot body names/order
+  - motion_lib joint/body order
+  - action term joint order
+  - policy observation 中 `joint_pos`、`joint_vel`、`actions` 的顺序
+
+## 兼容性约束
+
+- `SonicMJ` 应首先兼容 `sonic_release` 训练配置。
+- `sonic_bones_seed` 的 SOMA 编码器作为第二阶段兼容目标。
+- 不破坏 motion_lib PKL 数据格式，不重命名数据字段，不改变 fps/未来帧语义。
+- 不破坏 checkpoint 可加载性；网络结构、obs key、obs dim、action dim 改动必须有明确迁移理由。
+- 默认 G1 29-DOF body policy action dim 应保持 29。
+- 若引入 43-DOF hand/primitive 支持，必须兼容原 `ManagerEnvWrapper` 中 body/hand action 分离语义。
+- W&B、Accelerate、TRL 配置接口尽量保持原命令行 override 方式。
+- 如果必须修改 TRL trainer、`UniversalTokenModule` 或 checkpoint key，先停止并询问用户。
+- 如果必须修改外部 `mjlab`、`InstinctMJ` 或原始 `GR00T-WholeBodyControl` 仓库，先停止并询问用户。
+- 调试和依赖安装必须在项目对应 conda 环境中进行；不确定环境名时先询问用户。
+- 不得安装依赖到 base 环境。
+- 不得修改 CUDA、显卡驱动或 Isaac Sim 底层版本。
+
+## 建议迁移顺序
+
+1. 建立 SonicMJ 包结构和最小 mjlab 训练入口。
+2. 迁移 G1 MuJoCo 资产配置、默认关节位置、action scale、关节/body 名称表。
+3. 迁移 `TrackingCommand` 的 motion_lib 加载、reset 采样、step 更新时间、当前帧和未来帧输出。
+4. 迁移 policy/critic/tokenizer 观测项，先跑通 obs dim 对齐。
+5. 迁移动作项，确认 action dim、scale、default offset 与旧训练一致。
+6. 迁移核心 rewards 和 terminations。
+7. 接入现有 TRL PPO 训练器，先用小 `num_envs` 和 sample_data 做 smoke test。
+8. 再迁移 events/randomization、terrain、adaptive sampling、SOMA、render/eval/ONNX export。
+
+## 验证要求
+
+- 第一阶段至少验证：
+  - 环境可 reset。
+  - 单步 step 不报错。
+  - `policy`、`critic`、tokenizer 观测维度与旧配置一致。
+  - action dim 与 G1 29-DOF 配置一致。
+  - motion command 能加载 sample_data。
+- 小规模训练命令优先使用：
+  `num_envs=16 headless=True ++algo.config.num_learning_iterations=10`。
+- 测试脚本如临时创建，测试完成后必须删除。
+- 交付前列出运行过的命令、结果和未验证项。
+
+## 代码质量
+
+- 遵循当前项目风格，保持代码清晰、模块化，避免无关重构。
+- 迁移过程中清理无用 import、死代码、旧路径和过期注释。
+- 涉及项目代码的回答必须注明代码位置。
+- 修改或添加文件/代码后，回答最后必须列出修改/添加了哪些文件/代码。
+- 不得删除非自己创建或明确属于本次任务的文件内容。
+- 每一步代码修改操作后都需要关注 git 状态；是否提交、推送或上传到远程必须按用户明确指令执行。
+
+<!-- AGENTIC-WORKFLOW:BEGIN -->
+## WORKFLOW Runtime Rules
+
+以下规则只适用于当前目标项目被 `workflow` skill 接管后的 agent 会话；维护 workflow skill 本身时不适用。
+
+1. 启动后先读 `PERSON.md`、`TASK.md`、`PLAN.md`、`PROGRESS.md`、`task.json` 和当前项目的 `AGENTS.md`。
+2. 先处理 `PERSON.md` 中仍为 `open` 的条目；问题要回答，新增要求或修正要同步进 `TASK.md` 或 `PLAN.md`。
+3. 不依赖历史对话上下文，必须通过项目文档和 git 状态恢复进度。
+4. `task.json` 只是轻量运行摘要，不是状态机；不要靠旧 gate/milestone 字段推进。
+5. 代码修改后必须运行与风险匹配的测试，并把命令和结果写入 `PROGRESS.md`。
+6. 不得修改 CUDA、显卡驱动、系统级 GPU 组件；依赖只能安装在项目指定 conda/uv 环境中，不能装到 base。
+7. workflow 源码仓库 `/home/ykj/tool/WORKFLOW` 对目标项目 agent 只读，除非用户明确要求维护 workflow 工具本身。
+<!-- AGENTIC-WORKFLOW:END -->
+
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+# PERSON
+
+用户新增要求、问题、修正和阻塞写在这里。
+每个 workflow agent 启动后必须先处理仍为 `open` 的条目。
+
+## 条目模板
+```md
+## ITEM P0001
+- id: P0001
+- timestamp: 2026-05-08T00:00:00+08:00
+- type: request
+- status: open
+### content
+在这里写新增要求。
+### agent_response
+待处理
+```
+
+exec
+/bin/bash -lc "sed -n '1,280p' PROGRESS.md" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+# PROGRESS
+
+记录 workflow agent 的进度、测试、阻塞和恢复点。
+
+## 2026-05-08T21:19:39+08:00 - workflow 恢复检查
+
+### 已读取
+- `AGENTS.md`：确认 SonicMJ 迁移约束；项目迁移环境使用 uv，不使用 conda；不得修改 CUDA/显卡驱动/系统级 GPU 环境；workflow 运行时必须先处理 `PERSON.md` open 条目。
+- `PERSON.md`：没有实际 open 条目，只有模板。
+- `TASK.md`：原状态中用户需求、验收条件、Python 环境均未补全。
+- `PLAN.md`：尚未生成计划。
+- `task.json`：`request_text=null`，`plan_approved=false`，`last_result=init`，环境字段为空。
+- `.workflow/runtime/resume-prompt.txt`：内容与当前恢复指令一致。
+- `.workflow/artifacts`：恢复前不存在 artifact 文件。
+- `README.md` / `docs/README.md` / `pyproject.toml` / `gear_sonic/pyproject.toml`：确认根项目 `sonicmj` 使用 Python `>=3.10,<3.11`，根 `pyproject.toml` 有 uv 配置和 `uv.lock`；README 中原上游训练仍描述 Isaac Lab，但本项目 `AGENTS.md` 明确 SonicMJ 的 mjlab 迁移使用 uv。
+- git 状态：分支 `SONICMJ...origin/SONICMJ`；已有未提交改动 `AGENTS.md`，新增 workflow 文件 `.workflow/`、`PERSON.md`、`PLAN.md`、`PROGRESS.md`、`TASK.md`、`task.json`。
+
+### 判断
+- 当前没有 `PERSON.md` open 条目需要处理。
+- 由于 `request_text=null` 且 `PLAN.md` 未生成，不能直接执行代码迁移或测试；否则会绕过 workflow 的任务确认和计划阶段。
+- Python 环境可按项目事实登记为 `uv` + `.venv` + `existing`，但还不能安装依赖或启动训练。
+- 最合理下一步是阻塞等待用户明确本轮项目目标，或确认按 `AGENTS.md` 的 SonicMJ/mjlab 迁移顺序生成计划。
+
+### 本轮命令与结果
+- `sed -n ... AGENTS.md PERSON.md TASK.md PLAN.md PROGRESS.md`：成功读取 workflow 必读文档。
+- `jq . task.json`：成功读取轻量运行摘要。
+- `find .workflow ...`：恢复前仅有 `.workflow/runtime/resume-prompt.txt`。
+- `git status --short --branch` / `git status --porcelain=v1`：确认当前工作区已有 workflow 初始化文件和 `AGENTS.md` 修改。
+- `rg --files -g 'README*' -g 'pyproject.toml' -g 'uv.lock' ...`：定位必要 README 和环境配置。
+- `sed -n ... README.md docs/README.md pyproject.toml gear_sonic/pyproject.toml`：确认根项目 uv 环境事实。
+- `mkdir -p .workflow/artifacts`：创建 artifact 目录用于记录阻塞问题。
+
+### blocked_reason
+缺少可执行项目任务：`task.json.request_text` 为空，`TASK.md` 只有占位信息，`PLAN.md` 尚未生成。需要用户提供具体要推进的 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成计划”。
+
+exec
+/bin/bash -lc "sed -n '1,280p' PLAN.md" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+# PLAN: GR00T-WholeBodyControl
+
+等待 workflow planner agent 生成。
+
+exec
+/bin/bash -lc "sed -n '1,260p' TASK.md" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+# TASK: GR00T-WholeBodyControl
+
+## 项目元信息
+- 项目名：GR00T-WholeBodyControl
+- 目标代码库：/home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+- python_env_kind：uv
+- python_env：.venv
+- python_setup_mode：existing
+
+## 用户需求
+- [requirement] 当前 workflow 状态只有“恢复 workflow”的运行要求；尚未记录可执行的项目开发任务。
+- [requirement] 下一步需要用户给出本轮要推进的具体目标，或确认以 AGENTS.md 中的 SonicMJ/mjlab 迁移顺序继续生成 PLAN.md。
+
+## 论文 / 参考项目
+- 由 grounding agent 补充 Zotero、论文、本地参考仓库和代码证据。
+
+## 验收条件
+- 待用户确认具体任务后，由 planner agent 根据项目事实补充可执行验收标准。
+
+exec
+/bin/bash -lc 'jq . task.json' in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+{
+  "engine_version": "agentic-0.1.0",
+  "request_text": null,
+  "plan_approved": false,
+  "last_command": "resume",
+  "last_result": "resumed",
+  "blocked_reason": null,
+  "updated_at": "2026-05-08T21:20:38+08:00",
+  "python_env_kind": "uv",
+  "python_env": ".venv",
+  "python_setup_mode": "existing",
+  "workspace_root": "/home/ykj/project/SONICMJ/GR00T-WholeBodyControl"
+}
+
+exec
+/bin/bash -lc 'find .workflow -maxdepth 3 -type f -print | sort' in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+.workflow/artifacts/open_questions.json
+.workflow/runtime/resume-prompt.txt
+.workflow/runtime/resume-stderr.txt
+.workflow/runtime/resume-stdout.txt
+.workflow/runtime/run-prompt.txt
+
+exec
+/bin/bash -lc 'git status --short --branch' in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+## SONICMJ...origin/SONICMJ
+ M AGENTS.md
+?? .workflow/
+?? PERSON.md
+?? PLAN.md
+?? PROGRESS.md
+?? TASK.md
+?? task.json
+
+exec
+/bin/bash -lc "rg --files -g 'README*' -g 'docs/**' -g 'pyproject.toml' -g 'uv.lock' -g '.python-version'" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+uv.lock
+.python-version
+pyproject.toml
+README.md
+external_dependencies/unitree_sdk2_python/README zh.md
+decoupled_wbc/pyproject.toml
+external_dependencies/unitree_sdk2_python/README.md
+gear_sonic/pyproject.toml
+external_dependencies/unitree_sdk2_python/pyproject.toml
+external_dependencies/XRoboToolkit-PC-Service-Pybind_X86_and_ARM64/README.md
+gear_sonic/trl/utils/smplx/body_model/README.md
+decoupled_wbc/sim2mujoco/README.md
+docs/requirements.txt
+docs/Makefile
+docs/README.md
+gear_sonic_deploy/thirdparty/unitree_sdk2/README.md
+decoupled_wbc/sim2mujoco/resources/robots/g1/README.md
+docs/source/user_guide/training.md
+docs/source/user_guide/teleoperation.md
+docs/source/user_guide/troubleshooting.md
+docs/source/user_guide/training_data.md
+docs/source/user_guide/new_embodiments.md
+docs/source/user_guide/configuration.md
+docs/source/getting_started/download_models.md
+docs/source/getting_started/installation_training.md
+docs/source/getting_started/quickstart.md
+docs/source/getting_started/installation_deploy.md
+docs/source/getting_started/vr_teleop_setup.md
+docs/source/resources/citations.md
+docs/source/resources/support.md
+docs/source/resources/contributing.md
+docs/source/resources/license.md
+gear_sonic_deploy/thirdparty/unitree_sdk2/example/h1/README_zh.md
+gear_sonic_deploy/thirdparty/unitree_sdk2/example/h1/README.md
+docs/source/api/index.md
+docs/source/api/teleop.md
+docs/source/tutorials/manager.md
+docs/source/tutorials/keyboard.md
+docs/source/tutorials/zmq.md
+docs/source/tutorials/vr_wholebody_teleop.md
+docs/source/tutorials/data_collection.md
+docs/source/tutorials/gamepad.md
+docs/source/conf.py
+docs/source/_static/teleop/teleop_advanced.mp4
+docs/source/_static/teleop/teleop_walking.mp4
+docs/source/_static/teleop/teleop_natural_movement.mp4
+docs/source/_static/teleop/teleop_session_overview.mp4
+docs/source/_static/teleop/teleop_pause.mp4
+docs/source/_static/teleop/teleop_manipulation.mp4
+docs/source/_static/sim2sim.mp4
+docs/source/_static/screws.png
+docs/source/_static/Pipeline.jpg
+docs/source/.nojekyll
+docs/source/index.rst
+docs/source/_static/teleop_calib/BAD_Calib_VR3PT_recover_web.mp4
+docs/source/_static/teleop_calib/basic_flow_web.mp4
+docs/source/_static/teleop_calib/BAD_Calib_VR3PT_web.mp4
+docs/source/references/observation_config.md
+docs/source/references/index.md
+docs/source/references/conventions.md
+docs/source/references/deployment_code.md
+docs/source/references/decoupled_wbc.md
+docs/source/references/training_code.md
+docs/source/references/planner_onnx.md
+docs/source/references/jetpack6.md
+docs/source/references/motion_reference.md
+docs/source/_static/NVIDIA-logo-white.png
+docs/source/_static/sonic-preview-gif-480P.gif
+docs/source/_static/css/custom.css
+docs/source/_static/pico_setup/pico_vr_screenshot.png
+docs/source/_static/kinematic_planner/planner_elbow_crawling.mp4
+docs/source/_static/pico_setup/picoSetUp.mp4
+docs/source/_static/pico_setup/internet.png
+docs/source/_static/pico_setup/xrrobot_setup.png
+docs/source/_static/kinematic_planner/planner_stealth.mp4
+docs/source/_static/pico_setup/setuprecording.mp4
+docs/source/_static/kinematic_planner/planner_injured.mp4
+docs/source/_static/pico_setup/pico_setup_screenshot.png
+docs/source/_static/kinematic_planner/Navigation.mp4
+docs/source/_static/pico_setup/google_search_screenshot.png
+docs/source/_static/kinematic_planner/planner_run.mp4
+docs/source/_static/kinematic_planner/planner_boxing.mp4
+docs/source/_static/kinematic_planner/planner_happy.mp4
+docs/source/_static/kinematic_planner/hand_crawling.mp4
+docs/source/_static/NVIDIA-logo-black.png
+docs/source/_static/kinematic_planner/planner_kneeling.mp4
+docs/source/_static/ssd.png
+docs/source/_static/flashing.png
+docs/source/_static/Keyboard_Guidance.mp4
+docs/source/_static/favicon.ico
+decoupled_wbc/dexmg/gr00trobocasa/robocasa/utils/usd/README.md
+
+codex
+当前 `TASK.md` 仍是占位任务，`PLAN.md` 未生成；我继续核对 `.workflow/artifacts/open_questions.json`、环境配置和关键 README，确认是否已有阻塞问题或可自动推进的计划依据。
+exec
+/bin/bash -lc "sed -n '1,220p' .workflow/artifacts/open_questions.json" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+exec
+/bin/bash -lc "sed -n '1,220p' README.md" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+[
+  {
+    "id": "Q0001",
+    "timestamp": "2026-05-08T21:19:39+08:00",
+    "blocking": true,
+    "question": "请提供本轮 workflow 要推进的具体项目任务，或确认按 AGENTS.md 中 SonicMJ/mjlab 建议迁移顺序生成 PLAN.md。",
+    "context": "当前 task.json.request_text 为 null，TASK.md 只有占位需求，PLAN.md 尚未生成；PERSON.md 没有 open 条目。环境已根据 AGENTS.md 和根 pyproject.toml 登记为 uv + .venv + existing。"
+  }
+]
+
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+<div align="center">
+
+  <img src="media/groot_wbc.png" width="800" alt="GEAR SONIC Header">
+
+  <!-- --- -->
+  
+  
+</div>
+
+<div align="center">
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-76B900.svg)](LICENSE)
+[![IsaacLab](https://img.shields.io/badge/IsaacLab-2.3.2-orange.svg)](https://github.com/isaac-sim/IsaacLab/releases/tag/v2.3.2)
+[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-76B900.svg)](https://nvlabs.github.io/GR00T-WholeBodyControl/)
+[![Demo](https://img.shields.io/badge/Live%20Demo-GEAR--SONIC-blue.svg)](https://nvlabs.github.io/GEAR-SONIC/demo.html)
+
+</div>
+
+---
+
+
+
+
+# GR00T-WholeBodyControl
+
+This is the codebase for the **GR00T Whole-Body Control (WBC)** projects. It hosts model checkpoints and scripts for training, evaluating, and deploying advanced whole-body controllers for humanoid robots. We currently support:
+
+- **Decoupled WBC**: the decoupled controller (RL for lower body, and IK for upper body) used in NVIDIA GR00T [N1.5](https://research.nvidia.com/labs/gear/gr00t-n1_5/) and [N1.6](https://research.nvidia.com/labs/gear/gr00t-n1_6/) models;
+- **GEAR-SONIC Series**: our latest iteration of generalist humanoid whole-body controllers (see our [whitepaper](https://nvlabs.github.io/GEAR-SONIC/)).
+
+## News
+
+- **[2026-04-14]** 🌐 **[Live web demo](https://nvlabs.github.io/GEAR-SONIC/demo.html)** — try SONIC interactively in your browser. Features [Kimodo](https://github.com/nv-tlabs/kimodo) text-to-motion generation.
+- **[2026-04-10]** 🚀 Released **SONIC training code and checkpoint** on [HuggingFace](https://huggingface.co/nvidia/GEAR-SONIC). Train from scratch or finetune. **Additional embodiment support** and **VLA data collection pipeline**. See [Training Guide](https://nvlabs.github.io/GR00T-WholeBodyControl/user_guide/training.html).
+- **[2026-03-24]** 🔧 C++ inference stack update: motor error monitoring, TTS alerts, ZMQ protocol v4, idle-mode readaptation. **ZMQ header size changed to 1280 bytes.**
+- **[2026-03-16]** 📦 [BONES-SEED](https://huggingface.co/datasets/bones-studio/seed) open-sourced — 142K+ human motions (~288 hours) with G1 MuJoCo trajectories.
+- **[2026-02-19]** 🎉 Released GEAR-SONIC: pretrained checkpoints, C++ inference, VR teleoperation, and documentation.
+- **[2025-11-12]** 🏁 Initial release with Decoupled WBC for GR00T N1.5 and N1.6.
+
+## Table of Contents
+
+- [News](#news)
+- [GEAR-SONIC](#gear-sonic)
+- [VR Whole-Body Teleoperation](#vr-whole-body-teleoperation)
+- [Kinematic Planner](#kinematic-planner)
+- [SONIC Training](#sonic-training)
+- [TODOs](#todos)
+- [What's Included](#whats-included)
+  - [Setup](#setup)
+- [Documentation](#documentation)
+- [Citation](#citation)
+- [License](#license)
+- [Support](#support)
+- [Decoupled WBC](#decoupled-wbc)
+
+
+## GEAR-SONIC 
+
+<p style="font-size: 1.2em;">
+    <a href="https://nvlabs.github.io/GEAR-SONIC/"><strong>Website</strong></a> | 
+    <a href="https://huggingface.co/nvidia/GEAR-SONIC"><strong>Model</strong></a> | 
+    <a href="https://arxiv.org/abs/2511.07820"><strong>Paper</strong></a> | 
+    <a href="https://nvlabs.github.io/GR00T-WholeBodyControl/"><strong>Docs</strong></a>
+  </p>
+
+<div align="center">
+  <img src="docs/source/_static/sonic-preview-gif-480P.gif" width="800" >
+  
+</div>
+
+SONIC is a humanoid behavior foundation model that gives robots a core set of motor skills learned from large-scale human motion data. Rather than building separate controllers for predefined motions, SONIC uses motion tracking as a scalable training task, enabling a single unified policy to produce natural, whole-body movement and support a wide range of behaviors — from walking and crawling to teleoperation and multi-modal control. It is designed to generalize beyond the motions it has seen during training and to serve as a foundation for higher-level planning and interaction.
+
+In this repo, we release SONIC's training code, deployment framework, model checkpoints, and teleoperation stack for data collection.
+
+
+## VR Whole-Body Teleoperation
+
+SONIC supports real-time whole-body teleoperation via PICO VR headset, enabling natural human-to-robot motion transfer for data collection and interactive control.
+
+<div align="center">
+<table>
+<tr>
+<td align="center"><b>Walking</b></td>
+<td align="center"><b>Running</b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/teleop_walking.gif" width="400"></td>
+<td align="center"><img src="media/teleop_running.gif" width="400"></td>
+</tr>
+<tr>
+<td align="center"><b>Sideways Movement</b></td>
+<td align="center"><b>Kneeling</b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/teleop_sideways.gif" width="400"></td>
+<td align="center"><img src="media/teleop_kneeling.gif" width="400"></td>
+</tr>
+<tr>
+<td align="center"><b>Getting Up</b></td>
+<td align="center"><b>Jumping</b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/teleop_getup.gif" width="400"></td>
+<td align="center"><img src="media/teleop_jumping.gif" width="400"></td>
+</tr>
+<tr>
+<td align="center"><b>Bimanual Manipulation</b></td>
+<td align="center"><b>Object Hand-off</b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/teleop_bimanual.gif" width="400"></td>
+<td align="center"><img src="media/teleop_switch_hands.gif" width="400"></td>
+</tr>
+</table>
+</div>
+
+## Kinematic Planner
+
+SONIC includes a kinematic planner for real-time locomotion generation — choose a movement style, steer with keyboard/gamepad, and adjust speed and height on the fly.
+
+<div align="center">
+<table>
+<tr>
+<td align="center" colspan="2"><b>In-the-Wild Navigation</b></td>
+</tr>
+<tr>
+<td align="center" colspan="2"><img src="media/planner/planner_in_the_wild_navigation.gif" width="800"></td>
+</tr>
+<tr>
+<td align="center"><b>Run</b></td>
+<td align="center"><b>Happy</b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/planner/planner_run.gif" width="400"></td>
+<td align="center"><img src="media/planner/planner_happy.gif" width="400"></td>
+</tr>
+<tr>
+<td align="center"><b>Stealth</b></td>
+<td align="center"><b>Injured</b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/planner/planner_stealth.gif" width="400"></td>
+<td align="center"><img src="media/planner/planner_injured.gif" width="400"></td>
+</tr>
+<tr>
+<td align="center"><b>Kneeling</b></td>
+<td align="center"><b>Hand Crawling</b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/planner/planner_kneeling.gif" width="400"></td>
+<td align="center"><img src="media/planner/planner_hand_crawling.gif" width="400"></td>
+</tr>
+<tr>
+<td align="center"><b>Elbow Crawling</b></td>
+<td align="center"><b>Boxing</b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/planner/planner_elbow_crawling.gif" width="400"></td>
+<td align="center"><img src="media/planner/planner_boxing.gif" width="400"></td>
+</tr>
+</table>
+</div>
+
+## SONIC Training
+
+SONIC can be trained from scratch on the [Bones-SEED](https://huggingface.co/datasets/bones-studio/seed)
+motion capture dataset (142K+ motions, ~288 hours, Unitree G1 retargeted), or finetuned
+from the released checkpoint on [Hugging Face](https://huggingface.co/nvidia/GEAR-SONIC).
+
+### Quick start
+
+```bash
+# Install training dependencies (Isaac Lab must be installed separately — see docs)
+pip install -e "gear_sonic/[training]"
+
+# Download checkpoint + SMPL data from Hugging Face
+pip install huggingface_hub
+python download_from_hf.py --training
+
+# Download Bones-SEED G1 CSVs from bones-studio.ai/seed, then convert and filter
+python gear_sonic/data_process/convert_soma_csv_to_motion_lib.py \
+    --input /path/to/bones_seed/g1/csv/ \
+    --output data/motion_lib_bones_seed/robot --fps 30 --fps_source 120 --individual --num_workers 16
+python gear_sonic/data_process/filter_and_copy_bones_data.py \
+    --source data/motion_lib_bones_seed/robot --dest data/motion_lib_bones_seed/robot_filtered
+
+# Finetune from released checkpoint (64+ GPUs recommended)
+accelerate launch --num_processes=8 gear_sonic/train_agent_trl.py \
+    +exp=manager/universal_token/all_modes/sonic_release \
+    +checkpoint=sonic_release/last.pt \
+    num_envs=4096 headless=True \
+    ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_filtered \
+    ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=data/smpl_filtered
+```
+
+For the full guide including multi-node training, evaluation, ONNX export, and SOMA encoder setup:
+📖 [Installation (Training)](https://nvlabs.github.io/GR00T-WholeBodyControl/getting_started/installation_training.html) |
+[Training Guide](https://nvlabs.github.io/GR00T-WholeBodyControl/user_guide/training.html)
+
+
+## TODOs
+
+- [x] Release pretrained SONIC policy checkpoints
+- [x] Open source C++ inference stack
+- [x] Setup documentation
+- [x] Open source teleoperation stack and demonstration scripts
+- [x] Release training scripts and recipes for motion imitation and fine-tuning
+- [ ] Open source large-scale data collection workflows and fine-tuning VLA scripts. 
+- [ ] Publish additional preprocessed large-scale human motion datasets
+
+
+
+## What's Included
+
+This release includes:
+
+- **`gear_sonic_deploy`**: C++ inference stack for deploying SONIC policies on real hardware
+- **`gear_sonic`**: Full SONIC training stack — PPO training, data processing pipeline, and configuration system for training on Bones-SEED and custom motion datasets
+
+### Setup
+
+exec
+/bin/bash -lc "sed -n '1,220p' pyproject.toml" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+# Root pyproject.toml.
+# SonicMJ uses uv for the mjlab migration environment.  Existing subpackages can
+# still be installed directly when needed.
+
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sonicmj"
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "gear_sonic",
+    "mjlab==1.2.0",
+    "hydra-core==1.3.2",
+    "wandb",
+    "trl==0.28.0",
+    "transformers>=4.56.2",
+    "accelerate>=1.3.0",
+    "tensorboard",
+    "joblib",
+    "easydict",
+    "loguru",
+    "scipy==1.15.3",
+    "pandas",
+    "mujoco-warp>=3.8.0,<3.9",
+    "vector-quantize-pytorch==1.15.0",
+]
+
+[tool.uv.sources]
+gear_sonic = { path = "gear_sonic", editable = true }
+mujoco = { index = "mujoco" }
+mujoco-warp = { index = "pypi" }
+
+[tool.uv]
+override-dependencies = ["mujoco>=3.6.0.dev0"]
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.10'",
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+name = "mujoco"
+url = "https://py.mujoco.org"
+explicit = true
+
+[tool.setuptools.packages.find]
+include = ["sonic_mj*"]
+
+[tool.black]
+line-length = 100
+include = '\.pyi?$'
+exclude = '''
+(
+      __pycache__
+    | \.git
+    | \.mypy_cache
+    | \.pytest_cache
+    | \.vscode
+    | \.venv
+    | \bdist\b
+    | \bdoc\b
+    | external_dependencies
+    | logs
+    | source
+    | /(
+      | external_dependencies/
+    )/
+)
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+skip = [
+    "external_dependencies", 
+    "external_dependencies/**",
+]
+skip_glob = [
+    "external_dependencies/*",
+]
+
+[tool.pyright]
+reportPrivateImportUsage = false
+
+[tool.ruff]
+line-length = 115
+target-version = "py310"
+exclude = [
+    "gear_sonic/dexmg",
+    "external_dependencies",
+    "external_dependencies/**",
+    "./external_dependencies/**",
+    "*.ipynb",
+]
+
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+case-sensitive = false
+combine-as-imports = true
+force-sort-within-sections = true
+from-first = false
+single-line-exclusions = ["typing"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.mypy]
+ignore_missing_imports = true
+no_site_packages = true
+check_untyped_defs = true
+exclude = [
+    "external_dependencies", 
+]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+strict_optional = false
+
+[tool.pytest.ini_options]
+testpaths = "decoupled_wbc/tests/"
+python_classes = [
+  "Test*",
+  "*Test"
+]
+log_format = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+log_level = "DEBUG"
+
+exec
+/bin/bash -lc "sed -n '1,160p' .python-version" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+3.10
+
+exec
+/bin/bash -lc "sed -n '1,220p' docs/README.md" in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+# Documentation
+
+This directory contains the source code for the GR00T-WholeBodyControl documentation website.
+
+## Building Locally
+
+### Prerequisites
+
+Install the required Python packages:
+
+```bash
+pip install sphinx sphinx-book-theme sphinx-design sphinxemoji \
+            autodocsumm sphinxcontrib-bibtex myst-parser \
+            sphinx-copybutton
+```
+
+### Build the Documentation
+
+```bash
+cd docs
+make html
+```
+
+The built documentation will be in `build/html/`. Open `build/html/index.html` in your browser.
+
+### Live Preview
+
+Start a local web server to preview:
+
+```bash
+cd build/html
+python -m http.server 8000
+```
+
+Then open http://localhost:8000
+
+### Clean Build
+
+To remove all built files and rebuild from scratch:
+
+```bash
+make clean
+make html
+```
+
+## Deployment
+
+The documentation is automatically built and deployed to GitHub Pages when changes are pushed to the `main` branch via the GitHub Actions workflow at `.github/workflows/docs.yml`.
+
+The live documentation will be available at:
+**https://nvlabs.github.io/GR00T-WholeBodyControl/**
+
+## Documentation Structure
+
+- `source/` - All documentation source files
+  - `conf.py` - Sphinx configuration
+  - `index.rst` - Main landing page
+  - `_static/` - Static assets (CSS, images, logos)
+  - `tutorials/` - Tutorial pages
+  - `getting_started/` - Getting started guides
+  - `user_guide/` - User guide
+  - `api/` - API reference
+  - `resources/` - Additional resources
+
+## Writing Documentation
+
+- Use Markdown (`.md`) or reStructuredText (`.rst`) files
+- Markdown is recommended for simplicity
+- Place new files in the appropriate subdirectory
+- Update `index.rst` to add new sections to the navigation
+
+## Theme
+
+The documentation uses the `sphinx_book_theme` with NVIDIA branding, matching the Isaac Lab documentation style.
+
+codex
+`.workflow/artifacts/open_questions.json` 已有 `blocking: true` 问题，而且当前消息只要求恢复 workflow，没有提供具体迁移任务或确认按建议顺序生成计划；按照规则下一步应停止并记录阻塞，而不是擅自写代码。
+exec
+/bin/bash -lc 'date --iso-8601=seconds' in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+2026-05-08T21:22:12+08:00
+
+codex
+我会把这次恢复判断、已执行命令和明确的 `blocked_reason` 追加到 `PROGRESS.md`，并同步更新 `task.json` 的阻塞摘要，便于下一个短生命周期 agent 直接恢复。
+apply patch
+patch: completed
+/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/PROGRESS.md
+/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/task.json
+diff --git a/PROGRESS.md b/PROGRESS.md
+index 9f8fd548bae2651b9999f25f1778ab635c807660..0d7a872c24b3c859fcb006fd9b5dca1314e72473
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -32,3 +32,33 @@
+ 
+ ### blocked_reason
+ 缺少可执行项目任务：`task.json.request_text` 为空，`TASK.md` 只有占位信息，`PLAN.md` 尚未生成。需要用户提供具体要推进的 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成计划”。
++
++## 2026-05-08T21:22:12+08:00 - 短生命周期 agent 恢复判断
++
++### 已读取
++- `AGENTS.md`：确认本项目 SonicMJ 迁移使用 uv + `.venv`，不得修改 CUDA/显卡驱动/系统级 GPU 组件，workflow 恢复必须先处理 `PERSON.md` open 条目。
++- `PERSON.md`：无实际 open 条目，只有模板。
++- `TASK.md`：仍只记录“恢复 workflow”占位需求，未包含可执行开发任务。
++- `PLAN.md`：仍未生成计划。
++- `PROGRESS.md`：上一轮已记录缺少任务目标并阻塞。
++- `task.json`：`request_text=null`，`plan_approved=false`，环境为 `uv` + `.venv` + `existing`。
++- `.workflow/artifacts/open_questions.json`：存在 `blocking: true` 的 `Q0001`，要求用户提供本轮任务或确认按 `AGENTS.md` 建议迁移顺序生成计划。
++- `README.md` / `docs/README.md` / `pyproject.toml` / `.python-version`：确认上游 README 仍描述 Isaac Lab 训练，项目根配置为 `sonicmj`、Python 3.10、uv 环境；当前 SonicMJ 迁移约束以 `AGENTS.md` 为准。
++
++### 判断
++- 当前用户消息是恢复 workflow 的运行指令，没有回答 `Q0001`。
++- `open_questions.json` 中已有 blocking 问题，按 workflow 规则必须停止等待用户补充，不能擅自生成计划、改代码或跑训练测试。
++- 当前最合理下一步是保持阻塞状态，并要求用户提供具体迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
++
++### 本轮命令与结果
++- `sed -n '1,220p' /home/ykj/tool/WORKFLOW/skills/workflow/SKILL.md`：成功读取 workflow skill 规则；未修改 workflow 源码仓库。
++- `sed -n ... AGENTS.md PERSON.md TASK.md PLAN.md PROGRESS.md`：成功读取 workflow 必读文档。
++- `jq . task.json`：成功读取运行摘要，确认任务请求仍为空。
++- `find .workflow -maxdepth 3 -type f -print | sort`：确认 artifact/runtime 文件存在。
++- `git status --short --branch`：确认分支 `SONICMJ...origin/SONICMJ`，已有未提交 workflow 文件与 `AGENTS.md` 修改。
++- `rg --files -g 'README*' -g 'docs/**' -g 'pyproject.toml' -g 'uv.lock' -g '.python-version'`：定位必要 README、docs 和环境配置。
++- `sed -n ... .workflow/artifacts/open_questions.json README.md pyproject.toml .python-version docs/README.md`：确认阻塞问题和 uv/Python 环境事实。
++- `date --iso-8601=seconds`：记录本轮时间戳。
++
++### blocked_reason
++`.workflow/artifacts/open_questions.json` 存在 blocking 问题 `Q0001`，且当前仍缺少可执行项目任务。需要用户提供本轮要推进的具体 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
+diff --git a/task.json b/task.json
+index 4e8f89001c3539c12d70beb43efc4e5d31b6400a..32a473039941955f544a041d285da74fadbfedd5
+--- a/task.json
++++ b/task.json
+@@ -4,8 +4,8 @@
+   "plan_approved": false,
+   "last_command": "resume",
+   "last_result": "resumed",
+-  "blocked_reason": null,
+-  "updated_at": "2026-05-08T21:20:38+08:00",
++  "blocked_reason": ".workflow/artifacts/open_questions.json 存在 blocking 问题 Q0001：需要用户提供本轮要推进的具体 SonicMJ/mjlab 迁移目标，或明确确认按 AGENTS.md 建议迁移顺序继续生成 PLAN.md。",
++  "updated_at": "2026-05-08T21:22:12+08:00",
+   "python_env_kind": "uv",
+   "python_env": ".venv",
+   "python_setup_mode": "existing",
+
+diff --git a/PROGRESS.md b/PROGRESS.md
+index 9f8fd548bae2651b9999f25f1778ab635c807660..0d7a872c24b3c859fcb006fd9b5dca1314e72473
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -32,3 +32,33 @@
+ 
+ ### blocked_reason
+ 缺少可执行项目任务：`task.json.request_text` 为空，`TASK.md` 只有占位信息，`PLAN.md` 尚未生成。需要用户提供具体要推进的 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成计划”。
++
++## 2026-05-08T21:22:12+08:00 - 短生命周期 agent 恢复判断
++
++### 已读取
++- `AGENTS.md`：确认本项目 SonicMJ 迁移使用 uv + `.venv`，不得修改 CUDA/显卡驱动/系统级 GPU 组件，workflow 恢复必须先处理 `PERSON.md` open 条目。
++- `PERSON.md`：无实际 open 条目，只有模板。
++- `TASK.md`：仍只记录“恢复 workflow”占位需求，未包含可执行开发任务。
++- `PLAN.md`：仍未生成计划。
++- `PROGRESS.md`：上一轮已记录缺少任务目标并阻塞。
++- `task.json`：`request_text=null`，`plan_approved=false`，环境为 `uv` + `.venv` + `existing`。
++- `.workflow/artifacts/open_questions.json`：存在 `blocking: true` 的 `Q0001`，要求用户提供本轮任务或确认按 `AGENTS.md` 建议迁移顺序生成计划。
++- `README.md` / `docs/README.md` / `pyproject.toml` / `.python-version`：确认上游 README 仍描述 Isaac Lab 训练，项目根配置为 `sonicmj`、Python 3.10、uv 环境；当前 SonicMJ 迁移约束以 `AGENTS.md` 为准。
++
++### 判断
++- 当前用户消息是恢复 workflow 的运行指令，没有回答 `Q0001`。
++- `open_questions.json` 中已有 blocking 问题，按 workflow 规则必须停止等待用户补充，不能擅自生成计划、改代码或跑训练测试。
++- 当前最合理下一步是保持阻塞状态，并要求用户提供具体迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
++
++### 本轮命令与结果
++- `sed -n '1,220p' /home/ykj/tool/WORKFLOW/skills/workflow/SKILL.md`：成功读取 workflow skill 规则；未修改 workflow 源码仓库。
++- `sed -n ... AGENTS.md PERSON.md TASK.md PLAN.md PROGRESS.md`：成功读取 workflow 必读文档。
++- `jq . task.json`：成功读取运行摘要，确认任务请求仍为空。
++- `find .workflow -maxdepth 3 -type f -print | sort`：确认 artifact/runtime 文件存在。
++- `git status --short --branch`：确认分支 `SONICMJ...origin/SONICMJ`，已有未提交 workflow 文件与 `AGENTS.md` 修改。
++- `rg --files -g 'README*' -g 'docs/**' -g 'pyproject.toml' -g 'uv.lock' -g '.python-version'`：定位必要 README、docs 和环境配置。
++- `sed -n ... .workflow/artifacts/open_questions.json README.md pyproject.toml .python-version docs/README.md`：确认阻塞问题和 uv/Python 环境事实。
++- `date --iso-8601=seconds`：记录本轮时间戳。
++
++### blocked_reason
++`.workflow/artifacts/open_questions.json` 存在 blocking 问题 `Q0001`，且当前仍缺少可执行项目任务。需要用户提供本轮要推进的具体 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
+diff --git a/task.json b/task.json
+index 4e8f89001c3539c12d70beb43efc4e5d31b6400a..32a473039941955f544a041d285da74fadbfedd5
+--- a/task.json
++++ b/task.json
+@@ -4,8 +4,8 @@
+   "plan_approved": false,
+   "last_command": "resume",
+   "last_result": "resumed",
+-  "blocked_reason": null,
+-  "updated_at": "2026-05-08T21:20:38+08:00",
++  "blocked_reason": ".workflow/artifacts/open_questions.json 存在 blocking 问题 Q0001：需要用户提供本轮要推进的具体 SonicMJ/mjlab 迁移目标，或明确确认按 AGENTS.md 建议迁移顺序继续生成 PLAN.md。",
++  "updated_at": "2026-05-08T21:22:12+08:00",
+   "python_env_kind": "uv",
+   "python_env": ".venv",
+   "python_setup_mode": "existing",
+
+codex
+已把阻塞判断写回项目文档。现在核对修改后的恢复点和 git 状态，确保没有遗漏要交代的文件。
+exec
+/bin/bash -lc 'tail -n 70 PROGRESS.md' in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+exec
+/bin/bash -lc 'jq . task.json' in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+{
+  "engine_version": "agentic-0.1.0",
+  "request_text": null,
+  "plan_approved": false,
+  "last_command": "resume",
+  "last_result": "resumed",
+  "blocked_reason": ".workflow/artifacts/open_questions.json 存在 blocking 问题 Q0001：需要用户提供本轮要推进的具体 SonicMJ/mjlab 迁移目标，或明确确认按 AGENTS.md 建议迁移顺序继续生成 PLAN.md。",
+  "updated_at": "2026-05-08T21:22:12+08:00",
+  "python_env_kind": "uv",
+  "python_env": ".venv",
+  "python_setup_mode": "existing",
+  "workspace_root": "/home/ykj/project/SONICMJ/GR00T-WholeBodyControl"
+}
+
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+# PROGRESS
+
+记录 workflow agent 的进度、测试、阻塞和恢复点。
+
+## 2026-05-08T21:19:39+08:00 - workflow 恢复检查
+
+### 已读取
+- `AGENTS.md`：确认 SonicMJ 迁移约束；项目迁移环境使用 uv，不使用 conda；不得修改 CUDA/显卡驱动/系统级 GPU 环境；workflow 运行时必须先处理 `PERSON.md` open 条目。
+- `PERSON.md`：没有实际 open 条目，只有模板。
+- `TASK.md`：原状态中用户需求、验收条件、Python 环境均未补全。
+- `PLAN.md`：尚未生成计划。
+- `task.json`：`request_text=null`，`plan_approved=false`，`last_result=init`，环境字段为空。
+- `.workflow/runtime/resume-prompt.txt`：内容与当前恢复指令一致。
+- `.workflow/artifacts`：恢复前不存在 artifact 文件。
+- `README.md` / `docs/README.md` / `pyproject.toml` / `gear_sonic/pyproject.toml`：确认根项目 `sonicmj` 使用 Python `>=3.10,<3.11`，根 `pyproject.toml` 有 uv 配置和 `uv.lock`；README 中原上游训练仍描述 Isaac Lab，但本项目 `AGENTS.md` 明确 SonicMJ 的 mjlab 迁移使用 uv。
+- git 状态：分支 `SONICMJ...origin/SONICMJ`；已有未提交改动 `AGENTS.md`，新增 workflow 文件 `.workflow/`、`PERSON.md`、`PLAN.md`、`PROGRESS.md`、`TASK.md`、`task.json`。
+
+### 判断
+- 当前没有 `PERSON.md` open 条目需要处理。
+- 由于 `request_text=null` 且 `PLAN.md` 未生成，不能直接执行代码迁移或测试；否则会绕过 workflow 的任务确认和计划阶段。
+- Python 环境可按项目事实登记为 `uv` + `.venv` + `existing`，但还不能安装依赖或启动训练。
+- 最合理下一步是阻塞等待用户明确本轮项目目标，或确认按 `AGENTS.md` 的 SonicMJ/mjlab 迁移顺序生成计划。
+
+### 本轮命令与结果
+- `sed -n ... AGENTS.md PERSON.md TASK.md PLAN.md PROGRESS.md`：成功读取 workflow 必读文档。
+- `jq . task.json`：成功读取轻量运行摘要。
+- `find .workflow ...`：恢复前仅有 `.workflow/runtime/resume-prompt.txt`。
+- `git status --short --branch` / `git status --porcelain=v1`：确认当前工作区已有 workflow 初始化文件和 `AGENTS.md` 修改。
+- `rg --files -g 'README*' -g 'pyproject.toml' -g 'uv.lock' ...`：定位必要 README 和环境配置。
+- `sed -n ... README.md docs/README.md pyproject.toml gear_sonic/pyproject.toml`：确认根项目 uv 环境事实。
+- `mkdir -p .workflow/artifacts`：创建 artifact 目录用于记录阻塞问题。
+
+### blocked_reason
+缺少可执行项目任务：`task.json.request_text` 为空，`TASK.md` 只有占位信息，`PLAN.md` 尚未生成。需要用户提供具体要推进的 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成计划”。
+
+## 2026-05-08T21:22:12+08:00 - 短生命周期 agent 恢复判断
+
+### 已读取
+- `AGENTS.md`：确认本项目 SonicMJ 迁移使用 uv + `.venv`，不得修改 CUDA/显卡驱动/系统级 GPU 组件，workflow 恢复必须先处理 `PERSON.md` open 条目。
+- `PERSON.md`：无实际 open 条目，只有模板。
+- `TASK.md`：仍只记录“恢复 workflow”占位需求，未包含可执行开发任务。
+- `PLAN.md`：仍未生成计划。
+- `PROGRESS.md`：上一轮已记录缺少任务目标并阻塞。
+- `task.json`：`request_text=null`，`plan_approved=false`，环境为 `uv` + `.venv` + `existing`。
+- `.workflow/artifacts/open_questions.json`：存在 `blocking: true` 的 `Q0001`，要求用户提供本轮任务或确认按 `AGENTS.md` 建议迁移顺序生成计划。
+- `README.md` / `docs/README.md` / `pyproject.toml` / `.python-version`：确认上游 README 仍描述 Isaac Lab 训练，项目根配置为 `sonicmj`、Python 3.10、uv 环境；当前 SonicMJ 迁移约束以 `AGENTS.md` 为准。
+
+### 判断
+- 当前用户消息是恢复 workflow 的运行指令，没有回答 `Q0001`。
+- `open_questions.json` 中已有 blocking 问题，按 workflow 规则必须停止等待用户补充，不能擅自生成计划、改代码或跑训练测试。
+- 当前最合理下一步是保持阻塞状态，并要求用户提供具体迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
+
+### 本轮命令与结果
+- `sed -n '1,220p' /home/ykj/tool/WORKFLOW/skills/workflow/SKILL.md`：成功读取 workflow skill 规则；未修改 workflow 源码仓库。
+- `sed -n ... AGENTS.md PERSON.md TASK.md PLAN.md PROGRESS.md`：成功读取 workflow 必读文档。
+- `jq . task.json`：成功读取运行摘要，确认任务请求仍为空。
+- `find .workflow -maxdepth 3 -type f -print | sort`：确认 artifact/runtime 文件存在。
+- `git status --short --branch`：确认分支 `SONICMJ...origin/SONICMJ`，已有未提交 workflow 文件与 `AGENTS.md` 修改。
+- `rg --files -g 'README*' -g 'docs/**' -g 'pyproject.toml' -g 'uv.lock' -g '.python-version'`：定位必要 README、docs 和环境配置。
+- `sed -n ... .workflow/artifacts/open_questions.json README.md pyproject.toml .python-version docs/README.md`：确认阻塞问题和 uv/Python 环境事实。
+- `date --iso-8601=seconds`：记录本轮时间戳。
+
+### blocked_reason
+`.workflow/artifacts/open_questions.json` 存在 blocking 问题 `Q0001`，且当前仍缺少可执行项目任务。需要用户提供本轮要推进的具体 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
+
+exec
+/bin/bash -lc 'git status --short --branch' in /home/ykj/project/SONICMJ/GR00T-WholeBodyControl
+ succeeded in 0ms:
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+/bin/bash: /home/ykj/miniconda3/envs/twist2/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+## SONICMJ...origin/SONICMJ
+ M AGENTS.md
+?? .workflow/
+?? PERSON.md
+?? PLAN.md
+?? PROGRESS.md
+?? TASK.md
+?? task.json
+
+diff --git a/PROGRESS.md b/PROGRESS.md
+index 9f8fd548bae2651b9999f25f1778ab635c807660..0d7a872c24b3c859fcb006fd9b5dca1314e72473
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -32,3 +32,33 @@
+ 
+ ### blocked_reason
+ 缺少可执行项目任务：`task.json.request_text` 为空，`TASK.md` 只有占位信息，`PLAN.md` 尚未生成。需要用户提供具体要推进的 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成计划”。
++
++## 2026-05-08T21:22:12+08:00 - 短生命周期 agent 恢复判断
++
++### 已读取
++- `AGENTS.md`：确认本项目 SonicMJ 迁移使用 uv + `.venv`，不得修改 CUDA/显卡驱动/系统级 GPU 组件，workflow 恢复必须先处理 `PERSON.md` open 条目。
++- `PERSON.md`：无实际 open 条目，只有模板。
++- `TASK.md`：仍只记录“恢复 workflow”占位需求，未包含可执行开发任务。
++- `PLAN.md`：仍未生成计划。
++- `PROGRESS.md`：上一轮已记录缺少任务目标并阻塞。
++- `task.json`：`request_text=null`，`plan_approved=false`，环境为 `uv` + `.venv` + `existing`。
++- `.workflow/artifacts/open_questions.json`：存在 `blocking: true` 的 `Q0001`，要求用户提供本轮任务或确认按 `AGENTS.md` 建议迁移顺序生成计划。
++- `README.md` / `docs/README.md` / `pyproject.toml` / `.python-version`：确认上游 README 仍描述 Isaac Lab 训练，项目根配置为 `sonicmj`、Python 3.10、uv 环境；当前 SonicMJ 迁移约束以 `AGENTS.md` 为准。
++
++### 判断
++- 当前用户消息是恢复 workflow 的运行指令，没有回答 `Q0001`。
++- `open_questions.json` 中已有 blocking 问题，按 workflow 规则必须停止等待用户补充，不能擅自生成计划、改代码或跑训练测试。
++- 当前最合理下一步是保持阻塞状态，并要求用户提供具体迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
++
++### 本轮命令与结果
++- `sed -n '1,220p' /home/ykj/tool/WORKFLOW/skills/workflow/SKILL.md`：成功读取 workflow skill 规则；未修改 workflow 源码仓库。
++- `sed -n ... AGENTS.md PERSON.md TASK.md PLAN.md PROGRESS.md`：成功读取 workflow 必读文档。
++- `jq . task.json`：成功读取运行摘要，确认任务请求仍为空。
++- `find .workflow -maxdepth 3 -type f -print | sort`：确认 artifact/runtime 文件存在。
++- `git status --short --branch`：确认分支 `SONICMJ...origin/SONICMJ`，已有未提交 workflow 文件与 `AGENTS.md` 修改。
++- `rg --files -g 'README*' -g 'docs/**' -g 'pyproject.toml' -g 'uv.lock' -g '.python-version'`：定位必要 README、docs 和环境配置。
++- `sed -n ... .workflow/artifacts/open_questions.json README.md pyproject.toml .python-version docs/README.md`：确认阻塞问题和 uv/Python 环境事实。
++- `date --iso-8601=seconds`：记录本轮时间戳。
++
++### blocked_reason
++`.workflow/artifacts/open_questions.json` 存在 blocking 问题 `Q0001`，且当前仍缺少可执行项目任务。需要用户提供本轮要推进的具体 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
+diff --git a/task.json b/task.json
+index 4e8f89001c3539c12d70beb43efc4e5d31b6400a..32a473039941955f544a041d285da74fadbfedd5
+--- a/task.json
++++ b/task.json
+@@ -4,8 +4,8 @@
+   "plan_approved": false,
+   "last_command": "resume",
+   "last_result": "resumed",
+-  "blocked_reason": null,
+-  "updated_at": "2026-05-08T21:20:38+08:00",
++  "blocked_reason": ".workflow/artifacts/open_questions.json 存在 blocking 问题 Q0001：需要用户提供本轮要推进的具体 SonicMJ/mjlab 迁移目标，或明确确认按 AGENTS.md 建议迁移顺序继续生成 PLAN.md。",
++  "updated_at": "2026-05-08T21:22:12+08:00",
+   "python_env_kind": "uv",
+   "python_env": ".venv",
+   "python_setup_mode": "existing",
+
+codex
+已恢复 workflow 并完成本轮判断：当前必须停止在阻塞状态。
+
+原因是 `.workflow/artifacts/open_questions.json` 里已有 `blocking: true` 的 `Q0001`，而当前 `TASK.md` 仍只有占位需求，`PLAN.md` 未生成，`task.json.request_text=null`。本轮消息也没有提供具体迁移任务或确认按 `AGENTS.md` 建议迁移顺序生成计划，所以不能擅自改代码、跑训练或补计划。
+
+已写回：
+- [PROGRESS.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/PROGRESS.md)：追加本轮读取依据、命令结果、判断和 `blocked_reason`
+- [task.json](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/task.json)：更新 `blocked_reason` 和 `updated_at`
+
+未运行测试，因为没有可执行代码任务，且当前处于 workflow blocking 状态。
+
+用户需要提供其一：
+1. 本轮要推进的具体 SonicMJ/mjlab 迁移目标；或
+2. 明确确认：“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
+
+修改/添加的文件：
+- 修改：`PROGRESS.md`
+- 修改：`task.json`
+diff --git a/PROGRESS.md b/PROGRESS.md
+index 9f8fd548bae2651b9999f25f1778ab635c807660..0d7a872c24b3c859fcb006fd9b5dca1314e72473
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -32,3 +32,33 @@
+ 
+ ### blocked_reason
+ 缺少可执行项目任务：`task.json.request_text` 为空，`TASK.md` 只有占位信息，`PLAN.md` 尚未生成。需要用户提供具体要推进的 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成计划”。
++
++## 2026-05-08T21:22:12+08:00 - 短生命周期 agent 恢复判断
++
++### 已读取
++- `AGENTS.md`：确认本项目 SonicMJ 迁移使用 uv + `.venv`，不得修改 CUDA/显卡驱动/系统级 GPU 组件，workflow 恢复必须先处理 `PERSON.md` open 条目。
++- `PERSON.md`：无实际 open 条目，只有模板。
++- `TASK.md`：仍只记录“恢复 workflow”占位需求，未包含可执行开发任务。
++- `PLAN.md`：仍未生成计划。
++- `PROGRESS.md`：上一轮已记录缺少任务目标并阻塞。
++- `task.json`：`request_text=null`，`plan_approved=false`，环境为 `uv` + `.venv` + `existing`。
++- `.workflow/artifacts/open_questions.json`：存在 `blocking: true` 的 `Q0001`，要求用户提供本轮任务或确认按 `AGENTS.md` 建议迁移顺序生成计划。
++- `README.md` / `docs/README.md` / `pyproject.toml` / `.python-version`：确认上游 README 仍描述 Isaac Lab 训练，项目根配置为 `sonicmj`、Python 3.10、uv 环境；当前 SonicMJ 迁移约束以 `AGENTS.md` 为准。
++
++### 判断
++- 当前用户消息是恢复 workflow 的运行指令，没有回答 `Q0001`。
++- `open_questions.json` 中已有 blocking 问题，按 workflow 规则必须停止等待用户补充，不能擅自生成计划、改代码或跑训练测试。
++- 当前最合理下一步是保持阻塞状态，并要求用户提供具体迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
++
++### 本轮命令与结果
++- `sed -n '1,220p' /home/ykj/tool/WORKFLOW/skills/workflow/SKILL.md`：成功读取 workflow skill 规则；未修改 workflow 源码仓库。
++- `sed -n ... AGENTS.md PERSON.md TASK.md PLAN.md PROGRESS.md`：成功读取 workflow 必读文档。
++- `jq . task.json`：成功读取运行摘要，确认任务请求仍为空。
++- `find .workflow -maxdepth 3 -type f -print | sort`：确认 artifact/runtime 文件存在。
++- `git status --short --branch`：确认分支 `SONICMJ...origin/SONICMJ`，已有未提交 workflow 文件与 `AGENTS.md` 修改。
++- `rg --files -g 'README*' -g 'docs/**' -g 'pyproject.toml' -g 'uv.lock' -g '.python-version'`：定位必要 README、docs 和环境配置。
++- `sed -n ... .workflow/artifacts/open_questions.json README.md pyproject.toml .python-version docs/README.md`：确认阻塞问题和 uv/Python 环境事实。
++- `date --iso-8601=seconds`：记录本轮时间戳。
++
++### blocked_reason
++`.workflow/artifacts/open_questions.json` 存在 blocking 问题 `Q0001`，且当前仍缺少可执行项目任务。需要用户提供本轮要推进的具体 SonicMJ/mjlab 迁移目标，或明确确认“按 AGENTS.md 建议迁移顺序继续生成 PLAN.md”。
+diff --git a/task.json b/task.json
+index 4e8f89001c3539c12d70beb43efc4e5d31b6400a..32a473039941955f544a041d285da74fadbfedd5
+--- a/task.json
++++ b/task.json
+@@ -4,8 +4,8 @@
+   "plan_approved": false,
+   "last_command": "resume",
+   "last_result": "resumed",
+-  "blocked_reason": null,
+-  "updated_at": "2026-05-08T21:20:38+08:00",
++  "blocked_reason": ".workflow/artifacts/open_questions.json 存在 blocking 问题 Q0001：需要用户提供本轮要推进的具体 SonicMJ/mjlab 迁移目标，或明确确认按 AGENTS.md 建议迁移顺序继续生成 PLAN.md。",
++  "updated_at": "2026-05-08T21:22:12+08:00",
+   "python_env_kind": "uv",
+   "python_env": ".venv",
+   "python_setup_mode": "existing",
+
+tokens used
+34,064

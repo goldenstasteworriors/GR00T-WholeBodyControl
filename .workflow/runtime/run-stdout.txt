@@ -1,0 +1,29 @@
+已完成 workflow 的 grounding、计划和多角色 review，并按要求停在等待你确认 [PLAN.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/PLAN.md)。
+
+计划主线是：
+
+1. M0 环境和工作区确认：只用 uv `.venv`，确认 mjlab/torch/mujoco 导入和数据路径。
+2. M1 导入与 config 构造：`compileall` + Hydra compose + `make_sonic_mj_env_cfg`。
+3. M2 G1 资产/order/action 29-DOF 验证。
+4. M3 motion_lib reset/step smoke。
+5. M4 `policy` / `critic` / `tokenizer` obs 与 `sonic_release` 3 encoder 对齐。
+6. M5 reward/termination/event/curriculum 训练必要项 smoke。
+7. M6 `sonic_release` mjlab backend 小规模 PPO smoke。
+8. M7 第二阶段补 SOMA / Bones-SEED。
+9. M8 文档、清理和交付。
+
+本轮没有进入代码实现或训练测试，只做了 workflow 文档和 artifacts。JSON artifacts 已用 `python -m json.tool` 校验通过。当前 blocking 状态是：等待你确认 `PLAN.md`；另外 open questions 里记录了 GPU smoke 和 motion sample 数据路径两个非阻塞确认项。
+
+修改/添加的文件：
+- 修改：[TASK.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/TASK.md)
+- 修改：[PLAN.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/PLAN.md)
+- 修改：[PROGRESS.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/PROGRESS.md)
+- 修改：[task.json](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/task.json)
+- 添加/修改：[.workflow/artifacts/grounding.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.workflow/artifacts/grounding.md)
+- 添加/修改：[.workflow/artifacts/paper_project_map.json](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.workflow/artifacts/paper_project_map.json)
+- 添加/修改：[.workflow/artifacts/open_questions.json](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.workflow/artifacts/open_questions.json)
+- 添加：[.workflow/artifacts/reviews/scope.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.workflow/artifacts/reviews/scope.md)
+- 添加：[.workflow/artifacts/reviews/milestones.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.workflow/artifacts/reviews/milestones.md)
+- 添加：[.workflow/artifacts/reviews/architecture.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.workflow/artifacts/reviews/architecture.md)
+- 添加：[.workflow/artifacts/reviews/testing.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.workflow/artifacts/reviews/testing.md)
+- 添加：[.workflow/artifacts/reviews/executor.md](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.workflow/artifacts/reviews/executor.md)

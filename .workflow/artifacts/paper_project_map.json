@@ -1,0 +1,113 @@
+{
+  "papers": [
+    {
+      "id": "sonic_2511_07820",
+      "title": "SONIC: Supersizing Motion Tracking for Natural Humanoid Whole-Body Control",
+      "source": "Zotero item GT7EYT6G",
+      "url": "https://arxiv.org/pdf/2511.07820",
+      "used_for": [
+        "确认 motion tracking 是 SONIC 的核心训练任务",
+        "确认 Universal Token 多 encoder 输入输出语义不能因环境兼容修复而改变",
+        "确认训练 smoke 需要覆盖 G1/teleop/SMPL 基础闭环"
+      ],
+      "project_links": [
+        {
+          "paper_concept": "motion tracking as scalable foundation task",
+          "source_implementation": "gear_sonic/envs/manager_env/mdp/commands.py, rewards.py, terminations.py",
+          "target_implementation": "sonic_mj/mdp/commands.py, rewards.py, terminations.py",
+          "server_verification": "motion_lib load, reset/step, finite reward, PPO smoke on H20"
+        },
+        {
+          "paper_concept": "universal token space with multiple control interfaces",
+          "source_implementation": "gear_sonic/config/exp/manager/universal_token/all_modes/sonic_release.yaml; gear_sonic/trl/modules/universal_token_modules.py",
+          "target_implementation": "sonic_mj/mdp/observations.py; sonic_mj/wrapper.py",
+          "server_verification": "tokenizer obs keys/shapes match g1/teleop/smpl encoder inputs after dependency changes"
+        },
+        {
+          "paper_concept": "Unitree G1 whole-body control",
+          "source_implementation": "gear_sonic/envs/manager_env/robots/g1.py; gear_sonic/data/assets/robot_description/mjcf/g1_29dof_rev_1_0.xml",
+          "target_implementation": "sonic_mj/assets.py; sonic_mj/env_cfg.py",
+          "server_verification": "action_dim=29 and order diagnostics pass on server"
+        }
+      ]
+    }
+  ],
+  "reference_implementations": [
+    {
+      "name": "gear_sonic original training stack",
+      "path": "gear_sonic/",
+      "role": "source of SONIC training semantics and TRL integration",
+      "key_files": [
+        "gear_sonic/train_agent_trl.py",
+        "gear_sonic/config/exp/manager/universal_token/all_modes/sonic_release.yaml",
+        "gear_sonic/config/exp/manager/universal_token/all_modes/sonic_bones_seed.yaml",
+        "gear_sonic/envs/manager_env/modular_tracking_env_cfg.py",
+        "gear_sonic/envs/manager_env/mdp/commands.py",
+        "gear_sonic/envs/manager_env/mdp/observations.py",
+        "gear_sonic/envs/manager_env/mdp/rewards.py",
+        "gear_sonic/envs/manager_env/mdp/terminations.py",
+        "gear_sonic/envs/manager_env/mdp/events.py",
+        "gear_sonic/envs/manager_env/robots/g1.py"
+      ]
+    },
+    {
+      "name": "mjlab",
+      "path": "/home/ykj/project/SONICMJ/mjlab",
+      "role": "target simulator framework reference; read-only unless user approves external modifications",
+      "key_files": []
+    }
+  ],
+  "target_code": [
+    {
+      "path": "pyproject.toml",
+      "responsibility": "project-level uv dependency constraints for server-compatible training environment"
+    },
+    {
+      "path": "uv.lock",
+      "responsibility": "resolved project dependency set; currently includes CUDA 13 wheels that must be validated or replaced for Driver 570/CUDA 12.8 server"
+    },
+    {
+      "path": "sonic_mj/assets.py",
+      "responsibility": "SONIC G1 MuJoCo asset, canonical joint/body/action order and mapping constants"
+    },
+    {
+      "path": "sonic_mj/env_cfg.py",
+      "responsibility": "Hydra manager config to mjlab ManagerBasedRlEnvCfg mapping"
+    },
+    {
+      "path": "sonic_mj/mdp/commands.py",
+      "responsibility": "motion_lib command, reset sampling, future refs, encoder sampling, order diagnostics"
+    },
+    {
+      "path": "sonic_mj/mdp/observations.py",
+      "responsibility": "policy/critic/tokenizer observations for Universal Token training"
+    },
+    {
+      "path": "sonic_mj/wrapper.py",
+      "responsibility": "TRL-compatible env wrapper, obs flattening, eval/training hooks and diagnostics"
+    },
+    {
+      "path": "gear_sonic/train_agent_trl.py",
+      "responsibility": "shared training entry with mjlab backend switch"
+    }
+  ],
+  "environment_mapping": {
+    "server": {
+      "driver": "570.124.06",
+      "reported_cuda_runtime": "12.8",
+      "nvcc": "11.6",
+      "gpu": "NVIDIA H20",
+      "must_not_modify": [
+        "NVIDIA driver",
+        "system CUDA toolkit",
+        "GPU firmware or system libraries"
+      ]
+    },
+    "current_lock_risk": {
+      "torch": "2.11.0+cu130 in current local .venv",
+      "cuda_wheels": "CUDA 13 packages in uv.lock",
+      "risk": "Driver 570 reports CUDA 12.8 and may not support CUDA 13 runtime wheels"
+    }
+  },
+  "notes": "本轮没有新增论文检索需求；论文仅用于保护 SONIC 训练语义，服务器兼容计划主要依据项目配置、锁文件和历史验证记录。"
+}
