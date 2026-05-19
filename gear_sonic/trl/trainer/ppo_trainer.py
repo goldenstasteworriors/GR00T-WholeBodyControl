@@ -44,6 +44,19 @@ def masked_mean(values, mask, axis=None):
     return (values * mask).sum() / mask.sum().clamp(min=1)
 
 
+def _numeric_debug_tensor_stats(name, tensor):
+    detached = tensor.detach()
+    finite = torch.isfinite(detached)
+    finite_values = detached[finite]
+    if finite_values.numel() == 0:
+        return f"{name}: shape={tuple(detached.shape)}, finite=0/{detached.numel()}"
+    return (
+        f"{name}: shape={tuple(detached.shape)}, finite={finite.sum().item()}/{detached.numel()}, "
+        f"min={finite_values.min().item():.6g}, max={finite_values.max().item():.6g}, "
+        f"mean={finite_values.float().mean().item():.6g}"
+    )
+
+
 from collections import deque  # noqa: E402
 
 import pandas as pd  # noqa: E402, F401
@@ -948,6 +961,27 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
                         )
                         self.storage.update_key("next_" + obs_key, next_critic_obs)
                 rewards, dones = rewards.to(device), dones.to(device)
+                if os.environ.get("SONIC_DEBUG_NUMERICS", "0") == "1":
+                    if not torch.isfinite(rewards).all():
+                        print(  # noqa: T201
+                            f"[Rank {self.accelerator.process_index}] [NUMERIC_DEBUG] "
+                            f"invalid rewards at global_step={self.state.global_step}, rollout_step={i}: "
+                            f"{_numeric_debug_tensor_stats('rewards', rewards)}"
+                        )
+                    if not torch.isfinite(dones).all():
+                        print(  # noqa: T201
+                            f"[Rank {self.accelerator.process_index}] [NUMERIC_DEBUG] "
+                            f"invalid dones at global_step={self.state.global_step}, rollout_step={i}: "
+                            f"{_numeric_debug_tensor_stats('dones', dones)}"
+                        )
+                    for obs_key, obs_value in obs_dict.items():
+                        if torch.is_tensor(obs_value) and not torch.isfinite(obs_value).all():
+                            print(  # noqa: T201
+                                f"[Rank {self.accelerator.process_index}] [NUMERIC_DEBUG] "
+                                f"invalid obs[{obs_key}] at global_step={self.state.global_step}, "
+                                f"rollout_step={i}: "
+                                f"{_numeric_debug_tensor_stats(obs_key, obs_value)}"
+                            )
                 rewards_stored = rewards.clone()
                 if rewards.dim() == 1:
                     rewards_stored = rewards_stored.unsqueeze(1)

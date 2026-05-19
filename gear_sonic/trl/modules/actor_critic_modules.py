@@ -15,6 +15,25 @@ from gear_sonic.utils.batch_normalizer import BatchNormNormalizer
 from gear_sonic.utils.running_mean_std import RunningMeanStd
 
 
+def _debug_rank_prefix():
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return f"[Rank {torch.distributed.get_rank()}]"
+    return "[Rank 0]"
+
+
+def _debug_tensor_stats(name, tensor):
+    detached = tensor.detach()
+    finite = torch.isfinite(detached)
+    finite_values = detached[finite]
+    if finite_values.numel() == 0:
+        return f"{name}: shape={tuple(detached.shape)}, finite=0/{detached.numel()}"
+    return (
+        f"{name}: shape={tuple(detached.shape)}, finite={finite.sum().item()}/{detached.numel()}, "
+        f"min={finite_values.min().item():.6g}, max={finite_values.max().item():.6g}, "
+        f"mean={finite_values.float().mean().item():.6g}"
+    )
+
+
 class Actor(nn.Module):
     """Policy network that maps observations to action distributions.
 
@@ -281,10 +300,21 @@ class Actor(nn.Module):
         # Get std using the property that handles both parameterizations
         std = self.get_std
         # Safety check for NaN or negative values
-        if torch.any(torch.isnan(std)) or torch.any(std <= 0):
-            print(f"[WARNING] Invalid std detected! std: {std}")
+        invalid_std = torch.isnan(std) | torch.isinf(std) | (std <= 0)
+        invalid_mean = torch.isnan(mean) | torch.isinf(mean)
+        if torch.any(invalid_std) or torch.any(invalid_mean):
+            print(  # noqa: T201
+                f"{_debug_rank_prefix()} [NUMERIC_DEBUG] invalid actor distribution at "
+                f"actor_step={self.steps}, training={self.training}, is_training={is_training}, "
+                f"last_step_only={last_step_only}"
+            )
+            print(f"{_debug_rank_prefix()} [NUMERIC_DEBUG] {_debug_tensor_stats('action_mean', mean)}")  # noqa: T201
+            print(f"{_debug_rank_prefix()} [NUMERIC_DEBUG] {_debug_tensor_stats('action_std', std)}")  # noqa: T201
             std = torch.clamp(std, min=1e-6)
-        self.distribution = Normal(mean, (mean * 0.0 + std).clamp(min=1e-6))
+        scale = (mean * 0.0 + std).clamp(min=1e-6)
+        if torch.any(torch.isnan(scale)) or torch.any(torch.isinf(scale)) or torch.any(scale <= 0):
+            print(f"{_debug_rank_prefix()} [NUMERIC_DEBUG] {_debug_tensor_stats('normal_scale', scale)}")  # noqa: T201
+        self.distribution = Normal(mean, scale)
 
     def act(self, obs_dict, episode_attnmask=None, **kwargs):
         """Sample actions from the current policy for a single timestep.
@@ -474,7 +504,24 @@ class Actor(nn.Module):
         )
 
         # Update distribution
-        self.distribution = Normal(action_mean, (action_mean * 0.0 + self.std).clamp(min=1e-6))
+        scale = (action_mean * 0.0 + self.std).clamp(min=1e-6)
+        if (
+            torch.any(torch.isnan(action_mean))
+            or torch.any(torch.isinf(action_mean))
+            or torch.any(torch.isnan(scale))
+            or torch.any(torch.isinf(scale))
+            or torch.any(scale <= 0)
+        ):
+            print(  # noqa: T201
+                f"{_debug_rank_prefix()} [NUMERIC_DEBUG] invalid external-token distribution "
+                f"at actor_step={self.steps}"
+            )
+            print(  # noqa: T201
+                f"{_debug_rank_prefix()} [NUMERIC_DEBUG] "
+                f"{_debug_tensor_stats('external_action_mean', action_mean)}"
+            )
+            print(f"{_debug_rank_prefix()} [NUMERIC_DEBUG] {_debug_tensor_stats('external_scale', scale)}")  # noqa: T201
+        self.distribution = Normal(action_mean, scale)
 
         self.steps += 1
         return TensorDict(
