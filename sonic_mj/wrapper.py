@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 
 import easydict
 from omegaconf import OmegaConf
@@ -23,6 +24,19 @@ def _to_easydict(value):
 
 def _container_or_empty(value):
     return value if isinstance(value, dict) else {}
+
+
+def _numeric_debug_tensor_stats(name, tensor):
+    detached = tensor.detach()
+    finite = torch.isfinite(detached)
+    finite_values = detached[finite]
+    if finite_values.numel() == 0:
+        return f"{name}: shape={tuple(detached.shape)}, finite=0/{detached.numel()}"
+    return (
+        f"{name}: shape={tuple(detached.shape)}, finite={finite.sum().item()}/{detached.numel()}, "
+        f"min={finite_values.min().item():.6g}, max={finite_values.max().item():.6g}, "
+        f"mean={finite_values.float().mean().item():.6g}"
+    )
 
 
 class SonicMjEnvWrapper:
@@ -244,6 +258,7 @@ class SonicMjEnvWrapper:
     def process_raw_obs(self, obs, flatten_dict_obs=True):
         if not flatten_dict_obs:
             return obs
+        self._debug_invalid_raw_obs(obs)
         out = {}
         out["actor_obs"] = obs["policy"]
         out["critic_obs"] = obs["critic"]
@@ -255,6 +270,59 @@ class SonicMjEnvWrapper:
         elif "tokenizer" in obs:
             out["tokenizer"] = obs["tokenizer"]
         return out
+
+    def _debug_invalid_raw_obs(self, obs):
+        if os.environ.get("SONIC_DEBUG_NUMERICS", "0") != "1":
+            return
+
+        for group_name, group_obs in obs.items():
+            if isinstance(group_obs, dict):
+                for term_name, term_value in group_obs.items():
+                    if torch.is_tensor(term_value) and not torch.isfinite(term_value).all():
+                        print(  # noqa: T201
+                            "[SonicMJ][NUMERIC_DEBUG] "
+                            f"invalid raw obs[{group_name}][{term_name}]: "
+                            f"{_numeric_debug_tensor_stats(term_name, term_value)}"
+                        )
+                continue
+
+            if not torch.is_tensor(group_obs) or torch.isfinite(group_obs).all():
+                continue
+
+            invalid_envs = torch.nonzero(
+                ~torch.isfinite(group_obs).reshape(group_obs.shape[0], -1).all(dim=1),
+                as_tuple=False,
+            ).flatten()
+            preview_envs = invalid_envs[:5].detach().cpu().tolist()
+            print(  # noqa: T201
+                "[SonicMJ][NUMERIC_DEBUG] "
+                f"invalid raw obs[{group_name}], invalid_envs={preview_envs}, "
+                f"{_numeric_debug_tensor_stats(group_name, group_obs)}"
+            )
+            if len(preview_envs) == 0:
+                continue
+
+            env_id = int(preview_envs[0])
+            try:
+                iterable_terms = self.env.observation_manager.get_active_iterable_terms(env_id)
+            except Exception as exc:  # noqa: BLE001
+                print(  # noqa: T201
+                    "[SonicMJ][NUMERIC_DEBUG] failed to inspect observation terms "
+                    f"for env {env_id}: {exc}"
+                )
+                continue
+
+            group_prefix = f"{group_name}-"
+            for full_name, values in iterable_terms:
+                if not full_name.startswith(group_prefix):
+                    continue
+                term_tensor = torch.tensor(values, device=self.device, dtype=torch.float32)
+                if not torch.isfinite(term_tensor).all():
+                    print(  # noqa: T201
+                        "[SonicMJ][NUMERIC_DEBUG] "
+                        f"invalid term {full_name} for env {env_id}: "
+                        f"{_numeric_debug_tensor_stats(full_name, term_tensor)}"
+                    )
 
     def get_env_state_dict(self):
         return {"motion_lib": self._motion_lib.get_state_dict()}
