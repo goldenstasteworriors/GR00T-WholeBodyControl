@@ -18,7 +18,10 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains.config import TerrainEntityCfg, TerrainGeneratorCfg
-from mjlab.terrains.heightfield_terrains import HfRandomUniformTerrainCfg
+from mjlab.terrains.heightfield_terrains import (
+    HfDiscreteObstaclesTerrainCfg,
+    HfRandomUniformTerrainCfg,
+)
 from mjlab.terrains.primitive_terrains import BoxRandomGridTerrainCfg
 
 from sonic_mj.assets import (
@@ -117,6 +120,42 @@ def _make_sonic_terrain_cfg(base_cfg, *, num_envs: int, seed: int) -> TerrainEnt
     num_cols = int(_cfg_get(base_cfg, "rough_terrain_num_cols", 20))
     terrain_size = float(_cfg_get(base_cfg, "rough_terrain_size", 8.0))
     border_width = float(_cfg_get(base_cfg, "rough_terrain_border_width", 20.0))
+    boxes_backend = _cfg_get(base_cfg, "rough_terrain_boxes_backend", "hfield")
+    if boxes_backend == "box":
+        boxes_terrain = BoxRandomGridTerrainCfg(
+            proportion=0.3,
+            grid_width=0.45,
+            grid_height_range=(0.001, 0.005),
+            platform_width=2.0,
+        )
+    elif boxes_backend == "hfield":
+        boxes_terrain = HfDiscreteObstaclesTerrainCfg(
+            proportion=0.3,
+            obstacle_height_mode="fixed",
+            obstacle_width_range=(0.45, 0.45),
+            obstacle_height_range=(0.001, 0.005),
+            num_obstacles=256,
+            platform_width=2.0,
+            horizontal_scale=0.1,
+            vertical_scale=0.005,
+            border_width=0.25,
+            square_obstacles=True,
+        )
+    elif boxes_backend == "uniform_hfield":
+        boxes_terrain = HfRandomUniformTerrainCfg(
+            proportion=0.3,
+            noise_range=(0.001, 0.005),
+            noise_step=0.005,
+            downsampled_scale=0.45,
+            border_width=0.25,
+            horizontal_scale=0.1,
+            vertical_scale=0.005,
+        )
+    else:
+        raise ValueError(
+            "Unsupported rough_terrain_boxes_backend: "
+            f"{boxes_backend}. Expected 'hfield', 'uniform_hfield', or 'box'."
+        )
     return TerrainEntityCfg(
         terrain_type="generator",
         terrain_generator=TerrainGeneratorCfg(
@@ -126,12 +165,7 @@ def _make_sonic_terrain_cfg(base_cfg, *, num_envs: int, seed: int) -> TerrainEnt
             num_rows=num_rows,
             num_cols=num_cols,
             sub_terrains={
-                "boxes": BoxRandomGridTerrainCfg(
-                    proportion=0.3,
-                    grid_width=0.45,
-                    grid_height_range=(0.001, 0.005),
-                    platform_width=2.0,
-                ),
+                "boxes": boxes_terrain,
                 "random_rough": HfRandomUniformTerrainCfg(
                     proportion=0.05,
                     noise_range=(0.001, 0.005),
