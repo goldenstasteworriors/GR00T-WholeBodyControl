@@ -57,6 +57,27 @@ def _numeric_debug_tensor_stats(name, tensor):
     )
 
 
+def _cuda_memory_values(device):
+    if not torch.cuda.is_available():
+        return None
+    if isinstance(device, torch.device):
+        if device.type != "cuda":
+            return None
+        device = device.index if device.index is not None else torch.cuda.current_device()
+    elif device is None:
+        device = torch.cuda.current_device()
+    return torch.tensor(
+        [[
+            torch.cuda.memory_allocated(device),
+            torch.cuda.memory_reserved(device),
+            torch.cuda.max_memory_allocated(device),
+            torch.cuda.max_memory_reserved(device),
+        ]],
+        device=torch.device("cuda", device),
+        dtype=torch.float64,
+    ) / float(1024**3)
+
+
 from collections import deque  # noqa: E402
 
 import pandas as pd  # noqa: E402, F401
@@ -1727,11 +1748,13 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
         obs_dict = self.env.reset_all()
         for obs_key in obs_dict.keys():  # noqa: SIM118
             obs_dict[obs_key] = obs_dict[obs_key].to(device)
+        env_reset_memory_metrics = self._cuda_memory_metrics("Memory/after_env_reset", device)
 
         for batch_idx in range(1, args.num_total_batches + 1):
             batch_start_time = time.time()
             self.state.episode += 1 * args.batch_size
             data = next(iter_dataloader)  # noqa: F841
+            self._reset_cuda_peak_memory(device)
 
             # update scheduled params
             if self.schedule_dict is not None:
@@ -1757,6 +1780,8 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
 
                 end_collection_time = time.time()
                 collection_time = end_collection_time - batch_start_time
+                rollout_memory_metrics = self._cuda_memory_metrics("Memory/after_rollout", device)
+                self._reset_cuda_peak_memory(device)
 
             with common.Timer("get_rollout_data"):
                 rollout_data = self._get_rollout_data(obs_keys=obs_dict.keys())
@@ -1854,6 +1879,7 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
 
             with common.Timer("sync_adaptive_sampling"):
                 self.sync_adaptive_sampling()
+            learning_memory_metrics = self._cuda_memory_metrics("Memory/after_learning", device)
 
             # print(self.accelerator.process_index, self.model.module.policy.running_mean_std.running_mean.mean(), self.model.module.policy.running_mean_std.running_var.mean(), self.model.module.policy.running_mean_std.count)  # noqa: E501
             # print(self.accelerator.process_index, self.policy_model.running_mean_std.running_mean)
@@ -1929,6 +1955,12 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
                 for param_name, param_value in self.scheduled_params_dict.items():
                     log_dict[f"scheduled_params/{param_name}"] = param_value
 
+                if env_reset_memory_metrics:
+                    metrics.update(env_reset_memory_metrics)
+                    env_reset_memory_metrics = {}
+                metrics.update(rollout_memory_metrics)
+                metrics.update(learning_memory_metrics)
+
                 if hasattr(self.policy_model, "std"):
                     metrics["Policy/mean_noise_std"] = self.policy_model.std.mean().item()
                 else:
@@ -2000,6 +2032,35 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
             self.env.sync_and_compute_adaptive_sampling(
                 self.accelerator, sync_across_gpus=sync_across_gpus
             )
+
+    def _cuda_memory_metrics(self, prefix, device):
+        values = _cuda_memory_values(device)
+        if values is None:
+            return {}
+
+        names = ("allocated_gb", "reserved_gb", "max_allocated_gb", "max_reserved_gb")
+        metrics = {
+            f"{prefix}/rank_{self.accelerator.process_index}/{name}": value.item()
+            for name, value in zip(names, values[0], strict=False)
+        }
+
+        gathered = self.accelerator.gather_for_metrics(values)
+        for idx, name in enumerate(names):
+            metrics[f"{prefix}/world_mean/{name}"] = gathered[:, idx].mean().item()
+            metrics[f"{prefix}/world_max/{name}"] = gathered[:, idx].max().item()
+        return metrics
+
+    @staticmethod
+    def _reset_cuda_peak_memory(device):
+        if not torch.cuda.is_available():
+            return
+        if isinstance(device, torch.device):
+            if device.type != "cuda":
+                return
+            device = device.index if device.index is not None else torch.cuda.current_device()
+        elif device is None:
+            device = torch.cuda.current_device()
+        torch.cuda.reset_peak_memory_stats(device)
 
     def append_to_log_dict(self, log_dict):
         """Hook for subclasses to inject additional entries into the per-iteration log dict."""
