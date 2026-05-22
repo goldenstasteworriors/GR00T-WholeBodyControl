@@ -623,6 +623,16 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
         terminations={
             "time_out": TerminationTermCfg(func=terminations.time_out, time_out=True),
             "non_finite_state": TerminationTermCfg(func=terminations.non_finite_state),
+            "non_finite_joint_pos": TerminationTermCfg(func=terminations.non_finite_joint_pos),
+            "non_finite_joint_vel": TerminationTermCfg(func=terminations.non_finite_joint_vel),
+            "non_finite_body_pos": TerminationTermCfg(func=terminations.non_finite_body_pos),
+            "non_finite_body_quat": TerminationTermCfg(func=terminations.non_finite_body_quat),
+            "non_finite_body_lin_vel": TerminationTermCfg(
+                func=terminations.non_finite_body_lin_vel
+            ),
+            "non_finite_body_ang_vel": TerminationTermCfg(
+                func=terminations.non_finite_body_ang_vel
+            ),
             "anchor_pos": TerminationTermCfg(
                 func=terminations.anchor_pos,
                 params=_term_params(termination_cfg, "anchor_pos"),

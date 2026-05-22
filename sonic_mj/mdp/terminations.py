@@ -22,20 +22,49 @@ def _body_indexes(cmd: SonicMotionCommand, body_names: list[str] | tuple[str, ..
     ]
 
 
-def non_finite_state(env, command_name: str = "motion") -> torch.Tensor:
+def _non_finite_envs(tensor: torch.Tensor, num_envs: int) -> torch.Tensor:
+    return ~torch.isfinite(tensor.reshape(num_envs, -1)).all(dim=1)
+
+
+def non_finite_joint_pos(env, command_name: str = "motion") -> torch.Tensor:
     cmd = _motion(env, command_name)
-    checks = [
-        cmd.robot.data.joint_pos,
-        cmd.robot.data.joint_vel,
-        cmd.robot.data.body_link_pos_w,
-        cmd.robot.data.body_link_quat_w,
-        cmd.robot.data.body_link_lin_vel_w,
-        cmd.robot.data.body_link_ang_vel_w,
-    ]
-    invalid = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    for tensor in checks:
-        invalid |= ~torch.isfinite(tensor.reshape(env.num_envs, -1)).all(dim=1)
-    return invalid
+    return _non_finite_envs(cmd.robot.data.joint_pos, env.num_envs)
+
+
+def non_finite_joint_vel(env, command_name: str = "motion") -> torch.Tensor:
+    cmd = _motion(env, command_name)
+    return _non_finite_envs(cmd.robot.data.joint_vel, env.num_envs)
+
+
+def non_finite_body_pos(env, command_name: str = "motion") -> torch.Tensor:
+    cmd = _motion(env, command_name)
+    return _non_finite_envs(cmd.robot.data.body_link_pos_w, env.num_envs)
+
+
+def non_finite_body_quat(env, command_name: str = "motion") -> torch.Tensor:
+    cmd = _motion(env, command_name)
+    return _non_finite_envs(cmd.robot.data.body_link_quat_w, env.num_envs)
+
+
+def non_finite_body_lin_vel(env, command_name: str = "motion") -> torch.Tensor:
+    cmd = _motion(env, command_name)
+    return _non_finite_envs(cmd.robot.data.body_link_lin_vel_w, env.num_envs)
+
+
+def non_finite_body_ang_vel(env, command_name: str = "motion") -> torch.Tensor:
+    cmd = _motion(env, command_name)
+    return _non_finite_envs(cmd.robot.data.body_link_ang_vel_w, env.num_envs)
+
+
+def non_finite_state(env, command_name: str = "motion") -> torch.Tensor:
+    return (
+        non_finite_joint_pos(env, command_name)
+        | non_finite_joint_vel(env, command_name)
+        | non_finite_body_pos(env, command_name)
+        | non_finite_body_quat(env, command_name)
+        | non_finite_body_lin_vel(env, command_name)
+        | non_finite_body_ang_vel(env, command_name)
+    )
 
 
 def anchor_pos(
