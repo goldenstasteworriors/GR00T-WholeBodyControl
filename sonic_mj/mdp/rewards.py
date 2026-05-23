@@ -6,7 +6,7 @@ import torch
 
 from mjlab.envs import mdp as mj_mdp
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.utils.lab_api.math import quat_error_magnitude
+from mjlab.utils.lab_api.math import quat_apply, quat_error_magnitude, quat_inv
 
 from sonic_mj.mdp.commands import SonicMotionCommand
 
@@ -57,9 +57,16 @@ def tracking_body_angvel(env, command_name: str = "motion", std: float = 3.14) -
 
 def tracking_vr_5point_local(env, command_name: str = "motion", std: float = 0.3) -> torch.Tensor:
     cmd = _motion(env, command_name)
-    target = cmd.body_pos_relative_w[:, cmd.reward_point_body_indices_motion]
-    current = cmd.robot_body_pos_w[:, cmd.reward_point_body_indices]
-    err = torch.sum(torch.square(target - current), dim=-1)
+    num_points = len(cmd.cfg.reward_point_body)
+    ref_root_quat = cmd.anchor_quat_w[:, None, :].repeat(1, num_points, 1)
+    ref_diff = cmd.reward_point_body_pos_w - cmd.anchor_pos_w[:, None, :]
+    ref_pos = quat_apply(quat_inv(ref_root_quat), ref_diff)
+
+    robot_root_quat = cmd.robot_anchor_quat_w[:, None, :].repeat(1, num_points, 1)
+    robot_diff = cmd.robot_reward_point_body_pos_w - cmd.robot_anchor_pos_w[:, None, :]
+    robot_pos = quat_apply(quat_inv(robot_root_quat), robot_diff)
+
+    err = torch.sum(torch.square(robot_pos - ref_pos), dim=-1)
     return torch.exp(-err.mean(-1) / std**2)
 
 

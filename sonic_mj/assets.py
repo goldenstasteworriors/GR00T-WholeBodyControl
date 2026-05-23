@@ -7,6 +7,24 @@ import mujoco
 from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
+ARMATURE_5020 = 0.003609725
+ARMATURE_7520_14 = 0.010177520
+ARMATURE_7520_22 = 0.025101925
+ARMATURE_4010 = 0.00425
+
+NATURAL_FREQ = 10 * 2.0 * 3.1415926535
+DAMPING_RATIO = 2.0
+
+STIFFNESS_5020 = ARMATURE_5020 * NATURAL_FREQ**2
+STIFFNESS_7520_14 = ARMATURE_7520_14 * NATURAL_FREQ**2
+STIFFNESS_7520_22 = ARMATURE_7520_22 * NATURAL_FREQ**2
+STIFFNESS_4010 = ARMATURE_4010 * NATURAL_FREQ**2
+
+DAMPING_5020 = 2.0 * DAMPING_RATIO * ARMATURE_5020 * NATURAL_FREQ
+DAMPING_7520_14 = 2.0 * DAMPING_RATIO * ARMATURE_7520_14 * NATURAL_FREQ
+DAMPING_7520_22 = 2.0 * DAMPING_RATIO * ARMATURE_7520_22 * NATURAL_FREQ
+DAMPING_4010 = 2.0 * DAMPING_RATIO * ARMATURE_4010 * NATURAL_FREQ
+
 SONIC_G1_XML = (
     Path(__file__).resolve().parents[1]
     / "gear_sonic"
@@ -248,18 +266,22 @@ G1_MUJOCO_TO_ISAACLAB_BODY = (
 )
 
 SONIC_G1_ACTION_SCALE = {
-    ".*_hip_yaw_joint": 0.5,
-    ".*_hip_roll_joint": 0.5,
-    ".*_hip_pitch_joint": 0.5,
-    ".*_knee_joint": 0.5,
-    "waist_.*_joint": 0.5,
-    ".*_ankle_pitch_joint": 0.5,
-    ".*_ankle_roll_joint": 0.5,
-    ".*_shoulder_pitch_joint": 0.5,
-    ".*_shoulder_roll_joint": 0.5,
-    ".*_shoulder_yaw_joint": 0.5,
-    ".*_elbow_joint": 0.5,
-    ".*_wrist_.*_joint": 0.5,
+    ".*_hip_yaw_joint": 0.25 * 88.0 / STIFFNESS_7520_14,
+    ".*_hip_roll_joint": 0.25 * 139.0 / STIFFNESS_7520_22,
+    ".*_hip_pitch_joint": 0.25 * 139.0 / STIFFNESS_7520_22,
+    ".*_knee_joint": 0.25 * 139.0 / STIFFNESS_7520_22,
+    "waist_roll_joint": 0.25 * 50.0 / (2.0 * STIFFNESS_5020),
+    "waist_pitch_joint": 0.25 * 50.0 / (2.0 * STIFFNESS_5020),
+    "waist_yaw_joint": 0.25 * 88.0 / STIFFNESS_7520_14,
+    ".*_ankle_pitch_joint": 0.25 * 50.0 / (2.0 * STIFFNESS_5020),
+    ".*_ankle_roll_joint": 0.25 * 50.0 / (2.0 * STIFFNESS_5020),
+    ".*_shoulder_pitch_joint": 0.25 * 25.0 / STIFFNESS_5020,
+    ".*_shoulder_roll_joint": 0.25 * 25.0 / STIFFNESS_5020,
+    ".*_shoulder_yaw_joint": 0.25 * 25.0 / STIFFNESS_5020,
+    ".*_elbow_joint": 0.25 * 25.0 / STIFFNESS_5020,
+    ".*_wrist_roll_joint": 0.25 * 25.0 / STIFFNESS_5020,
+    ".*_wrist_pitch_joint": 0.25 * 5.0 / STIFFNESS_4010,
+    ".*_wrist_yaw_joint": 0.25 * 5.0 / STIFFNESS_4010,
 }
 
 SONIC_G1_DEFAULT_JOINT_POS = {
@@ -292,10 +314,63 @@ def get_sonic_g1_robot_cfg() -> EntityCfg:
         articulation=EntityArticulationInfoCfg(
             actuators=(
                 BuiltinPositionActuatorCfg(
-                    target_names_expr=(".*",),
-                    stiffness=80.0,
-                    damping=3.0,
-                    effort_limit=200.0,
+                    target_names_expr=(
+                        ".*_hip_roll_joint",
+                        ".*_hip_pitch_joint",
+                        ".*_knee_joint",
+                    ),
+                    stiffness=STIFFNESS_7520_22,
+                    damping=DAMPING_7520_22,
+                    armature=ARMATURE_7520_22,
+                    effort_limit=139.0,
+                ),
+                BuiltinPositionActuatorCfg(
+                    target_names_expr=(".*_hip_yaw_joint",),
+                    stiffness=STIFFNESS_7520_14,
+                    damping=DAMPING_7520_14,
+                    armature=ARMATURE_7520_14,
+                    effort_limit=88.0,
+                ),
+                BuiltinPositionActuatorCfg(
+                    target_names_expr=(".*_ankle_pitch_joint", ".*_ankle_roll_joint"),
+                    stiffness=2.0 * STIFFNESS_5020,
+                    damping=2.0 * DAMPING_5020,
+                    armature=2.0 * ARMATURE_5020,
+                    effort_limit=50.0,
+                ),
+                BuiltinPositionActuatorCfg(
+                    target_names_expr=("waist_roll_joint", "waist_pitch_joint"),
+                    stiffness=2.0 * STIFFNESS_5020,
+                    damping=2.0 * DAMPING_5020,
+                    armature=2.0 * ARMATURE_5020,
+                    effort_limit=50.0,
+                ),
+                BuiltinPositionActuatorCfg(
+                    target_names_expr=("waist_yaw_joint",),
+                    stiffness=STIFFNESS_7520_14,
+                    damping=DAMPING_7520_14,
+                    armature=ARMATURE_7520_14,
+                    effort_limit=88.0,
+                ),
+                BuiltinPositionActuatorCfg(
+                    target_names_expr=(
+                        ".*_shoulder_pitch_joint",
+                        ".*_shoulder_roll_joint",
+                        ".*_shoulder_yaw_joint",
+                        ".*_elbow_joint",
+                        ".*_wrist_roll_joint",
+                    ),
+                    stiffness=STIFFNESS_5020,
+                    damping=DAMPING_5020,
+                    armature=ARMATURE_5020,
+                    effort_limit=25.0,
+                ),
+                BuiltinPositionActuatorCfg(
+                    target_names_expr=(".*_wrist_pitch_joint", ".*_wrist_yaw_joint"),
+                    stiffness=STIFFNESS_4010,
+                    damping=DAMPING_4010,
+                    armature=ARMATURE_4010,
+                    effort_limit=5.0,
                 ),
             ),
             soft_joint_pos_limit_factor=0.9,

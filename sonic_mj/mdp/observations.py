@@ -141,14 +141,10 @@ def command_num_frames(env, command_name: str = "motion") -> torch.Tensor:
 
 def vr_3point_local_target(env, command_name: str = "motion") -> torch.Tensor:
     cmd = _motion(env, command_name)
-    future = cmd.future_state(num_frames=1)
-    pts = future["body_pos_w"][:, 0, cmd.vr_3point_body_indices_motion]
-    pos_b, _ = subtract_frame_transforms(
-        cmd.robot_anchor_pos_w[:, None, :].repeat(1, pts.shape[1], 1),
-        cmd.robot_anchor_quat_w[:, None, :].repeat(1, pts.shape[1], 1),
-        pts,
-        future["body_quat_w"][:, 0, cmd.vr_3point_body_indices_motion],
-    )
+    num_points = len(cmd.cfg.vr_3point_body)
+    ref_root_quat = cmd.anchor_quat_w[:, None, :].repeat(1, num_points, 1)
+    ref_diff = cmd.vr_3point_body_pos_w - cmd.anchor_pos_w[:, None, :]
+    pos_b = quat_apply(quat_inv(ref_root_quat), ref_diff)
     return pos_b.reshape(env.num_envs, -1)
 
 
@@ -160,10 +156,9 @@ def vr_3point_local_target_multi_future(env, command_name: str = "motion") -> to
 
 def vr_3point_local_orn_target(env, command_name: str = "motion") -> torch.Tensor:
     cmd = _motion(env, command_name)
-    future = cmd.future_state(num_frames=1)
-    q = future["body_quat_w"][:, 0, cmd.vr_3point_body_indices_motion]
-    robot_q = cmd.robot_anchor_quat_w[:, None, :].repeat(1, q.shape[1], 1)
-    mat = matrix_from_quat(quat_mul(quat_inv(robot_q), q))
+    q = cmd.vr_3point_body_quat_w
+    ref_root_quat = cmd.anchor_quat_w[:, None, :].repeat(1, q.shape[1], 1)
+    mat = matrix_from_quat(quat_mul(quat_inv(ref_root_quat), q))
     return mat[..., :2].reshape(env.num_envs, -1)
 
 
@@ -185,20 +180,24 @@ def smpl_joints_multi_future_local_nonflat(env, command_name: str = "motion") ->
     smpl = future.get("smpl_joints")
     if smpl is None:
         return torch.zeros(env.num_envs, cmd.cfg.smpl_num_future_frames, 72, device=env.device)
-    return smpl.reshape(env.num_envs, cmd.cfg.smpl_num_future_frames, -1)
+    root_quat = cmd.smpl_root_quat_w_from_pose(future["smpl_pose"])
+    ref_root_quat = root_quat.unsqueeze(-2).repeat(1, 1, smpl.shape[-2], 1)
+    smpl_root = quat_apply(quat_inv(ref_root_quat), smpl)
+    return smpl_root.reshape(env.num_envs, cmd.cfg.smpl_num_future_frames, -1)
 
 
 def smpl_root_ori_b_multi_future(env, command_name: str = "motion") -> torch.Tensor:
     cmd = _motion(env, command_name)
     future = cmd.future_state(cmd.cfg.smpl_num_future_frames, cmd.cfg.smpl_dt_future_ref_frames)
-    q = future["body_quat_w"][:, :, cmd.motion_anchor_body_index]
+    q = cmd.smpl_root_quat_w_from_pose(future["smpl_pose"])
     robot_q = cmd.robot_anchor_quat_w[:, None, :].repeat(1, q.shape[1], 1)
     mat = matrix_from_quat(quat_mul(quat_inv(robot_q), q))
     return mat[..., :2].reshape(env.num_envs, cmd.cfg.smpl_num_future_frames, -1)
 
 
 def joint_pos_multi_future_wrist_for_smpl(env, command_name: str = "motion") -> torch.Tensor:
-    future = _motion(env, command_name).future_state()
+    cmd = _motion(env, command_name)
+    future = cmd.future_state(cmd.cfg.smpl_num_future_frames, cmd.cfg.smpl_dt_future_ref_frames)
     wrist_ids = (19, 20, 21, 26, 27, 28)
     return future["dof_pos"][..., wrist_ids]
 

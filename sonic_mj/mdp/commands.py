@@ -19,6 +19,8 @@ from mjlab.utils.lab_api.math import (
     yaw_quat,
 )
 
+from gear_sonic.isaac_utils import rotations
+from gear_sonic.trl.utils import torch_transform
 from sonic_mj.assets import (
     G1_ISAACLAB_JOINTS,
     SONIC_G1_BODY_NAMES,
@@ -81,6 +83,9 @@ class SonicMotionCommand(CommandTerm):
         ).view(1, -1, 3)
         self.vr_3point_body_indices_motion = [
             cfg.body_names.index(name) for name in cfg.vr_3point_body
+        ]
+        self.vr_3point_body_indices = [
+            self.robot.body_names.index(name) for name in cfg.vr_3point_body
         ]
         self.vr_3point_body_offsets = _as_tensor(
             cfg.vr_3point_body_offset, device=self.device
@@ -207,6 +212,12 @@ class SonicMotionCommand(CommandTerm):
         self.running_ref_root_height = self.anchor_pos_w[:, 2].clone()
         self._print_order_summary()
 
+    def _apply_body_offsets(self, body_quat_w: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+        expanded_offsets = offsets.expand(body_quat_w.shape[0], -1, -1)
+        flat_offsets = expanded_offsets.reshape(-1, 3)
+        flat_quat = body_quat_w.reshape(-1, 4)
+        return quat_apply(flat_quat, flat_offsets).reshape_as(expanded_offsets)
+
     @property
     def command(self) -> torch.Tensor:
         return torch.cat([self.joint_pos, self.joint_vel], dim=-1)
@@ -274,6 +285,40 @@ class SonicMotionCommand(CommandTerm):
     @property
     def robot_anchor_quat_w(self) -> torch.Tensor:
         return self.robot.data.body_link_quat_w[:, self.robot_anchor_body_index]
+
+    @property
+    def reward_point_body_quat_w(self) -> torch.Tensor:
+        return self.body_quat_w[:, self.reward_point_body_indices_motion]
+
+    @property
+    def reward_point_body_pos_w(self) -> torch.Tensor:
+        pos = self.body_pos_w[:, self.reward_point_body_indices_motion]
+        return pos + self._apply_body_offsets(
+            self.reward_point_body_quat_w, self.reward_point_body_offsets
+        )
+
+    @property
+    def robot_reward_point_body_pos_w(self) -> torch.Tensor:
+        pos = self.robot.data.body_link_pos_w[:, self.reward_point_body_indices]
+        quat = self.robot.data.body_link_quat_w[:, self.reward_point_body_indices]
+        return pos + self._apply_body_offsets(quat, self.reward_point_body_offsets)
+
+    @property
+    def vr_3point_body_quat_w(self) -> torch.Tensor:
+        return self.body_quat_w[:, self.vr_3point_body_indices_motion]
+
+    @property
+    def vr_3point_body_pos_w(self) -> torch.Tensor:
+        pos = self.body_pos_w[:, self.vr_3point_body_indices_motion]
+        return pos + self._apply_body_offsets(
+            self.vr_3point_body_quat_w, self.vr_3point_body_offsets
+        )
+
+    @property
+    def robot_vr_3point_pos_w(self) -> torch.Tensor:
+        pos = self.robot.data.body_link_pos_w[:, self.vr_3point_body_indices]
+        quat = self.robot.data.body_link_quat_w[:, self.vr_3point_body_indices]
+        return pos + self._apply_body_offsets(quat, self.vr_3point_body_offsets)
 
     @property
     def body_pos_relative_w(self) -> torch.Tensor:
@@ -384,6 +429,24 @@ class SonicMotionCommand(CommandTerm):
             [0.5, 0.5, 0.5, 0.5], dtype=quat.dtype, device=quat.device
         ).expand_as(quat)
         return quat_mul(quat, bvh_base_rot)
+
+    def smpl_root_quat_w_from_pose(self, smpl_pose: torch.Tensor) -> torch.Tensor:
+        root_quat = torch_transform.angle_axis_to_quaternion(smpl_pose[..., :3]).reshape(-1, 4)
+        if bool(getattr(self.motion_lib, "smpl_y_up", False)):
+            base_rot = torch_transform.angle_axis_to_quaternion(
+                torch.tensor(
+                    [[math.pi / 2, 0.0, 0.0]],
+                    dtype=root_quat.dtype,
+                    device=root_quat.device,
+                )
+            )
+            root_quat = rotations.quat_mul(
+                base_rot.repeat(root_quat.shape[0], 1),
+                root_quat,
+                w_last=False,
+            )
+        root_quat = rotations.remove_smpl_base_rot(root_quat, w_last=False)
+        return root_quat.reshape(*smpl_pose.shape[:-1], 4)
 
     def _update_metrics(self) -> None:
         self.metrics["error_anchor_pos"] = torch.norm(
