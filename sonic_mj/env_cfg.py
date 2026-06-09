@@ -25,10 +25,7 @@ from mjlab.terrains.heightfield_terrains import (
 from mjlab.terrains.primitive_terrains import BoxRandomGridTerrainCfg
 
 from sonic_mj.assets import (
-    SONIC_G1_ACTION_SCALE,
-    SONIC_G1_BODY_NAMES,
-    SONIC_G1_JOINT_NAMES,
-    get_sonic_g1_robot_cfg,
+    get_sonic_robot_profile,
 )
 from sonic_mj.mdp import curriculum as sonic_curriculum
 from sonic_mj.mdp import observations as obs
@@ -385,6 +382,7 @@ def _make_sonic_curriculum(manager_cfg):
 def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
     manager_cfg = config.manager_env
     base_cfg = manager_cfg.config
+    robot_profile = get_sonic_robot_profile(_cfg_get(_cfg_get(base_cfg, "robot", {}), "type", None))
     motion_cfg = manager_cfg.commands.motion
     motion_lib_cfg = OmegaConf.to_container(motion_cfg.motion_lib_cfg, resolve=True)
     motion_file = motion_lib_cfg.get("motion_file", "")
@@ -489,7 +487,7 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
             num_envs=num_envs,
             env_spacing=float(base_cfg.env_spacing),
             terrain=_make_sonic_terrain_cfg(base_cfg, num_envs=num_envs, seed=int(config.seed)),
-            entities={"robot": get_sonic_g1_robot_cfg()},
+            entities={"robot": robot_profile.robot_cfg_fn()},
         ),
         sim=SimulationCfg(
             nconmax=None if nconmax is None else int(nconmax),
@@ -499,8 +497,8 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
         actions={
             "joint_pos": JointPositionActionCfg(
                 entity_name="robot",
-                actuator_names=SONIC_G1_JOINT_NAMES,
-                scale=SONIC_G1_ACTION_SCALE,
+                actuator_names=robot_profile.joint_names,
+                scale=robot_profile.action_scale,
                 use_default_offset=True,
             )
         },
@@ -513,7 +511,10 @@ def make_sonic_mj_env_cfg(config) -> ManagerBasedRlEnvCfg:
                 smpl_motion_file=str(smpl_motion_file),
                 motion_lib_cfg=motion_lib_cfg,
                 anchor_body="pelvis",
-                body_names=SONIC_G1_BODY_NAMES,
+                body_names=robot_profile.body_names,
+                joint_names=robot_profile.joint_names,
+                isaaclab_joints=robot_profile.isaaclab_joints,
+                motion_dof_to_mujoco=robot_profile.motion_dof_to_mujoco,
                 reward_point_body=tuple(motion_cfg.reward_point_body),
                 reward_point_body_offset=tuple(tuple(v) for v in motion_cfg.reward_point_body_offset),
                 num_future_frames=int(motion_cfg.num_future_frames),

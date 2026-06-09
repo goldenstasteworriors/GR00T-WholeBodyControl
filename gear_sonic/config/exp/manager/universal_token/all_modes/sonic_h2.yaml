@@ -66,6 +66,11 @@ manager_env:
 
 algo:
   config:
+    robot_conditioning:
+      enabled: false
+      source_robot: g1
+      target_robot: h2
+      note: "No-op placeholder for future cross-humanoid conditioning."
     empty_cache_every_n_ppo_epoch: -1
     num_steps_per_env: 24
     use_clampped_std: true

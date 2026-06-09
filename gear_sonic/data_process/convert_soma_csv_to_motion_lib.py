@@ -2,7 +2,7 @@
 # ruff: noqa: T201, DOC
 """Convert SOMA retargeter CSV/PKL data to motion_lib format for SONIC training.
 
-SOMA retargeter outputs G1 29-DOF motion data as CSV files (joint_pos.csv,
+SOMA retargeter outputs robot-space motion data as CSV files (joint_pos.csv,
 body_pos.csv, body_quat.csv) or as a joblib PKL with the same fields. This
 script converts that data into the motion_lib PKL format expected by SONIC
 training (root_trans_offset, pose_aa, dof, root_rot, fps).
@@ -30,15 +30,15 @@ Usage:
         --input data/soma_retarget/bones_test.pkl \
         --output data/soma_bones_test.pkl --fps 50
 
-    # Bones-SEED: directory of flat CSVs (single session)
+    # Bones-SEED G1: directory of flat CSVs (single session)
     python scripts/motion/convert_soma_csv_to_motion_lib.py \
         --input /path/to/bones_SEED/g1/csv/210531 \
-        --output data/bones_seed_210531.pkl --fps 50
+        --output data/bones_seed_210531.pkl --fps 50 --robot g1
 
-    # Bones-SEED: all sessions (parent dir)
+    # Bones-SEED H2: all sessions (parent dir)
     python scripts/motion/convert_soma_csv_to_motion_lib.py \
-        --input /path/to/bones_SEED/g1/csv \
-        --output data/bones_seed_all.pkl --fps 50
+        --input /path/to/bones_SEED/h2/csv \
+        --output data/motion_lib_bones_seed/h2 --fps 30 --fps_source 120 --robot h2 --individual
 """
 
 import argparse
@@ -87,11 +87,7 @@ MJ_TO_IL = np.array(
     dtype=np.int32,
 )
 
-# G1 29-DOF axis definitions (from Humanoid_Batch / g1_29dof_rev_1_0.xml).
-# Each DOF rotates around a single axis. Hardcoded to avoid torch dependency.
-NUM_DOF = 29
-NUM_BODIES = 30  # pelvis + 29 actuated links
-DOF_AXIS = np.array(
+G1_DOF_AXIS = np.array(
     [
         [0, 1, 0],
         [1, 0, 0],
@@ -126,10 +122,7 @@ DOF_AXIS = np.array(
     dtype=np.float32,
 )
 
-
-# Joint names in Bones-SEED CSV column order (after Frame + 6 root columns).
-# These are in MuJoCo/MJCF actuator order (same as g1_29dof_rev_1_0.xml motors).
-BONES_CSV_JOINT_NAMES = [
+G1_BONES_CSV_JOINT_NAMES = [
     "left_hip_pitch_joint_dof",
     "left_hip_roll_joint_dof",
     "left_hip_yaw_joint_dof",
@@ -161,15 +154,110 @@ BONES_CSV_JOINT_NAMES = [
     "right_wrist_yaw_joint_dof",
 ]
 
+H2_DOF_AXIS = np.array(
+    [
+        [0, 1, 0],
+        [1, 0, 0],
+        [0, 0, 1],
+        [0, 1, 0],
+        [1, 0, 0],
+        [0, 1, 0],  # left leg
+        [0, 1, 0],
+        [1, 0, 0],
+        [0, 0, 1],
+        [0, 1, 0],
+        [1, 0, 0],
+        [0, 1, 0],  # right leg
+        [0, 0, 1],
+        [1, 0, 0],
+        [0, 1, 0],  # waist
+        [0, 1, 0],
+        [0, 0, 1],  # head
+        [0, 1, 0],
+        [1, 0, 0],
+        [0, 0, 1],
+        [0, 1, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],  # left arm
+        [0, 1, 0],
+        [1, 0, 0],
+        [0, 0, 1],
+        [0, 1, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],  # right arm
+    ],
+    dtype=np.float32,
+)
 
-def load_bones_csv(csv_path: str) -> dict:
+H2_BONES_CSV_JOINT_NAMES = [
+    "left_hip_pitch_joint_dof",
+    "left_hip_roll_joint_dof",
+    "left_hip_yaw_joint_dof",
+    "left_knee_joint_dof",
+    "left_ankle_roll_joint_dof",
+    "left_ankle_pitch_joint_dof",
+    "right_hip_pitch_joint_dof",
+    "right_hip_roll_joint_dof",
+    "right_hip_yaw_joint_dof",
+    "right_knee_joint_dof",
+    "right_ankle_roll_joint_dof",
+    "right_ankle_pitch_joint_dof",
+    "waist_yaw_joint_dof",
+    "waist_roll_joint_dof",
+    "waist_pitch_joint_dof",
+    "head_pitch_joint_dof",
+    "head_yaw_joint_dof",
+    "left_shoulder_pitch_joint_dof",
+    "left_shoulder_roll_joint_dof",
+    "left_shoulder_yaw_joint_dof",
+    "left_elbow_joint_dof",
+    "left_wrist_roll_joint_dof",
+    "left_wrist_pitch_joint_dof",
+    "left_wrist_yaw_joint_dof",
+    "right_shoulder_pitch_joint_dof",
+    "right_shoulder_roll_joint_dof",
+    "right_shoulder_yaw_joint_dof",
+    "right_elbow_joint_dof",
+    "right_wrist_roll_joint_dof",
+    "right_wrist_pitch_joint_dof",
+    "right_wrist_yaw_joint_dof",
+]
+
+ROBOT_SPECS = {
+    "g1": {
+        "num_dof": 29,
+        "num_bodies": 30,
+        "dof_axis": G1_DOF_AXIS,
+        "csv_joint_names": G1_BONES_CSV_JOINT_NAMES,
+        "mj_to_il": MJ_TO_IL,
+    },
+    "h2": {
+        "num_dof": 31,
+        "num_bodies": 32,
+        "dof_axis": H2_DOF_AXIS,
+        "csv_joint_names": H2_BONES_CSV_JOINT_NAMES,
+        "mj_to_il": None,
+    },
+}
+
+
+def get_robot_spec(robot: str) -> dict:
+    if robot not in ROBOT_SPECS:
+        raise ValueError(f"Unsupported robot '{robot}'. Choose from {sorted(ROBOT_SPECS)}")
+    return ROBOT_SPECS[robot]
+
+
+def load_bones_csv(csv_path: str, robot: str = "g1") -> dict:
     """Load a single Bones-SEED flat CSV motion file.
 
-    Bones-SEED CSV format: Frame, root_translate{X,Y,Z}, root_rotate{X,Y,Z}, 29 joint DOFs.
+    Bones-SEED CSV format: Frame, root_translate{X,Y,Z}, root_rotate{X,Y,Z}, joint DOFs.
     All angles in degrees, positions in centimeters.
     """
     import pandas as pd
 
+    spec = get_robot_spec(robot)
     data = pd.read_csv(csv_path)
     T = len(data)
 
@@ -202,22 +290,25 @@ def load_bones_csv(csv_path: str) -> dict:
     # Convert xyzw → wxyz for body_quat_w format
     root_quat_wxyz = root_quat_xyzw[:, [3, 0, 1, 2]]
 
-    # Joint DOFs: degrees → radians, already in MuJoCo/MJCF actuator order
-    joint_cols = [c for c in data.columns if c.endswith("_dof")]
-    joint_pos_mj = np.deg2rad(data[joint_cols].values).astype(np.float32)  # (T, 29)
+    # Joint DOFs: degrees → radians, in the robot's MuJoCo/MJCF actuator order.
+    joint_cols = spec["csv_joint_names"]
+    missing_cols = [c for c in joint_cols if c not in data.columns]
+    if missing_cols:
+        raise ValueError(f"{csv_path} is missing expected {robot} joint columns: {missing_cols}")
+    joint_pos_mj = np.deg2rad(data[joint_cols].values).astype(np.float32)  # (T, num_dof)
 
     # Create dummy body_pos_w and body_quat_w (only root body populated, rest zeros)
     # The converter only uses body_pos_w[:,0] for root_trans and body_quat_w[:,0] for root_rot
-    body_pos_w = np.zeros((T, 14, 3), dtype=np.float32)
+    body_pos_w = np.zeros((T, spec["num_bodies"], 3), dtype=np.float32)
     body_pos_w[:, 0, :] = root_pos
-    body_quat_w = np.zeros((T, 14, 4), dtype=np.float32)
+    body_quat_w = np.zeros((T, spec["num_bodies"], 4), dtype=np.float32)
     body_quat_w[:, :, 0] = 1.0  # identity quaternion wxyz
     body_quat_w[:, 0, :] = root_quat_wxyz
 
     return {
-        "joint_pos": joint_pos_mj,  # (T, 29) MuJoCo order, radians
-        "body_pos_w": body_pos_w,  # (T, 14, 3)
-        "body_quat_w": body_quat_w,  # (T, 14, 4) wxyz
+        "joint_pos": joint_pos_mj,  # (T, num_dof) MuJoCo order, radians
+        "body_pos_w": body_pos_w,  # (T, num_bodies, 3)
+        "body_quat_w": body_quat_w,  # (T, num_bodies, 4) wxyz
         "joint_order": "mj",  # already in MuJoCo order, skip IL→MJ reorder
     }
 
@@ -247,21 +338,22 @@ def load_csv_motion(motion_dir: str) -> dict:
     }
 
 
-def convert_sequence(seq_data: dict, fps: int, humanoid_fk=None) -> dict:  # noqa: ARG001
+def convert_sequence(seq_data: dict, fps: int, humanoid_fk=None, robot: str = "g1") -> dict:  # noqa: ARG001
     """Convert a single deploy-format sequence to motion_lib format.
 
     Args:
-        seq_data: dict with joint_pos (T, 29), body_pos_w (T, 14, 3),
-                  body_quat_w (T, 14, 4 wxyz)
+        seq_data: dict with joint_pos (T, num_dof), body_pos_w (T, num_bodies, 3),
+                  body_quat_w (T, num_bodies, 4 wxyz)
         fps: frame rate of the input data
         humanoid_fk: Optional Humanoid_Batch instance (unused, kept for compat)
 
     Returns:
         motion_lib entry dict with root_trans_offset, pose_aa, dof, root_rot, fps
     """
-    joint_pos = seq_data["joint_pos"]  # (T, 29)
-    body_pos_w = seq_data["body_pos_w"]  # (T, 14, 3)
-    body_quat_w = seq_data["body_quat_w"]  # (T, 14, 4) wxyz
+    spec = get_robot_spec(robot)
+    joint_pos = seq_data["joint_pos"]  # (T, num_dof)
+    body_pos_w = seq_data["body_pos_w"]  # (T, num_bodies, 3)
+    body_quat_w = seq_data["body_quat_w"]  # (T, num_bodies, 4) wxyz
     joint_order = seq_data.get("joint_order", "il")  # "il" or "mj"
 
     T = joint_pos.shape[0]
@@ -276,19 +368,23 @@ def convert_sequence(seq_data: dict, fps: int, humanoid_fk=None) -> dict:  # noq
     # 3. Reorder DOFs to MuJoCo order if needed
     if joint_order == "il":
         # Input is IsaacLab order → reorder to MuJoCo (MJCF actuator order)
-        dof_mj = joint_pos[:, MJ_TO_IL]  # (T, 29)
+        if spec["mj_to_il"] is None:
+            raise ValueError(f"IsaacLab-order conversion is not configured for robot '{robot}'")
+        dof_mj = joint_pos[:, spec["mj_to_il"]]  # (T, num_dof)
     else:
         # Input is already in MuJoCo order (e.g., Bones-SEED CSVs)
-        dof_mj = joint_pos  # (T, 29)
+        dof_mj = joint_pos  # (T, num_dof)
 
-    # 4. Convert DOF → pose_aa using hardcoded G1 axis definitions
-    dof = dof_mj[:, :NUM_DOF]
+    # 4. Convert DOF → pose_aa using robot MJCF axis definitions
+    dof = dof_mj[:, : spec["num_dof"]]
+    if dof.shape[1] != spec["num_dof"]:
+        raise ValueError(f"Expected {spec['num_dof']} DOFs for {robot}, got {dof.shape[1]}")
 
     # pose_aa[body_idx] = dof_axis * dof_value (axis-angle representation)
-    # Body 0 = pelvis (root), bodies 1-29 = actuated joints
-    pose_aa = np.zeros((T, NUM_BODIES, 3), dtype=np.float32)
+    # Body 0 = pelvis (root), remaining bodies = actuated joints in robot body order
+    pose_aa = np.zeros((T, spec["num_bodies"], 3), dtype=np.float32)
     # Actuated joints: body idx = dof idx + 1
-    pose_aa[:, 1:NUM_BODIES, :] = DOF_AXIS[None, :, :] * dof[:, :, None]
+    pose_aa[:, 1 : spec["num_bodies"], :] = spec["dof_axis"][None, :, :] * dof[:, :, None]
 
     # Set root rotation as axis-angle
     pose_aa[:, 0, :] = transform.Rotation.from_quat(root_quat_xyzw).as_rotvec()
@@ -351,7 +447,7 @@ def init_humanoid_fk():
 
 def process_session_csvs(args_tuple):
     """Process all CSVs in a single session directory. Used by multiprocessing."""
-    session_dir, session_name, out_dir, fps, fps_source = args_tuple
+    session_dir, session_name, out_dir, fps, fps_source, robot = args_tuple
     import warnings
 
     warnings.filterwarnings("ignore")
@@ -370,9 +466,9 @@ def process_session_csvs(args_tuple):
             converted += 1  # skip existing
             continue
         try:
-            seq = load_bones_csv(os.path.join(session_dir, csv_f))
+            seq = load_bones_csv(os.path.join(session_dir, csv_f), robot=robot)
             fps_for_convert = fps_source if fps_source else fps
-            entry = convert_sequence(seq, fps_for_convert)
+            entry = convert_sequence(seq, fps_for_convert, robot=robot)
             if fps_source and fps_source != fps:
                 entry = downsample_sequence(entry, fps_source, fps)
             joblib.dump({name: entry}, out_path, compress=True)
@@ -414,9 +510,16 @@ def main():
         default=8,
         help="Number of parallel workers for --individual mode",
     )
+    parser.add_argument(
+        "--robot",
+        choices=sorted(ROBOT_SPECS),
+        default="g1",
+        help="Robot embodiment for flat Bones-SEED CSV conversion.",
+    )
     args = parser.parse_args()
+    spec = get_robot_spec(args.robot)
 
-    print(f"G1 {NUM_DOF} DOFs, {NUM_BODIES} bodies (hardcoded axes)")
+    print(f"{args.robot} {spec['num_dof']} DOFs, {spec['num_bodies']} bodies (MJCF axes)")
 
     # Individual PKL mode: skip scanning, go straight to parallel per-session processing
     if args.individual:
@@ -443,10 +546,10 @@ def main():
             for d in subdirs:
                 subdir = os.path.join(args.input, d)
                 if any(f.endswith(".csv") for f in os.listdir(subdir)):
-                    session_dirs.append((subdir, d, args.output, args.fps, args.fps_source))
+                    session_dirs.append((subdir, d, args.output, args.fps, args.fps_source, args.robot))
         elif has_csvs:
             session_name = os.path.basename(args.input.rstrip("/"))
-            session_dirs.append((args.input, session_name, args.output, args.fps, args.fps_source))
+            session_dirs.append((args.input, session_name, args.output, args.fps, args.fps_source, args.robot))
 
         print(f"\nBatch converting {len(session_dirs)} sessions with {args.num_workers} workers")
         print(f"Output: {args.output}")
@@ -513,7 +616,7 @@ def main():
                 csv_path = os.path.join(args.input, csv_f)
                 name = os.path.splitext(csv_f)[0]
                 try:
-                    seq = load_bones_csv(csv_path)
+                    seq = load_bones_csv(csv_path, robot=args.robot)
                     sequences[name] = seq
                 except Exception as e:  # noqa: BLE001
                     print(f"  WARNING: Failed to load {csv_f}: {e}")
@@ -538,7 +641,7 @@ def main():
                         csv_path = os.path.join(subdir, csv_f)
                         name = os.path.splitext(csv_f)[0]
                         try:
-                            seq = load_bones_csv(csv_path)
+                            seq = load_bones_csv(csv_path, robot=args.robot)
                             sequences[name] = seq
                         except Exception as e:  # noqa: BLE001
                             print(f"  WARNING: Failed to load {dname}/{csv_f}: {e}")
@@ -568,7 +671,7 @@ def main():
         T = seq_data["joint_pos"].shape[0]
         print(f"  Converting {name}: {T} frames @ {args.fps} fps")
         fps_for_convert = args.fps_source if args.fps_source else args.fps
-        entry = convert_sequence(seq_data, fps_for_convert)
+        entry = convert_sequence(seq_data, fps_for_convert, robot=args.robot)
         if args.fps_source and args.fps_source != args.fps:
             entry = downsample_sequence(entry, args.fps_source, args.fps)
         motion_lib_dict[name] = entry

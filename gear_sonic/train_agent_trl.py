@@ -52,6 +52,14 @@ from gear_sonic.trl.utils.common import (
     materialize_lazy_params,
     wandb_run_exists,
 )
+from gear_sonic.trl.utils.checkpoint import (
+    ShapeAwareLoadReport,
+    filter_state_dict_prefix,
+    load_checkpoint,
+    save_shape_aware_report,
+    select_checkpoint_state_dict,
+    shape_aware_filter_state_dict,
+)
 from gear_sonic.utils.common import seeding
 from gear_sonic.utils.config_utils import register_rl_resolvers
 from gear_sonic.utils.obs_utils import get_group_term_obs_shape
@@ -429,18 +437,68 @@ def main(config: OmegaConf):
 
     if config.algo.config.get("pretrained_model", None) is not None:
         pretrained_cfg = config.algo.config.pretrained_model
-        sd_key = pretrained_cfg.get("state_dict_key", "state_dict")
+        pretrained_path = pretrained_cfg.get("path", None)
+        if pretrained_path is None:
+            raise ValueError("algo.config.pretrained_model is set but has no 'path'.")
         strict = pretrained_cfg.get("strict", True)
-        state_dict = torch.load(pretrained_cfg.path, map_location=device, weights_only=False)[
-            sd_key
-        ]
-        for (
-            module_name,
-            state_dict_key,
-        ) in pretrained_cfg.module_mapping.items():
+        shape_aware = pretrained_cfg.get("shape_aware", False)
+        checkpoint = load_checkpoint(pretrained_path, map_location=device)
+
+        if pretrained_cfg.get("module_mapping", None) is not None:
+            sd_key = pretrained_cfg.get("state_dict_key", "state_dict")
+            load_jobs = [
+                (module_name, sd_key, state_dict_key)
+                for module_name, state_dict_key in pretrained_cfg.module_mapping.items()
+            ]
+        else:
+            load_jobs = []
+            if pretrained_cfg.get("load_policy", True):
+                policy_sd_key = pretrained_cfg.get("state_dict_key", "policy_state_dict")
+                load_jobs.append(("policy", policy_sd_key, None))
+            if pretrained_cfg.get("load_value", False):
+                load_jobs.append(("value_model", "value_state_dict", None))
+
+        for module_name, sd_key, state_dict_key in load_jobs:
             module = eval(module_name)
-            filtered_state_dict = get_filtered_state_dict(state_dict, state_dict_key)
-            missing, unexpected = module.load_state_dict(filtered_state_dict, strict=strict)
+            state_dict = select_checkpoint_state_dict(checkpoint, sd_key)
+            if shape_aware:
+                filtered_state_dict = filter_state_dict_prefix(state_dict, state_dict_key)
+                report = ShapeAwareLoadReport(
+                    module_name=module_name,
+                    checkpoint_path=str(pretrained_path),
+                    state_dict_key=sd_key,
+                    state_dict_prefix=state_dict_key,
+                    source_robot=pretrained_cfg.get("source_robot", None),
+                    target_robot=pretrained_cfg.get("target_robot", None),
+                    source_action_dim=pretrained_cfg.get("source_action_dim", None),
+                    target_action_dim=pretrained_cfg.get("target_action_dim", None),
+                )
+                filtered_state_dict = shape_aware_filter_state_dict(
+                    filtered_state_dict,
+                    module.state_dict(),
+                    report,
+                    allow_std_log_std_conversion=pretrained_cfg.get(
+                        "allow_std_log_std_conversion", True
+                    ),
+                )
+                missing, unexpected = module.load_state_dict(filtered_state_dict, strict=False)
+                logger.info(f"Shape-aware pretrained loading report: {report.summary}")
+                if report.skipped_shape:
+                    logger.info(
+                        "Shape-aware pretrained loading skipped shape-mismatched keys: "
+                        f"{report.skipped_shape[:20]}"
+                    )
+                report_path = pretrained_cfg.get("report_path", None)
+                if report_path is None:
+                    report_path = (
+                        Path(config.experiment_dir)
+                        / f"shape_aware_pretrained_{module_name.replace('.', '_')}.json"
+                    )
+                save_shape_aware_report(report, report_path)
+                logger.info(f"Saved shape-aware pretrained loading report to {report_path}")
+            else:
+                filtered_state_dict = get_filtered_state_dict(state_dict, state_dict_key)
+                missing, unexpected = module.load_state_dict(filtered_state_dict, strict=strict)
             if missing:
                 logger.info(f"Pretrained loading '{module_name}': missing keys: {missing}")
             if unexpected:

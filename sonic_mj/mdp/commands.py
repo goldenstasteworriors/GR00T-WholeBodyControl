@@ -21,12 +21,6 @@ from mjlab.utils.lab_api.math import (
 
 from gear_sonic.isaac_utils import rotations
 from gear_sonic.trl.utils import torch_transform
-from sonic_mj.assets import (
-    G1_ISAACLAB_JOINTS,
-    SONIC_G1_BODY_NAMES,
-    SONIC_G1_JOINT_NAMES,
-    SONIC_G1_MOTION_DOF_TO_MUJOCO,
-)
 from gear_sonic.utils.motion_lib import motion_lib_robot
 
 
@@ -107,7 +101,7 @@ class SonicMotionCommand(CommandTerm):
         motion_cfg.setdefault("smpl_motion_file", cfg.smpl_motion_file)
         motion_cfg.update(
             {
-                "isaaclab_joints": G1_ISAACLAB_JOINTS,
+                "isaaclab_joints": cfg.isaaclab_joints,
                 "body_indexes": self.body_indexes,
                 "body_indexes_data": list(range(len(cfg.body_names))),
                 "lower_joint_indices_mujoco": list(range(12)),
@@ -204,7 +198,7 @@ class SonicMotionCommand(CommandTerm):
             self.num_envs, len(cfg.body_names), 4, device=self.device
         )
         self._motion_to_robot_dof = torch.tensor(
-            SONIC_G1_MOTION_DOF_TO_MUJOCO, dtype=torch.long, device=self.device
+            cfg.motion_dof_to_mujoco, dtype=torch.long, device=self.device
         )
         self._body_quat_relative_w[..., 0] = 1.0
         self._sample_encoder_index(torch.arange(self.num_envs, device=self.device))
@@ -838,20 +832,18 @@ class SonicMotionCommand(CommandTerm):
         print("[SonicMJ] robot body names/order:", robot_body_names)
         print("[SonicMJ] motion body names/order:", motion_body_names)
         print("[SonicMJ] action term joint names/order:", action_joint_names)
-        print("[SonicMJ] motion DOF -> MuJoCo mapping:", tuple(SONIC_G1_MOTION_DOF_TO_MUJOCO))
+        print("[SonicMJ] motion DOF -> MuJoCo mapping:", tuple(self.cfg.motion_dof_to_mujoco))
         order_checks = {
-            "robot_joints_match_sonic_mujoco": robot_joint_names == SONIC_G1_JOINT_NAMES,
-            "robot_bodies_match_sonic_mujoco": robot_body_names == SONIC_G1_BODY_NAMES,
-            "motion_bodies_match_sonic_mujoco": motion_body_names == SONIC_G1_BODY_NAMES,
-            "motion_dof_mapping_identity": tuple(SONIC_G1_MOTION_DOF_TO_MUJOCO)
-            == tuple(range(len(SONIC_G1_JOINT_NAMES))),
+            "robot_joints_match_profile": robot_joint_names == self.cfg.joint_names,
+            "robot_bodies_match_profile": robot_body_names == self.cfg.body_names,
+            "motion_bodies_match_profile": motion_body_names == self.cfg.body_names,
+            "motion_dof_mapping_identity": tuple(self.cfg.motion_dof_to_mujoco)
+            == tuple(range(len(self.cfg.joint_names))),
         }
         if action_joint_names:
-            order_checks["action_joints_match_sonic_mujoco"] = (
-                action_joint_names == SONIC_G1_JOINT_NAMES
-            )
+            order_checks["action_joints_match_profile"] = action_joint_names == self.cfg.joint_names
         else:
-            order_checks["action_joints_match_sonic_mujoco"] = "pending_action_manager_init"
+            order_checks["action_joints_match_profile"] = "pending_action_manager_init"
         print(
             "[SonicMJ] order checks:",
             order_checks,
@@ -869,6 +861,9 @@ class SonicMotionCommandCfg(CommandTermCfg):
     entity_name: str = "robot"
     anchor_body: str = "pelvis"
     body_names: tuple[str, ...] = ()
+    joint_names: tuple[str, ...] = ()
+    isaaclab_joints: tuple[str, ...] = ()
+    motion_dof_to_mujoco: tuple[int, ...] = ()
     reward_point_body: tuple[str, ...] = ("torso_link", "left_wrist_yaw_link", "right_wrist_yaw_link")
     reward_point_body_offset: tuple[tuple[float, float, float], ...] = (
         (0.0, 0.0, 0.5),

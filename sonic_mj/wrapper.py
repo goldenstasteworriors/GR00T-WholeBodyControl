@@ -7,13 +7,6 @@ import easydict
 from omegaconf import OmegaConf
 import torch
 
-from sonic_mj.assets import (
-    SONIC_G1_BODY_NAMES,
-    SONIC_G1_JOINT_NAMES,
-    SONIC_G1_MOTION_DOF_TO_MUJOCO,
-)
-
-
 def _to_easydict(value):
     if isinstance(value, dict):
         return easydict.EasyDict({key: _to_easydict(item) for key, item in value.items()})
@@ -166,7 +159,7 @@ class SonicMjEnvWrapper:
             "robot_joint_names": tuple(robot.joint_names),
             "robot_body_names": tuple(robot.body_names),
             "motion_body_names": tuple(self.motion_command.cfg.body_names),
-            "motion_dof_to_mujoco": tuple(SONIC_G1_MOTION_DOF_TO_MUJOCO),
+            "motion_dof_to_mujoco": tuple(self.motion_command.cfg.motion_dof_to_mujoco),
             "action_joint_names": action_joint_names,
             "policy_joint_pos_order": tuple(robot.joint_names),
             "policy_joint_vel_order": tuple(robot.joint_names),
@@ -174,24 +167,26 @@ class SonicMjEnvWrapper:
             "action_dim": int(self.env.action_space.shape[-1]),
             "observation_shapes": obs_shapes,
         }
+        expected_joint_names = tuple(self.motion_command.cfg.joint_names)
+        expected_body_names = tuple(self.motion_command.cfg.body_names)
         diagnostics["checks"] = {
-            "robot_joints_match_sonic_mujoco": diagnostics["robot_joint_names"]
-            == SONIC_G1_JOINT_NAMES,
-            "robot_bodies_match_sonic_mujoco": diagnostics["robot_body_names"]
-            == SONIC_G1_BODY_NAMES,
-            "motion_bodies_match_sonic_mujoco": diagnostics["motion_body_names"]
-            == SONIC_G1_BODY_NAMES,
-            "action_joints_match_sonic_mujoco": diagnostics["action_joint_names"]
-            == SONIC_G1_JOINT_NAMES,
-            "policy_joint_pos_order_matches_sonic_mujoco": diagnostics["policy_joint_pos_order"]
-            == SONIC_G1_JOINT_NAMES,
-            "policy_joint_vel_order_matches_sonic_mujoco": diagnostics["policy_joint_vel_order"]
-            == SONIC_G1_JOINT_NAMES,
-            "policy_action_order_matches_sonic_mujoco": diagnostics["policy_action_order"]
-            == SONIC_G1_JOINT_NAMES,
+            "robot_joints_match_profile": diagnostics["robot_joint_names"]
+            == expected_joint_names,
+            "robot_bodies_match_profile": diagnostics["robot_body_names"]
+            == expected_body_names,
+            "motion_bodies_match_profile": diagnostics["motion_body_names"]
+            == expected_body_names,
+            "action_joints_match_profile": diagnostics["action_joint_names"]
+            == expected_joint_names,
+            "policy_joint_pos_order_matches_profile": diagnostics["policy_joint_pos_order"]
+            == expected_joint_names,
+            "policy_joint_vel_order_matches_profile": diagnostics["policy_joint_vel_order"]
+            == expected_joint_names,
+            "policy_action_order_matches_profile": diagnostics["policy_action_order"]
+            == expected_joint_names,
             "motion_dof_mapping_identity": diagnostics["motion_dof_to_mujoco"]
-            == tuple(range(len(SONIC_G1_JOINT_NAMES))),
-            "action_dim_is_29": diagnostics["action_dim"] == 29,
+            == tuple(range(len(expected_joint_names))),
+            "action_dim_matches_profile": diagnostics["action_dim"] == len(expected_joint_names),
         }
         return diagnostics
 
