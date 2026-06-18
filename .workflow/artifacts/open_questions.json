@@ -1,44 +1,32 @@
 {
   "questions": [
     {
-      "id": "Q20260511-001",
-      "timestamp": "2026-05-11T12:01:50+08:00",
-      "blocking": false,
-      "status": "resolved",
-      "question": "是否确认按 PLAN.md 执行服务器兼容化与 H20 smoke test？",
-      "context": "用户已确认按计划执行；预备服务器测试和 AutoDL H20 GPU 阶段测试均已完成。"
-    },
-    {
-      "id": "Q20260511-002",
-      "timestamp": "2026-05-11T12:01:50+08:00",
-      "blocking": false,
-      "status": "resolved",
-      "question": "服务器上是否允许删除并重建项目内 .venv？",
-      "context": "已在项目目录内配置远端 .venv，未修改 base、系统 CUDA 或驱动。"
-    },
-    {
-      "id": "Q20260511-003",
-      "timestamp": "2026-05-11T12:01:50+08:00",
-      "blocking": false,
-      "status": "resolved",
-      "question": "服务器 smoke test 是否优先使用默认 robot_filtered + bones_seed_smpl，还是固定使用 robot_smoke + smpl_filtered？",
-      "context": "已先用 robot_smoke/smpl_filtered 完成 reset/step、单卡和双卡 smoke；随后用默认 robot_filtered 完成双卡短训练。bones_seed_smpl 本地和远端为空或缺失，完整 SMPL 默认数据验证未完成。"
-    },
-    {
-      "id": "Q20260511-004",
-      "timestamp": "2026-05-11T15:03:52+08:00",
-      "blocking": false,
-      "status": "resolved",
-      "question": "是否需要补齐 data/bones_seed_smpl 后再做一次完整默认 sonic_release 多卡训练验证？",
-      "context": "已将本机 data/smpl_filtered 同步到 AutoDL 默认路径 data/bones_seed_smpl，并完成 sonic_release 默认路径双卡 10 iteration 训练。"
-    },
-    {
-      "id": "Q20260511-005",
-      "timestamp": "2026-05-11T15:32:27+08:00",
+      "id": "Q20260618-001",
       "blocking": false,
       "status": "open",
-      "question": "正式训练前是否清理 AutoDL /root/autodl-tmp 或换更大数据盘？",
-      "context": "补齐 data/bones_seed_smpl 后 /root/autodl-tmp 剩余约 2.0G；小规模 smoke 已通过，但正式训练产生 checkpoint 和日志时有写满磁盘风险。"
+      "question": "global-anchor 最小实验优先只做 eval/logging，还是允许加入一个短程 PPO ablation？",
+      "context": "计划默认先 logging，再最小 ablation；若用户只想诊断，可先不训练。"
+    },
+    {
+      "id": "Q20260618-002",
+      "blocking": false,
+      "status": "open",
+      "question": "H2 adapter 首选新增 h2_dyn decoder，还是先做 action residual adapter？",
+      "context": "h2_dyn decoder 更干净，residual adapter 更小但可能继续绑定 G1 action 表征。计划会先写两者设计并推荐 h2_dyn。"
+    },
+    {
+      "id": "Q20260618-003",
+      "blocking": false,
+      "status": "open",
+      "question": "cross-humanoid 长期方案是否以 G1+H2 两机器人联合训练为第一版，还是预留更多 humanoid 但暂不实现？",
+      "context": "本轮计划默认以 G1+H2 为最小联合训练版本，robot/morphology embedding 设计保留扩展性。"
+    },
+    {
+      "id": "Q20260618-004",
+      "blocking": true,
+      "status": "open",
+      "question": "请提供 pr12000 / hy2000 / tf2000 的真实 compare8 metrics_eval.json，或在能访问 PKU 路径的机器上重新跑 eval 后同步输出。",
+      "context": "本机扫描未找到任何 metrics_eval.json，且 H2_TRANSFER_EXPERIMENT_LOG.md 中记录的 /home/nvme02/GR00T/GR00T/logs_eval/... 路径在当前机器不可访问。缺少这些 per-motion/time-series metrics 时，不能可信完成 M1 诊断，也不应继续启动 global-anchor reward/termination ablation。"
     }
   ]
 }

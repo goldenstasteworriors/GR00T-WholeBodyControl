@@ -1,19 +1,16 @@
 # Milestones Review
 
-时间：2026-05-11T12:01:50+08:00
+时间：2026-06-18T21:30:01+08:00
 
 ## 结论
-里程碑顺序可执行，先判定现状，再最小修复，再逐层验证训练路径。
+里程碑顺序合理：先证据固化，再 checkpoint 拆解，再 global-anchor 最小实验，再 adapter 设计，最后 cross-humanoid 规划。
 
 ## 检查
-- M0 只读恢复服务器基线，符合“不动底层环境”约束。
-- M1 把 CUDA 13 lock 兼容性作为显式 gate，避免无依据改依赖。
-- M2 只在 M1 失败时执行，减少对已可用环境的扰动。
-- M3-M5 从静态、仿真、obs/order 逐层推进，能快速定位失败层。
-- M6 是训练 smoke 核心验收，命令使用 `WANDB_MODE=disabled` 和小规模数据，适合服务器首轮。
-- M7 补默认数据加载检查，避免只验证 toy path。
-- M8 要求写回 `PROGRESS.md` 和 git 状态，可恢复性满足 workflow 规则。
+- M0/M1 能解释当前失败模式，避免无效训练。
+- M2 把 global drift 假设拆成 logging 和 ablation 两层，降低误判风险。
+- M3/M4 把 H2 差异限制在 decoder/adapter 和短程训练计划中。
+- M5 把真正 cross-humanoid 放到独立架构阶段，不污染短期诊断。
 
 ## 风险
-- M2 的具体 CUDA 12.x wheel 组合需要基于 M1 错误和 uv 可解结果决定，不能在计划阶段写死。
-- 如果服务器无法联网，M2 需要本地 wheel cache 或离线镜像；当前作为非阻塞风险记录。
+- 如果已有 eval 输出缺少 per-step trace，M1 需要补跑 eval 或增加 logging；这属于计划确认后的执行内容。
+- global-anchor ablation 如果过强，可能只复现 `pr12000` 早死，需要以小权重和日志为先。

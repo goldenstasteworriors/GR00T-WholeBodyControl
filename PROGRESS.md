@@ -2,6 +2,194 @@
 
 记录 workflow agent 的进度、测试、阻塞和恢复点。
 
+## 2026-06-18T23:56:45+08:00 - workflow 恢复检查：确认真实 compare8 metrics 缺失，标记阻塞
+
+### 已读取
+- `AGENTS.md`：确认中文回答、SonicMJ/mjlab 迁移使用 uv、不得修改 CUDA/驱动/系统 GPU 组件、不得修改 workflow 源码、代码相关回答需注明位置。
+- `PERSON.md`：没有实际 open 条目，只有模板。
+- `TASK.md`、`PLAN.md`、`PROGRESS.md`、`task.json`：确认 `plan_approved=true`，当前应从已确认 PLAN 的代码阶段恢复；上一轮已完成 M0/M1/M2 logging 第一层，但因真实 compare8 metrics 缺失暂停。
+- `.workflow/artifacts/open_questions.json`、`.workflow/artifacts/h2_checkpoint_diagnosis.md`、`.workflow/artifacts/h2_eval_diagnostics.md`：确认已有诊断工具与汇总文档，当前诊断输出只记录缺失输入。
+- `README.md`、`docs/README.md`：上游文档仍偏 IsaacLab；本轮仍以 `AGENTS.md` 的 SonicMJ/mjlab + uv 约束为准。
+- `H2_TRANSFER_EXPERIMENT_LOG.md`：确认目标 compare8 数据与 PKU eval 路径。
+
+### 判断
+- 当前没有 `PERSON.md` open 条目需要处理。
+- `PLAN.md` 已确认，不能回到计划阶段；应继续 M1 的真实 per-motion/time-series 诊断。
+- 本机扫描未找到任何 `metrics_eval.json`，也无法访问 `H2_TRANSFER_EXPERIMENT_LOG.md` 中记录的 PKU 路径：
+  - `/home/nvme02/GR00T/GR00T/logs_eval/20260617_precision_compare_h2/pr12000/metrics_eval.json`
+  - `/home/nvme02/GR00T/GR00T/logs_eval/20260618_hybrid_compare_h2/hy2000/metrics_eval.json`
+  - `/home/nvme02/GR00T/GR00T/logs_eval/20260615_tracking_first_compare_h2/tf2000/metrics_eval.json`
+- 因缺少真实 per-motion/time-series metrics，继续修改 global XY / heading reward 或 termination ablation 会违反“不盲目继续训练/调参”的阶段目标。
+
+### 本轮命令与结果
+- `sed -n '1,220p' /home/ykj/tool/WORKFLOW/skills/workflow/SKILL.md`：成功读取 workflow skill；未修改 workflow 源码。
+- `sed -n ... AGENTS.md PERSON.md TASK.md PLAN.md PROGRESS.md task.json`：成功读取 workflow 必读文档和任务摘要。
+- `find .workflow -maxdepth 3 -type f | sort`：成功列出 workflow artifacts/runtime 文件。
+- `git status --short --branch`：当前分支 `cross_humanoid`；存在 workflow 文档、`gear_sonic/trl/callbacks/im_eval_callback.py` 和新增诊断脚本等未提交改动；本轮未回退任何已有改动。
+- `sed -n ... .workflow/artifacts/open_questions.json .workflow/artifacts/h2_checkpoint_diagnosis.md .workflow/artifacts/h2_eval_diagnostics.md README.md docs/README.md`：成功读取 artifacts 和必要 README/docs。
+- `rg --files -g 'metrics_eval.json' -g '*metrics*.json' logs_eval logs_rl .workflow gear_sonic sonic_mj 2>/dev/null`：未找到可用 metrics 文件，命令返回 1。
+- `find /home/ykj/project/SONICMJ/GR00T-WholeBodyControl -path '*/wandb' -prune -o -path '*/.venv' -prune -o -name 'metrics_eval.json' -print`：无输出，确认仓库内无 `metrics_eval.json`。
+- `find logs_eval logs_rl -maxdepth 6 -iname '*h2*' -o -iname '*pr12000*' -o -iname '*hy2000*' -o -iname '*tf2000*' ...`：只找到早期本地 `logs_rl/TRL_H2_Track/.../sonic_h2_test-*` 目录，未找到目标 compare8 eval 输出。
+- `date --iso-8601=seconds`：记录时间戳 `2026-06-18T23:56:45+08:00`。
+- 补充恢复核对：
+  - `bash /home/ykj/tool/WORKFLOW/skills/workflow/scripts/run-workflow.sh resume --workspace "$PWD"`：成功，输出 `phase=resumed`、`plan_approved=true`。
+  - `find logs_eval logs_rl .workflow -name metrics_eval.json -print`：无输出，确认这些本地目录下没有可用 `metrics_eval.json`。
+  - 逐个 `test -f` 检查 `pr12000`、`hy2000`、`tf2000` 的 PKU `metrics_eval.json` 路径：均为 `MISSING`。
+  - `uv run python --version`：通过，输出 `Python 3.10.20`。
+
+### 更新
+- 在 `.workflow/artifacts/open_questions.json` 新增 blocking 问题 `Q20260618-004`，要求提供 `pr12000 / hy2000 / tf2000` 的真实 compare8 `metrics_eval.json` 或在可访问 PKU 路径的机器重跑 eval。
+- 更新 `task.json`：`last_result=blocked`，写入 `blocked_reason` 和恢复摘要。
+
+### blocked_reason
+缺少 `pr12000 / hy2000 / tf2000` 的真实 compare8 `metrics_eval.json`；本机没有任何 `metrics_eval.json`，且 `H2_TRANSFER_EXPERIMENT_LOG.md` 记录的 PKU `logs_eval` 路径当前不可访问。需要用户提供这些文件，或在可访问 PKU 路径的机器运行：
+
+```bash
+SONIC_SAVE_EVAL_TRACE=1 WANDB_MODE=disabled uv run accelerate launch --num_processes=1 gear_sonic/eval_agent_trl.py \
+  checkpoint=<CHECKPOINT> use_mjlab=True sim_type=mjlab headless=True \
+  ++num_envs=8 ++output_dir=<EVAL_OUT>
+```
+
+拿到三个输出后再运行：
+
+```bash
+uv run python gear_sonic/scripts/h2_eval_diagnostics.py \
+  --case pr12000=<PR12000_EVAL_OUT>/metrics_eval.json \
+  --case hy2000=<HY2000_EVAL_OUT>/metrics_eval.json \
+  --case tf2000=<TF2000_EVAL_OUT>/metrics_eval.json \
+  --output-md .workflow/artifacts/h2_eval_diagnostics.md \
+  --output-csv .workflow/artifacts/h2_eval_diagnostics.csv
+```
+
+## 2026-06-18T23:58:00+08:00 - PLAN.md 代码阶段 M0/M1/M2 logging 部分执行，因 compare8 metrics 缺失暂停
+
+### 已读取
+- `AGENTS.md`：确认中文回答、uv + `.venv`、不得修改 CUDA/驱动/系统 GPU 组件、不得修改 workflow 源码、代码相关回答需注明位置。
+- `PERSON.md`：没有实际 open 条目，只有模板。
+- `TASK.md`、`PLAN.md`、`PROGRESS.md`、`task.json`：确认 `plan_approved=true`，本轮从已确认 PLAN 的代码阶段继续，不重新生成计划。
+- `README.md`、`docs/README.md`：上游文档仍偏 IsaacLab；本轮执行以 `AGENTS.md` 的 SonicMJ/mjlab + uv 约束为准。
+- `H2_TRANSFER_EXPERIMENT_LOG.md`：确认 `pr12000`、`hy2000`、`tf2000` 固定 8 motion 汇总和 PKU eval/run 路径。
+- 关键代码：
+  - `gear_sonic/trl/callbacks/im_eval_callback.py`
+  - `gear_sonic/eval_agent_trl.py`
+  - `sonic_mj/mdp/rewards.py`
+  - `sonic_mj/mdp/terminations.py`
+  - `sonic_mj/env_cfg.py`
+  - `sonic_mj/wrapper.py`
+
+### M0 - 基线恢复与路径核对
+- 本机可见 H2 早期本地日志：`logs_rl/TRL_H2_Track/.../sonic_h2_test-*`，但不包含本轮目标 `pr12000/hy2000/tf2000` 的 compare8 `metrics_eval.json`。
+- `H2_TRANSFER_EXPERIMENT_LOG.md` 记录的关键 PKU eval 路径当前在本机不可访问：
+  - `/home/nvme02/GR00T/GR00T/logs_eval/20260617_precision_compare_h2/pr12000/metrics_eval.json`
+  - `/home/nvme02/GR00T/GR00T/logs_eval/20260618_hybrid_compare_h2/hy2000/metrics_eval.json`
+  - `/home/nvme02/GR00T/GR00T/logs_eval/20260615_tracking_first_compare_h2/tf2000/metrics_eval.json`
+- 已生成 `.workflow/artifacts/h2_eval_diagnostics.md` 和 `.workflow/artifacts/h2_eval_diagnostics.csv`，其中明确记录上述输入缺失。
+
+### M1 - checkpoint 诊断工具
+- 新增 `gear_sonic/scripts/h2_eval_diagnostics.py`：
+  - 读取一个或多个 `metrics_eval.json`。
+  - 输出 checkpoint 汇总表和 per-motion 表。
+  - 支持 `progress`、`terminated`、`mpjpe_g/mpjpe_l`、`foot/VR`，以及本轮新增的 global-anchor 诊断字段。
+- 新增 `.workflow/artifacts/h2_checkpoint_diagnosis.md`：
+  - 固化 `pr12000/hy2000/tf2000` 的已有固定 8 motion 汇总。
+  - 记录当前判断：`pr12000` 是 precision 端点，`tf2000` 是 survival/global-drift 端点，`hy2000` 是未达目标的折中点。
+  - 记录后续 eval 和离线诊断命令模板。
+
+### M2 - global-anchor logging 第一层
+- 修改 `gear_sonic/trl/callbacks/im_eval_callback.py`：
+  - eval 时从 `env.motion_command` 采集 anchor 和 robot anchor 的位置/姿态。
+  - 写入 per-motion 标量：
+    - `anchor_xy_error_mean/max/final`
+    - `anchor_z_error_mean`
+    - `anchor_heading_error_mean/max/final`
+    - `anchor_ori_error_mean`
+  - 默认不保存逐步大数组；设置 `SONIC_SAVE_EVAL_TRACE=1` 时，保存逐步 trace 到 `eval/all_metrics_dict.anchor_error_traces`。
+- 本轮没有加入 global XY / heading reward 或 termination ablation，因为缺少真实 per-motion/time-series metrics，继续改 reward 会违反“不盲目继续训练”的当前目标。
+
+### 本轮命令与结果
+- `uv run python --version`：通过，输出 `Python 3.10.20`。
+- `uv run python -m compileall -q gear_sonic/trl/callbacks/im_eval_callback.py gear_sonic/scripts/h2_eval_diagnostics.py`：通过。
+- `uv run python gear_sonic/scripts/h2_eval_diagnostics.py --case pr12000=... --case hy2000=... --case tf2000=... --output-md .workflow/artifacts/h2_eval_diagnostics.md --output-csv .workflow/artifacts/h2_eval_diagnostics.csv`：通过；输出文件记录三个输入路径均不存在。
+- 合成 `metrics_eval.json` smoke：
+  - 使用 `mktemp -d` 创建临时目录和临时 metrics JSON。
+  - 运行 `gear_sonic/scripts/h2_eval_diagnostics.py` 输出 markdown/csv。
+  - 结果通过；命令退出时临时目录已删除。
+- `git status --short --branch`：当前分支 `cross_humanoid`；本轮新增/修改文件见最终交付清单；未回退用户已有改动。
+
+### 阻塞与下一步
+- 当前阻塞：缺少 `pr12000/hy2000/tf2000` 的真实 compare8 `metrics_eval.json` 或可访问 PKU eval 输出路径，无法完成 per-motion/time-series 诊断，也无法可信判断 global-anchor ablation 是否该启动。
+- 建议下一步在可访问 PKU 路径的机器上运行：
+  ```bash
+  SONIC_SAVE_EVAL_TRACE=1 WANDB_MODE=disabled uv run accelerate launch --num_processes=1 gear_sonic/eval_agent_trl.py \
+    checkpoint=<CHECKPOINT> use_mjlab=True sim_type=mjlab headless=True \
+    ++num_envs=8 ++output_dir=<EVAL_OUT>
+  ```
+- 拿到三个 `metrics_eval.json` 后运行：
+  ```bash
+  uv run python gear_sonic/scripts/h2_eval_diagnostics.py \
+    --case pr12000=<PR12000_EVAL_OUT>/metrics_eval.json \
+    --case hy2000=<HY2000_EVAL_OUT>/metrics_eval.json \
+    --case tf2000=<TF2000_EVAL_OUT>/metrics_eval.json \
+    --output-md .workflow/artifacts/h2_eval_diagnostics.md \
+    --output-csv .workflow/artifacts/h2_eval_diagnostics.csv
+  ```
+
+## 2026-06-18T21:30:01+08:00 - H2 迁移诊断 / global-anchor / adapter 计划完成，等待 PLAN 确认
+
+### 已读取
+- `AGENTS.md`：确认中文回答、项目 SonicMJ 使用 uv、不使用 conda、不得修改 CUDA/显卡驱动/系统 GPU 组件、不得修改 workflow 源码、代码相关回答需注明位置。
+- `PERSON.md`：没有实际 open 条目，只有模板。
+- `TASK.md`、`PLAN.md`、`PROGRESS.md`、`task.json`：上一轮内容是 PKU H2 4卡训练/2卡验证计划，和本轮用户要求不一致，已改为 H2 迁移诊断与结构方案。
+- `README.md`、`docs/README.md`：上游文档仍偏 IsaacLab；本项目执行以 `AGENTS.md` 中 SonicMJ/mjlab + uv 约束为准。
+- `H2_TRANSFER_EXPERIMENT_LOG.md`：确认已有实验在 `pr12000`、`hy2000`、`tf2000` 等 checkpoint 上呈现 precision/progress trade-off。
+- 关键代码：
+  - `gear_sonic/config/exp/manager/universal_token/all_modes/sonic_h2.yaml`
+  - `gear_sonic/trl/callbacks/im_eval_callback.py`
+  - `gear_sonic/trl/modules/universal_token_modules.py`
+  - `gear_sonic/config/actor_critic/decoders/g1_dyn_mlp.yaml`
+  - `gear_sonic/config/actor_critic/decoders/g1_kin_mf_mlp.yaml`
+  - `gear_sonic/eval_agent_trl.py`
+  - `sonic_mj/mdp/rewards.py`
+  - `sonic_mj/mdp/terminations.py`
+  - `sonic_mj/env_cfg.py`
+  - `sonic_mj/wrapper.py`
+
+### 关键判断
+- `tf2000` 代表 survival/progress 较好但 global tracking 漂移明显：`success=0.625`、`progress=0.6891`、`mpjpe_g=0.1547`。
+- `pr12000` 代表短时间 tracking 精度较好但跑不完整：`success=0`、`progress=0.1918`、`mpjpe_g=0.0703`。
+- `hy2000` 是折中但仍未达到目标：`success=0.25`、`progress=0.4005`、`mpjpe_g=0.1338`。
+- `sonic_mj/mdp/terminations.py` 的 `anchor_pos` 当前只检查 z 高度差，没有独立 root XY / heading drift termination；这支持做 global-anchor 最小实验。
+- `sonic_mj/mdp/rewards.py` 虽有 global anchor position/orientation reward，但 local 5-point reward 在 anchor-local frame 中比较，可能掩盖全局漂移。
+- `UniversalTokenModule` 已有多 decoder、active decoder、freeze encoder/decoder 机制；H2-specific decoder/adapter 应优先走配置和新增 head，避免全网络 PPO 破坏 G1 表征。
+
+### 已完成
+- 更新 `TASK.md`：替换旧 PKU 训练计划，记录本轮四个方向、硬约束、证据、计划产物和验收条件。
+- 更新 `.workflow/artifacts/grounding.md`：记录项目现状、关键实验事实、代码证据、参考资料和风险。
+- 更新 `.workflow/artifacts/paper_project_map.json`：结构化映射 SONIC 论文/参考实现/目标代码；说明本轮没有新增论文检索。
+- 更新 `.workflow/artifacts/open_questions.json`：按 `{ "questions": [...] }` 记录 3 个非 blocking 问题。
+- 更新 `PLAN.md`：包含 M0-M6 里程碑、完成标准、测试命令和 review 点，状态为等待用户确认。
+- 更新 Codex 多角色 review：
+  - `.workflow/artifacts/reviews/scope.md`
+  - `.workflow/artifacts/reviews/milestones.md`
+  - `.workflow/artifacts/reviews/architecture.md`
+  - `.workflow/artifacts/reviews/testing.md`
+  - `.workflow/artifacts/reviews/executor.md`
+- 更新 `task.json`：写入本轮 request，标记 `plan_ready_waiting_user_confirmation`。
+
+### 本轮命令与结果
+- `sed -n ... /home/ykj/tool/WORKFLOW/skills/workflow/SKILL.md`：成功读取 workflow skill；未修改 workflow 源码。
+- `bash /home/ykj/tool/WORKFLOW/skills/workflow/scripts/run-workflow.sh resume --workspace "$PWD"`：成功，输出 `phase=resumed`、`plan_approved=false`。
+- `sed -n ... AGENTS.md PERSON.md TASK.md PLAN.md PROGRESS.md README.md docs/README.md H2_TRANSFER_EXPERIMENT_LOG.md`：成功读取必需项目文档和 H2 实验记录。
+- `jq . task.json`：成功读取旧任务摘要，确认需要替换为本轮 request。
+- `rg ... gear_sonic sonic_mj` / `sed -n ...`：读取 H2 config、eval callback、Universal Token module、decoder config、SonicMJ reward/termination/wrapper。
+- `git status --short --branch`：确认当前分支 `cross_humanoid`，已有 workflow 文档改动和未跟踪 `H2_TRANSFER_EXPERIMENT_LOG.md`、训练曲线、`wandb/`；本轮未回退任何已有内容。
+- `date --iso-8601=seconds`：记录时间戳。
+
+### 阻塞与下一步
+- 当前没有 blocking open question。
+- workflow 规则要求停在等待用户确认 `PLAN.md`。
+- 用户确认后从 `PLAN.md` 的 M0/M1 开始：先固化 `pr12000/hy2000/tf2000` 的 run/eval 文件和 per-motion 诊断，再做 global-anchor logging/ablation；不直接启动长期训练。
+
 ## 2026-05-08T21:19:39+08:00 - workflow 恢复检查
 
 ### 已读取
@@ -319,6 +507,41 @@
   - 调用 `make_sonic_mj_env_cfg(cfg)`。
   - 结果：`num_envs 2`；actions `['joint_pos']`；observations `['policy', 'critic', 'tokenizer']`；commands `['motion']`；rewards `10`；terminations `['time_out', 'anchor_pos', 'anchor_ori_full', 'ee_body_pos', 'foot_pos_xyz']`；terrain `plane`。
 
+## 2026-06-18T21:28:23+08:00 - 短生命周期 agent 恢复判断：PKU H2 计划待确认
+
+### 已读取
+- `AGENTS.md`：确认当前项目内 workflow 恢复规则、SonicMJ/mjlab 迁移约束、项目使用 uv、不使用 conda、不得修改 CUDA/显卡驱动/系统 GPU 组件。
+- `PERSON.md`：无实际 `open` 条目，只有模板；当前不需要先处理用户补充项。
+- `TASK.md`：当前目标为 PKU H2 warm-start 训练/验证计划阶段；训练 GPU 固定 `0,1,2,3`，验证 GPU 固定 `4,5`，禁止使用 `6,7`；当前阶段要求停在等待用户确认 `PLAN.md`。
+- `PLAN.md`：状态为“等待用户确认”；确认前不启动 PKU 训练或验证。
+- `task.json`：`plan_approved=false`，`last_result=plan_ready`，摘要显示已完成 PKU H2 4卡训练/2卡验证 grounding、计划、命令手册和多角色 review，当前停在等待用户确认。
+- `.workflow/artifacts/open_questions.json`：有 3 个非 blocking open question，分别关于 W&B online/offline、H2 filtered PKL 是否作为首轮正式训练数据、正式训练是否接受先固定 plane terrain；没有 blocking 问题。
+- `.workflow/artifacts/grounding.md` 与 `.workflow/artifacts/reviews/*.md`：确认本阶段范围是计划与命令手册，不启动训练、不改训练代码；executor review 明确“用户确认 `PLAN.md` 前不启动训练”。
+- `PKU_H2_TRAIN_VALIDATE_PLAN.md`：已包含 preflight、数据准备、4 GPU warm-start 训练、2 GPU eval、subset training validation、resume、stop 和 reporting checklist。
+- `README.md`、`docs/README.md`、`pyproject.toml`：确认项目根环境为 Python `>=3.10,<3.11`，依赖由 uv 管理，包含 `mjlab==1.2.0` 和 `torch==2.7.1`。
+
+### git 状态
+- 当前分支：`cross_humanoid`。
+- 当前工作区已有多项未提交 workflow 文档/artifact 改动，以及未跟踪文件 `H2_TRANSFER_EXPERIMENT_LOG.md`、`training_curves_szsevsw9.png`、`training_curves_szsevsw9.svg`、`wandb/`。
+- 本轮未回退、删除或覆盖这些已有改动。
+
+### 判断
+- 当前没有 `PERSON.md` open 条目，也没有 blocking open question。
+- 但 `TASK.md`、`PLAN.md`、`task.json` 和 review artifacts 一致表明：当前阶段已经完成计划与 review，下一步需要用户确认 `PLAN.md` 后才能启动 PKU preflight、训练或验证。
+- 用户本轮要求是恢复 workflow 并执行最合理下一步；在 `plan_approved=false` 且计划明确要求确认前不训练的情况下，最合理下一步是记录恢复判断并停止等待确认，而不是擅自登录 PKU、启动训练、转换数据或修改代码。
+
+### 本轮命令与结果
+- `sed -n '1,240p' /home/ykj/tool/WORKFLOW/skills/workflow/SKILL.md`：成功读取 workflow skill 规则；未修改 workflow 源码仓库。
+- `sed -n ... AGENTS.md PERSON.md TASK.md PLAN.md PROGRESS.md task.json`：成功读取 workflow 必读文档和运行摘要。
+- `find .workflow -maxdepth 3 -type f | sort`：确认 artifacts 与 runtime 文件存在。
+- `git status --short --branch` / `git status --porcelain=v1` / `git diff --stat`：确认当前分支、已有未提交改动和未跟踪文件。
+- `sed -n ... .workflow/artifacts/open_questions.json .workflow/artifacts/grounding.md .workflow/artifacts/reviews/*.md`：确认 open questions 非阻塞，但计划阶段仍需用户确认。
+- `sed -n ... PKU_H2_TRAIN_VALIDATE_PLAN.md README.md docs/README.md pyproject.toml`：确认命令手册、项目 README/docs 和 uv 环境配置。
+- `date --iso-8601=seconds`：记录本轮时间戳。
+
+### blocked_reason
+当前 workflow 停在计划确认点：`PLAN.md` 状态为等待用户确认，`task.json.plan_approved=false`，且 review 明确“用户确认 `PLAN.md` 前不启动训练”。需要用户明确确认按当前 `PLAN.md` 执行，或提供要修改的计划项；确认后才能进入 PKU preflight、4 卡训练 smoke、2 卡 eval smoke 和后续正式训练。
+
 ### 当前状态与未验证项
 - M0-M3 预备服务器 GPU 前置测试完成。
 - 没有创建临时测试脚本。
@@ -497,3 +720,433 @@
 - 已知 `num_envs=3072` 也能完成 1 iteration，但正式训练建议先用 2048 留显存和磁盘余量。
 - `num_envs=4096` 每卡不可用，会在 Warp CUDA graph 创建阶段 OOM。
 - 停止后检查：无遗留训练进程，双 H20 显存占用为 `0 MiB`。
+
+## 2026-06-06T12:07:30+08:00 - cross_humanoid 方案一 H2 / SonicMJ backend 初版
+
+### 目标
+- 使用 workflow skill 推进 `cross_humanoid` 分支。
+- 先按方案一做最小版本：复用官方 SONIC H2 配置和机器人参数，让 SonicMJ 重构 backend 能选择 H2 profile，并在 PC 上进入训练闭环。
+- 不做 morphology-conditioned 网络结构，不改 CUDA/驱动/底层 GPU 环境。
+
+### 官方原版核对
+- 执行 `git fetch upstream`，`upstream/main` 更新到 `NVlabs/GR00T-WholeBodyControl` 最新引用。
+- 官方原版包含：
+  - `gear_sonic/config/exp/manager/universal_token/all_modes/sonic_h2.yaml`
+  - `gear_sonic/envs/manager_env/robots/h2.py`
+  - `gear_sonic/envs/manager_env/modular_tracking_env_cfg.py` 中 `h2` robot mapping
+- 官方原版不包含 `sonic_mj/`，因此本轮只把官方 H2 profile 迁移到 SonicMJ backend。
+
+### 代码改动
+- `sonic_mj/assets.py`
+  - 新增 `SonicRobotProfile`。
+  - 保留 G1 profile，并新增 H2 profile。
+  - H2 使用官方 H2 MJCF、31 DOF joint order、32 body order、官方 IsaacLab H2 joint/body order、H2 action scale、默认站姿。
+  - 修正 H2 MJCF 直接加载时的 meshdir：官方 `h2.xml` 写 `meshdir="meshes/"`，实际 mesh 在 `gear_sonic/data/assets/robot_description/urdf/h2/meshes`。
+- `sonic_mj/env_cfg.py`
+  - 根据 `manager_env.config.robot.type` 选择 robot profile。
+  - H2 时 action dim 为 31，motion body dim 为 32。
+- `sonic_mj/mdp/commands.py`
+  - motion lib 的 `isaaclab_joints` 和 motion DOF mapping 改为来自当前 profile。
+  - order summary 改为检查 profile，而不是固定 G1。
+- `sonic_mj/wrapper.py`
+  - structured diagnostics 改为按当前 profile 检查 joint/body/action/order/action dim。
+- workflow 文档已重写为本轮任务：
+  - `TASK.md`
+  - `PLAN.md`
+  - `.workflow/artifacts/grounding.md`
+  - `.workflow/artifacts/open_questions.json`
+
+### 验证命令与结果
+- 编译检查：
+  - 命令：`uv run python -m compileall sonic_mj gear_sonic/train_agent_trl.py`
+  - 结果：通过。
+- profile 构造：
+  - 命令：inline `get_sonic_robot_profile('g1_model_12_dex')` 和 `get_sonic_robot_profile('h2')`，并调用 `robot_cfg_fn().spec_fn()`。
+  - 结果：G1 为 29 joints / 30 bodies / 29 DOF mapping；H2 为 31 joints / 32 bodies / 31 DOF mapping；二者均能生成 `MjSpec`。
+- H2 env cfg 构造：
+  - 命令：Hydra compose `+exp=manager/universal_token/all_modes/sonic_h2 use_mjlab=True sim_type=mjlab num_envs=2 headless=True manager_env.config.terrain_type=plane`，覆盖 `motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=data/smpl_filtered`。
+  - 结果：`robot_type h2`，`action_dim 31`，`body_dim 32`，`isaaclab_dim 32`，`dof_map_dim 31`。
+- PC GPU reset/step：
+  - 命令：同上，但 device 自动选择 `cuda:0`。
+  - 结果：失败于本机 PyTorch wheel 与 GPU 架构不兼容；RTX 5070 Ti Laptop GPU 为 `sm_120`，当前 PyTorch wheel 只支持到 `sm_90`。未修改 CUDA/驱动。
+- H2 CPU reset/step：
+  - 命令：同 H2 env，强制 `device='cpu'`。
+  - 结果：通过。`actor_obs (2, 990)`，`critic_obs (2, 1907)`，`tokenizer (2, 1807)`，reward finite，action dim `31`，所有 profile order checks 为 `True`。
+- H2 CPU 极小训练：
+  - 命令：
+    - `CUDA_VISIBLE_DEVICES= WANDB_MODE=disabled timeout 120s uv run python gear_sonic/train_agent_trl.py +exp=manager/universal_token/all_modes/sonic_h2 use_mjlab=True sim_type=mjlab num_envs=2 headless=True ++algo.trl.use_cpu=True ++algo.trl.bf16=False ++algo.trl.fp16=False ++algo.config.num_learning_iterations=1 ++manager_env.config.terrain_type=plane ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=data/smpl_filtered`
+  - 结果：退出码 `0`，完成 learning iteration `1`。
+  - 训练日志目录：`logs_rl/TRL_H2_Track/manager/universal_token/all_modes/sonic_h2_test-20260606_120606`
+  - 关键结果：total timesteps `48`，mean rewards `-1.15169`，无 NaN/OOM。
+  - 注意：CPU 小 batch 下打印 `batch_size must be a multiple of num_mini_batches`，但训练仍完成；正常 GPU/较大 `num_envs` 不应使用这个极小 batch 设置。
+- G1 回归 cfg 检查：
+  - 命令：Hydra compose `sonic_release + use_mjlab=True` 并构造 env cfg。
+  - 结果：`robot_type g1_model_12_dex`，`action_dim 29`，`body_dim 30`。
+
+### 当前结论
+- SonicMJ backend 已具备最小 H2 profile 支持，可以创建 H2 env、reset/step，并在 PC CPU 上完成极小 PPO 训练启动闭环。
+- 本机 GPU 不能验证 CUDA 训练，因为当前 PyTorch wheel 不支持 `sm_120`；这属于环境 wheel/GPU 架构问题，不是本轮代码问题。
+- 方案一下一步应在支持当前 GPU 架构的 PyTorch wheel 或服务器 H20 环境上跑 H2 GPU smoke。
+- 从 G1 官方 checkpoint 微调 H2 仍需单独处理 actor output 29 -> 31 的 checkpoint partial load / 输出层初始化策略。
+
+## 2026-06-08T23:24:30+08:00 - PC 临时 torch/cu13 环境下 H2 正常训练验证
+
+### 目标
+- 用户要求按此前“临时把项目库切到 PC 能跑，测试完再恢复”的方式，确认 PC 上是否能开始正常训练。
+- 重点不是 reset/step smoke，而是实际进入 PPO 多 iteration 训练。
+- 同时尽量保证 PC 与服务器库版本差异只限于硬件 wheel，不影响代码效果。
+
+### 初始环境事实
+- 锁文件和服务器兼容环境仍是 `torch==2.7.1` / `torchvision==0.22.1` / CUDA 12.6 wheel 组合。
+- 本机 GPU 为 `NVIDIA GeForce RTX 5070 Ti Laptop GPU`，capability `(12, 0)`。
+- 用锁文件环境直接跑 CUDA 会触发 PyTorch warning：当前 wheel 支持到 `sm_90`，不支持本机 `sm_120`，随后 CUDA kernel 报 `no kernel image is available for execution on the device`。
+
+### 临时 PC 环境调整
+- 未修改 `pyproject.toml` 或 `uv.lock`。
+- 先用 `uv pip install torch==2.11.0` 将当前 `.venv` 临时切到 `torch 2.11.0+cu130`。
+- 发现 `uv run` 会自动按锁文件同步回 `torch 2.7.1`，因此临时 PC 测试必须直接使用 `.venv/bin/python`。
+- `torch 2.11.0+cu130` 能在 PC 上使用 CUDA：
+  - `torch.cuda.is_available() True`
+  - GPU 为 `NVIDIA GeForce RTX 5070 Ti Laptop GPU (12, 0)`
+  - CUDA matmul finite。
+- 处理临时依赖问题：
+  - 锁文件中的 `torchvision 0.22.1` 与临时 `torch 2.11.0` ABI 不匹配，报 `operator torchvision::nms does not exist`。
+  - 临时从 PyTorch nightly cu130 源安装 `torchvision 0.26.0+cu130` 后，`torch`、`torchvision`、`trl.PPOConfig`、`gear_sonic.trl.modules.base_module.BaseModule` 均可导入。
+  - `torch 2.11/cu130` 下 NVRTC 需要临时增加：
+    - `LD_LIBRARY_PATH=$PWD/.venv/lib/python3.10/site-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH`
+  - 该环境变量只在测试命令中设置，未写入 shell 配置或项目文件。
+
+### 正常训练命令
+- 命令：
+  - `export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.10/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"`
+  - `WANDB_MODE=disabled timeout 1800s .venv/bin/python gear_sonic/train_agent_trl.py +exp=manager/universal_token/all_modes/sonic_h2 use_mjlab=True sim_type=mjlab num_envs=128 headless=True ++algo.config.num_learning_iterations=20 ++manager_env.config.terrain_type=plane ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_smoke ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=data/smpl_filtered`
+- 训练日志目录：
+  - `logs_rl/TRL_H2_Track/manager/universal_token/all_modes/sonic_h2_test-20260608_232333`
+
+### 训练结果
+- 退出码 `0`。
+- 完成 learning iteration `1` 到 `20`，不是只完成 smoke/reset/step。
+- 环境配置：
+  - `num_envs=128`
+  - device `cuda:0`
+  - H2 action dim `31`
+  - policy obs shape `(990,)`
+  - critic obs shape `(1907,)`
+  - tokenizer 含 3 encoder 输入项。
+- 第 20 iteration 关键结果：
+  - computation `1880 steps/s`
+  - collection `1.179s`
+  - learning `0.454s`
+  - total episodes `2560`
+  - total timesteps `61440`
+  - mean rewards `-1.70050`
+  - mean entropy `-47.86094`
+  - non-finite state / joint / body termination 全部为 `0.0000`
+- 未出现 OOM、NaN、CUDA kernel image 错误或训练中断。
+
+### 恢复服务器兼容环境
+- 测试后执行：
+  - `uv sync --frozen`
+- 该命令卸载临时 cu13 / torch 2.11 / torchvision 0.26，并恢复锁文件环境。
+- 首次恢复后 `torch` 导入缺 `libcudnn.so.9`，原因是 CUDA 12 依赖 wheel 文件不完整；强制重装 `nvidia-cudnn-cu12==9.5.1.17` 和 `nvidia-nccl-cu12==2.26.2` 后，再运行 `uv run` 自动按锁文件恢复 `nvidia-cublas-cu12==12.6.4.1` / `nvidia-cuda-nvrtc-cu12==12.6.77`。
+- 最终恢复验证：
+  - `torch 2.7.1+cu126`
+  - `torch.version.cuda 12.6`
+  - `torch.cuda.is_available() True`
+  - `torchvision 0.22.1+cu126`
+  - `pyproject.toml` / `uv.lock` diff 行数为 `0`
+  - 无遗留 `gear_sonic/train_agent_trl.py` 或 accelerate 训练进程。
+
+### 结论
+- PC 上可以正常开始 H2 SonicMJ 训练：已用 GPU 跑完 20 iteration / 61440 timesteps。
+- PC 与服务器的版本差异应限定为硬件 wheel 层：
+  - 服务器/锁文件：`torch 2.7.1+cu126`，已在 H20 上通过。
+  - PC 临时：`torch 2.11.0+cu130` + `torchvision 0.26.0+cu130`，仅用于支持本机 `sm_120`。
+- 本轮没有修改训练代码来适配 PC-only 版本；mjlab、mujoco-warp、trl、transformers、SONIC/SonicMJ 代码路径保持同一套。因此目前没有证据表明 PC/服务器 wheel 差异会改变代码语义，主要风险是数值细节和底层 CUDA kernel 差异，后续正式结论仍应以 H20 锁文件环境为准。
+
+## 2026-06-09T22:42:46+08:00 - workflow 恢复与 H2 当前工作区回归验证
+
+### 已读取
+- `AGENTS.md`：确认本项目使用 uv 环境，不使用 conda；不得修改 CUDA、显卡驱动、系统 GPU 组件；workflow 恢复必须先处理 `PERSON.md` open 条目并把结论写回项目文档。
+- `PERSON.md`：无实际 open 条目，只有模板。
+- `TASK.md`、`PLAN.md`：当前目标是 `cross_humanoid` 分支方案一，为 SonicMJ backend 增加最小 H2 robot profile，并让 `sonic_h2.yaml + use_mjlab=True + sim_type=mjlab` 能进入训练闭环。
+- `PROGRESS.md`：历史记录显示 H2 profile 初版、PC CPU 极小训练、PC 临时 torch/cu13 GPU 20 iteration 训练均已通过。
+- `task.json`：`plan_approved=true`，环境为 `uv` + `.venv` + `existing`，但摘要仍停留在旧 H20 计划阶段，需要本轮更新。
+- `.workflow/artifacts/open_questions.json`：只有非 blocking 问题，分别是 H2 正式 motion 数据选择和 G1 checkpoint 到 H2 的 partial load/freeze 策略。
+- `.workflow/artifacts/grounding.md`、`README.md`、`pyproject.toml`：确认 SonicMJ backend 是本项目重构层，根项目使用 Python 3.10 uv 环境；当前锁文件仍为服务器兼容的 `torch==2.7.1`。
+- git 状态：当前分支 `cross_humanoid`，已有 H2 相关源码改动和 workflow 文档改动；存在未跟踪 `training_curves_szsevsw9.png`、`training_curves_szsevsw9.svg`、`wandb/`，本轮未回退或删除这些既有内容。
+
+### 判断
+- 当前没有 blocking open question，不需要停在询问阶段。
+- `sonic_mj/assets.py`、`sonic_mj/env_cfg.py`、`sonic_mj/mdp/commands.py`、`sonic_mj/wrapper.py` 已包含 H2 profile 泛化改动；合理下一步不是继续改代码，而是对当前工作区做可复现回归验证并更新 workflow 状态。
+- 本机锁文件环境仍使用服务器兼容 torch/cu126；为避免本机 `sm_120` GPU wheel 兼容问题，本轮只执行 CPU reset/step，不修改 `.venv`、`pyproject.toml`、`uv.lock`、CUDA 或驱动。
+
+### 命令与结果
+- `uv run python -m compileall sonic_mj gear_sonic/train_agent_trl.py`
+  - 结果：通过。
+- 第一次 inline profile/config 检查失败：
+  - 原因：测试代码访问了当前 `mujoco.MjSpec` 不存在的 `njnt` 属性。
+  - 结论：测试脚本写法问题，不是项目源码问题。
+- 第二次 inline profile/config 检查失败：
+  - 原因：Hydra `config_name='config'` 不存在；训练入口实际使用 `config_name='base'`。
+  - 已通过读取 `gear_sonic/train_agent_trl.py` 和 `gear_sonic/config/` 确认。
+- 修正后的 profile/config 检查：
+  - 命令：inline `uv run python`，构造 `get_sonic_robot_profile('g1_model_12_dex')` / `get_sonic_robot_profile('h2')`，并用 Hydra `config_name='base'` compose `sonic_release` 与 `sonic_h2`。
+  - 结果：通过。
+  - G1：profile `29` joints / `30` bodies / `29` DOF map；env cfg action dim `29`，body dim `30`，IsaacLab dim `30`。
+  - H2：profile `31` joints / `32` bodies / `31` DOF map；env cfg action dim `31`，body dim `32`，IsaacLab dim `32`。
+- H2 CPU reset/step：
+  - 命令：`CUDA_VISIBLE_DEVICES= uv run python - <<'PY' ... create_mjlab_manager_env(cfg, 'cpu') ... PY`
+  - 配置：`+exp=manager/universal_token/all_modes/sonic_h2 use_mjlab=True sim_type=mjlab num_envs=2 headless=True manager_env.config.terrain_type=plane`，并覆盖 `motion_file=data/motion_lib_bones_seed/robot_smoke`、`smpl_motion_file=data/smpl_filtered`。
+  - 结果：通过。`device cpu`，`action_dim 31`，reset/step obs shape 均为 `actor_obs (2, 990)`、`critic_obs (2, 1907)`、`tokenizer (2, 1807)`；reward shape `(2,)` 且 finite；done shape `(2,)`；info keys 为 `['env_actions', 'episode', 'log', 'time_outs', 'to_log']`。
+  - order diagnostics：`robot_joints_match_profile`、`robot_bodies_match_profile`、`motion_bodies_match_profile`、`action_joints_match_profile`、`policy_joint_pos_order_matches_profile`、`policy_joint_vel_order_matches_profile`、`policy_action_order_matches_profile`、`motion_dof_mapping_identity`、`action_dim_matches_profile` 全部为 `True`。
+  - 运行中出现 `Warp CUDA error 100: no CUDA-capable device is detected`，但 env device 为 CPU 且 reset/step 成功；该信息来自 Warp 初始化 CUDA driver 探测，不影响本轮 CPU 验证。
+
+### 当前结论
+- 当前工作区的 H2 SonicMJ backend 支持仍然可复现：静态编译、G1/H2 cfg 构造、H2 CPU reset/step 均通过。
+- 没有新增代码修改需求；本轮只更新 workflow 记录和 `task.json`。
+- 剩余非阻塞问题仍是 H2 正式 motion 数据选择，以及 G1 checkpoint 微调 H2 时 29->31 输出层 partial load/freeze 策略。
+
+### 恢复纠偏
+- 重新核对 `TASK.md`、`PLAN.md`、`task.json`、`.workflow/runtime/run-prompt.txt` 后确认：最新 workflow 目标不是继续 H2 backend profile 实现，而是 H2 shape-aware warm-start 的计划阶段。
+- `PLAN.md` 当前明确写着“状态：等待用户确认。确认前不修改训练代码、不跑 warm-start 训练。”
+- 因此本轮执行的 compile/profile/cfg/reset-step 只作为当前工作区只读回归验证记录，不推进 `PLAN.md` 的 M1-M7，也不代表 warm-start 计划已批准。
+- `task.json.last_result` 已修正为 `plan_ready_waiting_user_confirmation`。
+
+### blocked_reason
+等待用户确认当前 `PLAN.md`。用户确认后才能从 M1 开始实现 checkpoint 兼容读取、shape-aware state_dict 过滤报告，并执行本机 A-lite / B warm-start smoke。
+
+## 2026-06-09T22:39:50+08:00 - H2 shape-aware warm-start grounding / plan / review 完成
+
+### 用户新增要求
+- 把 SONIC 迁移到 H2 的下一步聚焦为：先实现官方 G1 checkpoint 的 shape-aware partial load / warm-start。
+- 官方 G1 权重只作为 H2 initialization，不假设 G1 latent 可直接迁移。
+- A-lite 作为诊断方向，B 作为正式 warm-start 微调方向，尽早为 D-small robot-conditioning 预留结构。
+- 测试顺序为本机先初测，再到 PKU 服务器 `/home/nvme02/GR00T` 测试；PKU H2 数据在 `/home/nvme02/GR00T/dataset`。
+
+### 已读取
+- `AGENTS.md`、`PERSON.md`、`TASK.md`、`PLAN.md`、`PROGRESS.md`、`task.json`：恢复 workflow 状态和项目约束。
+- `README.md`、`docs/source/user_guide/training.md`、`docs/source/user_guide/new_embodiments.md`：确认官方 G1 finetune、SONIC 训练和新 embodiment 要求。
+- `gear_sonic/train_agent_trl.py`：确认 `pretrained_model` 加载入口存在，但当前不是 shape-aware。
+- `gear_sonic/trl/trainer/ppo_trainer.py`：确认 trainer resume 已有旧 TRL checkpoint shim，但属于完整恢复训练状态路径。
+- `gear_sonic/trl/callbacks/model_save_callback.py`：确认 checkpoint 保存 key 包括 `policy_state_dict`、`value_state_dict`、optimizer、scheduler、state、env_state。
+- `gear_sonic/eval_agent_trl.py`：确认 eval 有 `std` / `log_std` 兼容逻辑，可作为 checkpoint 工具参考。
+- `gear_sonic/trl/modules/universal_token_modules.py`：确认 action dim 来自 env，已有 `meta_action_dim`、`body_action_dim`、active encoder/decoder 扩展点。
+- `sonic_mj/assets.py`、`sonic_mj/env_cfg.py`、`sonic_mj/mdp/commands.py`、`sonic_mj/wrapper.py`：确认当前分支已有 H2 backend 初版。
+
+### grounding 证据
+- `sonic_release/last.pt` 存在，大小约 `447.7M`。
+- 直接 `uv run python` 读取 `sonic_release/last.pt` 当前失败：
+  - 错误：`AttributeError: Can't get attribute 'OnlineTrainerState' on trl.trainer.utils`
+  - 结论：warm-start loader 必须先复用旧 TRL checkpoint 兼容 shim。
+- 本机 H2 数据路径 `/home/ykj/Downloads/dataset/bones-seed/h2_v30_chest_soft` 存在，约 `729M`，当前发现 `128` 个 CSV 文件；尚不是 motion_lib PKL 训练目录。
+- 当前 `git status` 已有未提交代码和文档改动；本轮未回退任何已有内容。
+
+### 已完成文档
+- 更新 `TASK.md`：写入本轮 H2 warm-start 硬需求、环境/数据约束、当前代码事实和验收条件。
+- 更新 `.workflow/artifacts/grounding.md`：记录 checkpoint、loader、H2 数据、A-lite/B/D-small 风险。
+- 更新 `.workflow/artifacts/paper_project_map.json`：结构化记录 SONIC 论文、官方实现、目标代码、A-lite/B/D-small 映射。
+- 更新 `.workflow/artifacts/open_questions.json`：记录非 blocking 问题；当前没有阻塞生成计划的问题。
+- 重写 `PLAN.md`：包含 M0-M8 里程碑、完成标准、测试命令和 review 点。
+- 更新 Codex 多角色 review：
+  - `.workflow/artifacts/reviews/scope.md`
+  - `.workflow/artifacts/reviews/milestones.md`
+  - `.workflow/artifacts/reviews/architecture.md`
+  - `.workflow/artifacts/reviews/testing.md`
+  - `.workflow/artifacts/reviews/executor.md`
+
+### 判断
+- 当前没有 blocking open question；可以生成计划。
+- 按 workflow 规则，本轮停在等待用户确认 `PLAN.md`。
+- 代码尚未修改；下一步确认后才实现 checkpoint 工具和 `train_agent_trl.py` warm-start 接入。
+
+### 本轮命令与结果
+- `sed -n ...` / `tail -220 PROGRESS.md`：读取 workflow 必读文档和历史进度。
+- `rg -n "checkpoint|resume|load_state|pretrained|partial|strict" gear_sonic sonic_mj ...`：定位 checkpoint 与加载入口。
+- `sed -n ... gear_sonic/train_agent_trl.py`：确认 `pretrained_model` 当前加载逻辑。
+- `sed -n ... gear_sonic/trl/modules/universal_token_modules.py`：确认 action dim 和预留扩展点。
+- `sed -n ... README.md docs/source/user_guide/training.md docs/source/user_guide/new_embodiments.md`：确认官方训练和新机器人说明。
+- `find . -maxdepth 4 -name last.pt ...`：确认 `sonic_release/last.pt` 存在。
+- `uv run python - <<'PY' ... torch.load('sonic_release/last.pt') ... PY`：失败于旧 TRL `OnlineTrainerState` pickle 路径，已记录为计划内修复点。
+- `find /home/ykj/Downloads/dataset/bones-seed/h2_v30_chest_soft ...`：确认本机 H2 数据当前为 CSV 结构。
+- `git status --short --branch`：确认分支 `cross_humanoid`，存在既有未提交改动。
+
+### 阻塞与下一步
+- 当前阻塞类型：等待用户确认 `PLAN.md`。
+- 用户确认后从 M1 开始实现 checkpoint 兼容读取与 shape-aware loader，然后执行 A-lite 本机诊断。
+
+## 2026-06-09T23:18:00+08:00 - H2 shape-aware warm-start 本机实现与测试完成
+
+### 代码实现
+- 新增 `gear_sonic/trl/utils/checkpoint.py`：
+  - `install_legacy_trl_checkpoint_shim()`：复用旧 TRL checkpoint 所需的 `OnlineTrainerState` / `exact_div` 兼容符号。
+  - `load_checkpoint()`：集中读取旧 SONIC checkpoint，不修改 checkpoint 文件。
+  - `select_checkpoint_state_dict()`：支持 `policy_state_dict`、`actor_model_state_dict`、`value_state_dict` 和 `state_dict` alias。
+  - `shape_aware_filter_state_dict()`：只保留 key 存在且 shape 完全一致的参数。
+  - `convert_std_log_std()`：支持 `std` 与 `log_std` 双向转换；本轮 G1->H2 因 action dim 29->31，`std` 被正确归入 `skipped_shape`。
+  - `ShapeAwareLoadReport` / `save_shape_aware_report()`：输出 JSON 报告。
+- 修改 `gear_sonic/train_agent_trl.py`：
+  - `algo.config.pretrained_model.shape_aware=true` 时走 shape-aware warm-start。
+  - 默认 `load_policy=true`，不需要额外写 `module_mapping`；可选 `load_value=true` 追加 critic partial load。
+  - warm-start 只加载模型初始化参数，不加载 optimizer、scheduler、env state、global step；`resume=True` / `+checkpoint=` 完整恢复语义未改。
+  - 默认仍保留旧的 strict `module_mapping` 加载路径。
+- 修改 `gear_sonic/config/exp/manager/universal_token/all_modes/sonic_h2.yaml`：
+  - 增加 no-op `algo.config.robot_conditioning.enabled=false`，只作为 D-small 后续结构边界；不改变 Universal Token 网络结构。
+
+### 本机环境与数据
+- 使用项目 `uv` / `.venv`，未修改 CUDA、显卡驱动、系统 GPU 组件、`pyproject.toml` 或 `uv.lock`。
+- 本机 H2 CSV 路径 `/home/ykj/Downloads/dataset/bones-seed/h2_v30_chest_soft` 当前可见，约 `1.5G`，包含 `320` 个 CSV 文件；尚不是 motion_lib PKL 训练目录。
+- 因 H2 CSV 尚未转换为 motion_lib PKL，本机 warm-start smoke 使用已有 `data/motion_lib_bones_seed/robot_smoke` 和 `data/smpl_filtered` 验证代码路径。
+
+### 测试结果
+- `uv run python -m compileall gear_sonic/trl/utils/checkpoint.py gear_sonic/train_agent_trl.py sonic_mj gear_sonic/trl`
+  - 结果：通过。
+- checkpoint 读取：
+  - 命令：inline `uv run python` 调用 `load_checkpoint('sonic_release/last.pt')`。
+  - 结果：通过；checkpoint keys 为 `args`、`env_state_dict`、`lr_scheduler_state_dict`、`optimizer_state_dict`、`policy_state_dict`、`state`、`value_state_dict`。
+  - `policy_state_dict` 有 `55` 个参数，`value_state_dict` 有 `17` 个参数。
+- A-lite policy-only 诊断：
+  - 日志目录：`logs_rl/TRL_H2_Track/manager/universal_token/all_modes/sonic_h2_test-20260609_231018`
+  - 命令要点：`sonic_h2 use_mjlab=True sim_type=mjlab num_envs=2 ++algo.trl.use_cpu=True ++algo.config.num_learning_iterations=1 ++algo.config.pretrained_model.path=sonic_release/last.pt ++algo.config.pretrained_model.shape_aware=True`。
+  - shape 报告：`loaded=47`、`skipped_shape=8`、`missing=0`、`unexpected=0`、`source_action_dim=29`、`target_action_dim=31`。
+  - 跳过项包括：
+    - `std`: `[29] -> [31]`
+    - `actor_module.decoders.g1_dyn.module.12.weight`: `[29, 512] -> [31, 512]`
+    - `actor_module.decoders.g1_dyn.module.12.bias`: `[29] -> [31]`
+    - H2 输入维度变化导致的 `g1_dyn` 首层、`g1_kin` 输出层、`g1/teleop` encoder 首层。
+  - 训练完成 `1` iteration / `48` timesteps，退出码 `0`，mean rewards `-1.04373`，非有限状态/关节/body termination 均为 `0.0000`。
+- B policy-only warm-start smoke：
+  - 日志目录：`logs_rl/TRL_H2_Track/manager/universal_token/all_modes/sonic_h2_test-20260609_231149`
+  - 命令要点：同 A-lite，额外 `++algo.config.num_learning_iterations=2 ++algo.config.num_mini_batches=1 ++algo.config.num_learning_epochs=1`。
+  - 结果：完成 `2` iterations / `96` timesteps，退出码 `0`。
+  - 第 2 iteration mean rewards `-1.11388`；非有限状态/关节/body termination 均为 `0.0000`。
+- policy + value warm-start smoke：
+  - 日志目录：`logs_rl/TRL_H2_Track/manager/universal_token/all_modes/sonic_h2_test-20260609_231548`
+  - 命令要点：同 A-lite，额外 `++algo.config.pretrained_model.load_value=True ++algo.config.num_mini_batches=1 ++algo.config.num_learning_epochs=1`。
+  - policy 报告：`loaded=47`、`skipped_shape=8`。
+  - value 报告：`loaded=14`、`skipped_shape=3`；跳过 `critic_module.module.0.weight` `[2048, 1645] -> [2048, 1907]` 和 critic running mean/var `[1645] -> [1907]`。
+  - 训练完成 `1` iteration / `48` timesteps，退出码 `0`，mean rewards `-1.04373`，非有限状态/关节/body termination 均为 `0.0000`。
+- G1/H2 cfg 回归：
+  - G1 `sonic_release + use_mjlab=True`：action dim `29`，profile joints `29`，profile bodies `30`。
+  - H2 `sonic_h2 + use_mjlab=True`：action dim `31`，profile joints `31`，profile bodies `32`，`robot_conditioning_enabled=False`。
+
+### 已知测试噪声
+- `num_envs=2` 且默认 `num_mini_batches=4` 时 TRL 会打印 `batch_size must be a multiple of num_mini_batches`；后续 smoke 通过 `++algo.config.num_mini_batches=1` 消除该配置噪声。
+- CPU 小 batch 会触发 `ratio_stats.var()` 的 PyTorch degrees-of-freedom warning；训练退出码为 `0`。
+
+### PKU 测试状态
+- 已确认 SSH alias `PKU` 可免密登录，远端主机 `instance-afs92r3e`。
+- 远端项目目录：`/home/nvme02/GR00T/GR00T`；远端数据目录：`/home/nvme02/GR00T/dataset`。
+- 远端环境：
+  - 非交互 shell 中 `uv` 不在 PATH；测试使用项目 `.venv/bin/python`，未安装依赖、未改 base、未改 CUDA/驱动。
+  - Python `3.10.6`，`torch 2.7.1+cu126`，`torch.cuda.is_available() True`。
+  - GPU：`8` 张 `NVIDIA H20`，device capability `(9, 0)`。
+- 远端数据：
+  - `/home/nvme02/GR00T/dataset` 约 `158G`。
+  - 当前 `COUNT_CSV=142220`，`COUNT_PKL=0`；因此正式 H2 数据训练仍缺 motion_lib PKL。
+  - 为测试代码路径，已同步本机 `data/motion_lib_bones_seed/robot_smoke` 到远端项目 `data/motion_lib_bones_seed/robot_smoke`。
+- 已同步到远端的本轮必要代码文件：
+  - `gear_sonic/train_agent_trl.py`
+  - `gear_sonic/trl/utils/checkpoint.py`
+  - `gear_sonic/config/exp/manager/universal_token/all_modes/sonic_h2.yaml`
+  - `sonic_mj/assets.py`
+  - `sonic_mj/env_cfg.py`
+  - `sonic_mj/mdp/commands.py`
+  - `sonic_mj/wrapper.py`
+  - 未覆盖远端已有 mesh 修改。
+- 远端静态与 checkpoint 测试：
+  - `.venv/bin/python -m compileall gear_sonic/trl/utils/checkpoint.py gear_sonic/train_agent_trl.py sonic_mj gear_sonic/trl`：通过。
+  - `load_checkpoint("sonic_release/last.pt")`：通过；checkpoint keys 包含 `policy_state_dict` 和 `value_state_dict`，policy 参数 `55` 个，value 参数 `17` 个。
+- 远端单卡 H20 policy-only warm-start：
+  - 命令要点：`CUDA_VISIBLE_DEVICES=0 .venv/bin/python gear_sonic/train_agent_trl.py +exp=manager/universal_token/all_modes/sonic_h2 use_mjlab=True sim_type=mjlab num_envs=128 ... ++algo.config.pretrained_model.shape_aware=True`。
+  - 日志目录：`logs_rl/TRL_H2_Track/manager/universal_token/all_modes/sonic_h2_test-20260609_232952`。
+  - shape 报告：`loaded=47`、`skipped_shape=8`、`missing=0`、`unexpected=0`，正确跳过 `29->31` action/std 相关参数和 H2 维度变化层。
+  - 完成 `2` iterations / `6144` timesteps，退出码 `0`。
+  - 第 2 iteration：`547 steps/s`，mean rewards `-1.56658`，非有限 state/joint/body termination 均为 `0.0000`。
+- 远端 2 卡 H20 accelerate warm-start：
+  - 命令要点：`CUDA_VISIBLE_DEVICES=0,1 MASTER_PORT=29617 .venv/bin/python -m accelerate.commands.launch --num_processes=2 gear_sonic/train_agent_trl.py ... num_envs=64 ... ++algo.config.pretrained_model.shape_aware=True`。
+  - 日志目录：`logs_rl/TRL_H2_Track/manager/universal_token/all_modes/sonic_h2_test-20260609_233410`。
+  - 两个 rank 均完成 H2 env 构造、motion loading 和 shape-aware policy load。
+  - shape 报告：`loaded=47`、`skipped_shape=8`、`missing=0`、`unexpected=0`。
+  - 完成 `1` iteration / `3072` timesteps，退出码 `0`。
+  - 训练日志：`303 steps/s`，mean rewards `-1.44314`，非有限 state/joint/body termination 均为 `0.0000`。
+- 远端测试噪声：
+  - SSH 输出 `remote port forwarding failed for listen port 10408`，不影响命令执行。
+  - motion loader 输出 `Could not increase file descriptor limit`，不影响本次 smoke。
+  - 2 卡结束时 rank0 有 `destroy_process_group() was not called` warning，退出码仍为 `0`。
+  - 这些都不是当前代码逻辑错误，本轮未因此修改代码。
+
+## 2026-06-13T16:47:23+08:00 - PKU H2 4卡训练/2卡验证计划阶段完成
+
+### 用户新增要求
+- 在 PKU 服务器上按计划训练。
+- 最多只能用 GPU `0-5` 共 6 张。
+- GPU 分组固定为 4 卡训练、2 卡验证：
+  - 训练：`CUDA_VISIBLE_DEVICES=0,1,2,3`。
+  - 验证：`CUDA_VISIBLE_DEVICES=4,5`。
+  - 禁止使用 GPU `6,7`。
+- 开始训练前，在项目文件夹中提供详细 Markdown 文件，写清训练、验证、断点续训等每一步命令。
+- 本轮作为 workflow 计划阶段，完成 grounding、计划和 Codex 多角色 review 后停在等待用户确认 `PLAN.md`。
+
+### 已读取
+- `AGENTS.md`、`PERSON.md`、`TASK.md`、`PLAN.md`、`PROGRESS.md`、`task.json`：恢复 workflow 状态与项目硬约束。
+- `README.md`、`docs/source/user_guide/training.md`、`docs/source/user_guide/new_embodiments.md`：确认官方训练、multi-GPU、eval 和新 embodiment 说明。
+- `gear_sonic/train_agent_trl.py`：确认 SonicMJ/mjlab 训练入口、warm-start 与 full resume 的不同路径。
+- `gear_sonic/trl/utils/checkpoint.py`：确认 shape-aware checkpoint loader 已存在。
+- `gear_sonic/config/exp/manager/universal_token/all_modes/sonic_h2.yaml`：确认 H2 配置、31 action dim、motion_file 需命令行指定。
+- `gear_sonic/config/algo/ppo_im_phc.yaml`：确认默认 `num_learning_iterations=100000`、`save_interval=500`、`eval_frequency=500`。
+- `gear_sonic/eval_agent_trl.py`、`gear_sonic/eval_exp.py`：确认 eval 入口；`eval_exp.py` 内部 launcher 未显式 `--num_processes`，因此计划优先使用 2 卡 one-shot eval。
+
+### PKU 只读 grounding
+- 命令：`ssh PKU 'nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader ...'`
+  - 结果：远端主机 `instance-afs92r3e`，8 张 `NVIDIA H20`，每张约 `97871 MiB`；本计划只使用 `0-5`。
+- 命令：`ssh PKU 'cd /home/nvme02/GR00T/GR00T && .venv/bin/python ...'`
+  - 结果：远端项目存在，分支只读显示 `SONICMJ`。
+  - Python `3.10.6`，torch `2.7.1+cu126`，`torch.cuda.is_available() True`，`torch.cuda.device_count() 8`。
+  - 远端工作区已有 mesh/H2 配置改动，本轮未回退或覆盖。
+- 命令：`ssh PKU 'du -sh /home/nvme02/GR00T/dataset; find ...'`
+  - 结果：数据目录约 `423G`。
+  - `COUNT_PKL=3716`，`COUNT_CSV=284440`。
+  - `/home/nvme02/GR00T/dataset/h2_motion_lib_chest_soft_filtered` 约 `3696` 个 PKL。
+  - `/home/nvme02/GR00T/dataset/h2_motion_lib_local_sample` 约 `20` 个 PKL。
+  - SMPL 候选为 `/home/nvme02/GR00T/GR00T/data/smpl_filtered`。
+
+### 已完成文档
+- 更新 `TASK.md`：写入本轮 PKU 训练/验证硬需求、GPU 限制、环境约束、当前代码事实和验收条件。
+- 新增 `PKU_H2_TRAIN_VALIDATE_PLAN.md`：详细列出登录检查、数据检查、preflight、4 卡训练 smoke、2 卡验证 smoke、正式 4 卡训练、正式 2 卡验证、周期验证、断点续训、监控和停止命令。
+- 更新 `.workflow/artifacts/grounding.md`：记录项目现状、关键证据、远端只读结果和风险。
+- 更新 `.workflow/artifacts/paper_project_map.json`：结构化记录 SONIC 论文、参考实现、目标代码、PKU 环境映射。
+- 更新 `.workflow/artifacts/open_questions.json`：记录 W&B online/offline、H2 filtered PKL 是否作为首轮正式训练数据、是否先用 plane terrain 的非阻塞问题。
+- 更新 `PLAN.md`：M0-M6 覆盖文档、preflight、smoke、正式训练、验证、断点续训、监控。
+- 更新 Codex 多角色 review：
+  - `.workflow/artifacts/reviews/scope.md`
+  - `.workflow/artifacts/reviews/milestones.md`
+  - `.workflow/artifacts/reviews/architecture.md`
+  - `.workflow/artifacts/reviews/testing.md`
+  - `.workflow/artifacts/reviews/executor.md`
+
+### 判断
+- 当前没有 blocking open question；PKU 已有 H2 PKL 候选目录，足以制定可执行计划。
+- 仍有非阻塞决策：W&B online/offline、首轮是否直接用 3696 个 H2 filtered PKL、是否先固定 plane terrain。
+- 按 workflow 规则，本轮停在等待用户确认 `PLAN.md`；尚未启动训练或验证。
+
+### 本轮命令与结果
+- `sed -n ...` / `tail -n ...`：读取 workflow 必读文件、README、训练文档、H2 配置和训练/eval 入口。
+- `rg -n "pretrained_model|shape_aware|checkpoint|resume|eval|sonic_h2" ...`：定位 warm-start、resume、eval 和 H2 配置证据。
+- `ssh PKU ... nvidia-smi ...`：只读确认 PKU GPU 与数据，未修改远端环境。
+- `ssh PKU ... .venv/bin/python ...`：只读确认远端 Python/torch/CUDA 可见性，未安装依赖。
+- `python -m json.tool .workflow/artifacts/open_questions.json .workflow/artifacts/paper_project_map.json task.json`：JSON 格式检查通过。
+- `rg -n 'CUDA_VISIBLE_DEVICES=|0,1,2,3|4,5|6,7' PKU_H2_TRAIN_VALIDATE_PLAN.md PLAN.md TASK.md .workflow/artifacts`：确认本轮计划命令只使用训练 `0,1,2,3` 和验证 `4,5`，没有 `CUDA_VISIBLE_DEVICES` 指向 `6` 或 `7`。
+- 本轮未创建临时测试脚本，未运行训练，未修改 CUDA/驱动/系统 GPU 组件。
+
+### 阻塞与下一步
+- 当前阻塞类型：等待用户确认 `PLAN.md`。
+- 用户确认后，按 `PKU_H2_TRAIN_VALIDATE_PLAN.md` 从 preflight 开始执行；先跑 4 卡训练 smoke 和 2 卡 eval smoke，再进入正式 4 卡训练。
+
+## 2026-06-18T21:28:23+08:00 - 当前恢复结论补充
+
+- 本轮已按 workflow 要求读取 `AGENTS.md`、`PERSON.md`、`TASK.md`、`PLAN.md`、`PROGRESS.md`、`task.json`、`.workflow/artifacts`、`PKU_H2_TRAIN_VALIDATE_PLAN.md`、必要 README/docs 和 git status。
+- `PERSON.md` 无实际 open 条目；`.workflow/artifacts/open_questions.json` 只有非 blocking 问题。
+- 当前最新可执行状态仍是等待用户确认 `PLAN.md`：`task.json.plan_approved=false`，`PLAN.md` 写明确认前不启动 PKU 训练或验证。
+- 本轮未登录 PKU、未运行训练/验证、未改训练代码、未安装依赖、未触碰 CUDA/驱动/系统 GPU 组件。
+- 已同步更新 `task.json.blocked_reason`：等待用户确认 `PLAN.md`；确认后才能进入 PKU preflight、4 卡训练 smoke、2 卡 eval smoke 和正式训练。

@@ -11,6 +11,42 @@ from transformers import TrainerCallback
 import wandb
 
 
+def _quat_yaw_wxyz(quat: torch.Tensor) -> torch.Tensor:
+    """Return yaw angle for wxyz quaternions."""
+    w, x, y, z = quat.unbind(dim=-1)
+    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
+    return torch.atan2(torch.sin(angle), torch.cos(angle))
+
+
+def _quat_angle_error_wxyz(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+    dot = torch.sum(q1 * q2, dim=-1).abs().clamp(max=1.0)
+    return 2.0 * torch.acos(dot)
+
+
+def _finite_mean(values: np.ndarray) -> float:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return float("nan")
+    return float(np.nanmean(arr))
+
+
+def _finite_max(values: np.ndarray) -> float:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return float("nan")
+    return float(np.nanmax(arr))
+
+
+def _finite_last(values: np.ndarray) -> float:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return float("nan")
+    return float(arr[-1])
+
+
 def _compute_metrics_lite(pred_pos, gt_pos, concatenate=False):
     try:
         from smpl_sim.smpllib.smpl_eval import compute_metrics_lite
@@ -322,6 +358,12 @@ class ImEvalCallback(TrainerCallback):
         )
         self.obj_pos_error, self.obj_pos_error_all = [], []
         self.obj_ori_error, self.obj_ori_error_all = [], []
+        self.anchor_xy_error, self.anchor_xy_error_all = [], []
+        self.anchor_z_error, self.anchor_z_error_all = [], []
+        self.anchor_heading_error, self.anchor_heading_error_all = [], []
+        self.anchor_ori_error, self.anchor_ori_error_all = [], []
+        self.anchor_trace_all = []
+        self.save_eval_trace = os.environ.get("SONIC_SAVE_EVAL_TRACE", "0") == "1"
 
     def _collect_object_tracking_errors(self):
         """Collect per-step object position and orientation errors (ref vs simulated)."""
@@ -345,6 +387,33 @@ class ImEvalCallback(TrainerCallback):
         except (KeyError, AttributeError, IndexError):
             # Gracefully handle missing object, motion data, or shape mismatches
             pass
+
+    def _collect_anchor_tracking_errors(self):
+        """Collect per-step global anchor diagnostics when the env exposes motion_command."""
+        motion_cmd = getattr(self.env, "motion_command", None)
+        if motion_cmd is None:
+            return
+
+        try:
+            anchor_pos = motion_cmd.anchor_pos_w
+            robot_anchor_pos = motion_cmd.robot_anchor_pos_w
+            anchor_quat = motion_cmd.anchor_quat_w
+            robot_anchor_quat = motion_cmd.robot_anchor_quat_w
+        except AttributeError:
+            return
+
+        pos_err = robot_anchor_pos - anchor_pos
+        xy_error = torch.norm(pos_err[:, :2], dim=-1)
+        z_error = torch.abs(pos_err[:, 2])
+        heading_error = torch.abs(
+            _wrap_to_pi(_quat_yaw_wxyz(robot_anchor_quat) - _quat_yaw_wxyz(anchor_quat))
+        )
+        ori_error = _quat_angle_error_wxyz(robot_anchor_quat, anchor_quat)
+
+        self.anchor_xy_error.append(xy_error.detach().cpu())
+        self.anchor_z_error.append(z_error.detach().cpu())
+        self.anchor_heading_error.append(heading_error.detach().cpu())
+        self.anchor_ori_error.append(ori_error.detach().cpu())
 
     def env_step(self, actor_state):
         obs_dict, rewards, dones, extras = self.env.step(actor_state)
@@ -378,6 +447,7 @@ class ImEvalCallback(TrainerCallback):
         # Collect object tracking errors if object exists in scene
         if self._has_object:
             self._collect_object_tracking_errors()
+        self._collect_anchor_tracking_errors()
 
         # self.gt_rot.append(self.env.extras['ref_body_rot_extend'].cpu().numpy())
         # self.pred_rot.append(self.env._rigid_body_rot_extend.cpu().numpy())
@@ -516,6 +586,39 @@ class ImEvalCallback(TrainerCallback):
                 ]
                 self.obj_pos_error_all.append(per_env_obj_pos_err)
                 self.obj_ori_error_all.append(per_env_obj_ori_err)
+
+            if len(self.anchor_xy_error) > 0:
+                anchor_series = {
+                    "anchor_xy_error": torch.stack(self.anchor_xy_error),
+                    "anchor_z_error": torch.stack(self.anchor_z_error),
+                    "anchor_heading_error": torch.stack(self.anchor_heading_error),
+                    "anchor_ori_error": torch.stack(self.anchor_ori_error),
+                }
+                motion_num_steps = self.env._motion_lib.get_motion_num_steps(self.env.motion_ids)
+                batch_summary = {}
+                for key, values in anchor_series.items():
+                    per_motion = []
+                    per_motion_trace = []
+                    for idx, num_steps in enumerate(motion_num_steps):
+                        trace = values[: (num_steps - 1), idx].detach().cpu().numpy()
+                        per_motion.append(
+                            {
+                                "mean": _finite_mean(trace),
+                                "max": _finite_max(trace),
+                                "final": _finite_last(trace),
+                            }
+                        )
+                        if self.save_eval_trace:
+                            per_motion_trace.append(trace.tolist())
+                    batch_summary[key] = per_motion
+                    if self.save_eval_trace:
+                        batch_summary[f"{key}_trace"] = per_motion_trace
+                self.anchor_xy_error_all.append(batch_summary["anchor_xy_error"])
+                self.anchor_z_error_all.append(batch_summary["anchor_z_error"])
+                self.anchor_heading_error_all.append(batch_summary["anchor_heading_error"])
+                self.anchor_ori_error_all.append(batch_summary["anchor_ori_error"])
+                if self.save_eval_trace:
+                    self.anchor_trace_all.append(batch_summary)
 
             env_motion_ids = self.env.start_idx + self.env.motion_ids
             self.sampled_motion_idx.append(env_motion_ids)
@@ -666,6 +769,33 @@ class ImEvalCallback(TrainerCallback):
                         [v for batch in self.obj_ori_error_all for v in batch]
                     ).to(self.env.device)
 
+                has_anchor_metrics = len(self.anchor_xy_error_all) > 0
+                if has_anchor_metrics:
+                    anchor_xy_mean_flat = torch.tensor(
+                        [v["mean"] for batch in self.anchor_xy_error_all for v in batch]
+                    ).to(self.env.device)
+                    anchor_xy_max_flat = torch.tensor(
+                        [v["max"] for batch in self.anchor_xy_error_all for v in batch]
+                    ).to(self.env.device)
+                    anchor_xy_final_flat = torch.tensor(
+                        [v["final"] for batch in self.anchor_xy_error_all for v in batch]
+                    ).to(self.env.device)
+                    anchor_z_mean_flat = torch.tensor(
+                        [v["mean"] for batch in self.anchor_z_error_all for v in batch]
+                    ).to(self.env.device)
+                    anchor_heading_mean_flat = torch.tensor(
+                        [v["mean"] for batch in self.anchor_heading_error_all for v in batch]
+                    ).to(self.env.device)
+                    anchor_heading_max_flat = torch.tensor(
+                        [v["max"] for batch in self.anchor_heading_error_all for v in batch]
+                    ).to(self.env.device)
+                    anchor_heading_final_flat = torch.tensor(
+                        [v["final"] for batch in self.anchor_heading_error_all for v in batch]
+                    ).to(self.env.device)
+                    anchor_ori_mean_flat = torch.tensor(
+                        [v["mean"] for batch in self.anchor_ori_error_all for v in batch]
+                    ).to(self.env.device)
+
                 # Tensor layout: [metrics_all_sum..., length, terminate, progress, (obj_pos_err, obj_ori_err,) motion_idx]
                 tail_tensors = [
                     terminate_hist_concatenate[:, None],
@@ -674,6 +804,19 @@ class ImEvalCallback(TrainerCallback):
                 if has_obj_metrics:
                     tail_tensors.append(obj_pos_err_flat[:, None])
                     tail_tensors.append(obj_ori_err_flat[:, None])
+                if has_anchor_metrics:
+                    tail_tensors.extend(
+                        [
+                            anchor_xy_mean_flat[:, None],
+                            anchor_xy_max_flat[:, None],
+                            anchor_xy_final_flat[:, None],
+                            anchor_z_mean_flat[:, None],
+                            anchor_heading_mean_flat[:, None],
+                            anchor_heading_max_flat[:, None],
+                            anchor_heading_final_flat[:, None],
+                            anchor_ori_mean_flat[:, None],
+                        ]
+                    )
                 tail_tensors.append(all_motion_idxes[:, None])
 
                 all_tensors = torch.cat(
@@ -699,19 +842,31 @@ class ImEvalCallback(TrainerCallback):
                 )  # make sure that we are selecting the correct ones.
 
                 # Extract tail columns: terminate, progress, (obj_pos_err, obj_ori_err,) motion_idx
-                num_tail = 3 + (
-                    2 if has_obj_metrics else 0
-                )  # terminate + progress + (obj*2) + motion_idx
+                num_tail = (
+                    3
+                    + (2 if has_obj_metrics else 0)
+                    + (8 if has_anchor_metrics else 0)
+                )  # terminate + progress + optional diagnostics + motion_idx
                 num_body_metrics = metric_size - num_tail  # metrics_all_sum columns + length
 
                 gathered_terminate_hist_stack = gathered_metrics_stack[:, num_body_metrics].bool()
                 gathered_progress_hist_stack = gathered_metrics_stack[:, num_body_metrics + 1]
+                tail_idx = num_body_metrics + 2
                 if has_obj_metrics:
-                    gathered_obj_pos_err = gathered_metrics_stack[:, num_body_metrics + 2]
-                    gathered_obj_ori_err = gathered_metrics_stack[:, num_body_metrics + 3]
-                    gathered_motion_idxes = gathered_metrics_stack[:, num_body_metrics + 4].long()
-                else:
-                    gathered_motion_idxes = gathered_metrics_stack[:, num_body_metrics + 2].long()
+                    gathered_obj_pos_err = gathered_metrics_stack[:, tail_idx]
+                    gathered_obj_ori_err = gathered_metrics_stack[:, tail_idx + 1]
+                    tail_idx += 2
+                if has_anchor_metrics:
+                    gathered_anchor_xy_mean = gathered_metrics_stack[:, tail_idx]
+                    gathered_anchor_xy_max = gathered_metrics_stack[:, tail_idx + 1]
+                    gathered_anchor_xy_final = gathered_metrics_stack[:, tail_idx + 2]
+                    gathered_anchor_z_mean = gathered_metrics_stack[:, tail_idx + 3]
+                    gathered_anchor_heading_mean = gathered_metrics_stack[:, tail_idx + 4]
+                    gathered_anchor_heading_max = gathered_metrics_stack[:, tail_idx + 5]
+                    gathered_anchor_heading_final = gathered_metrics_stack[:, tail_idx + 6]
+                    gathered_anchor_ori_mean = gathered_metrics_stack[:, tail_idx + 7]
+                    tail_idx += 8
+                gathered_motion_idxes = gathered_metrics_stack[:, tail_idx].long()
                 gathered_progress_hist_stack[~gathered_terminate_hist_stack] = 1
 
                 assert (gathered_motion_idxes.diff(dim=0) == 1).all()
@@ -756,6 +911,32 @@ class ImEvalCallback(TrainerCallback):
                     metrics_all_print["obj_ori_error"] = obj_ori_err_mean
                     metrics_succ_print["obj_pos_error"] = obj_pos_err_succ
                     metrics_succ_print["obj_ori_error"] = obj_ori_err_succ
+                if has_anchor_metrics:
+                    metrics_all_print["anchor_xy_error_mean"] = (
+                        gathered_anchor_xy_mean.mean().cpu().numpy()
+                    )
+                    metrics_all_print["anchor_xy_error_max"] = (
+                        gathered_anchor_xy_max.max().cpu().numpy()
+                    )
+                    metrics_all_print["anchor_heading_error_mean"] = (
+                        gathered_anchor_heading_mean.mean().cpu().numpy()
+                    )
+                    metrics_all_print["anchor_heading_error_max"] = (
+                        gathered_anchor_heading_max.max().cpu().numpy()
+                    )
+                    metrics_succ_print["anchor_xy_error_mean"] = (
+                        gathered_anchor_xy_mean[~gathered_terminate_hist_stack].mean().cpu().numpy()
+                        if (~gathered_terminate_hist_stack).any()
+                        else 0.0
+                    )
+                    metrics_succ_print["anchor_heading_error_mean"] = (
+                        gathered_anchor_heading_mean[~gathered_terminate_hist_stack]
+                        .mean()
+                        .cpu()
+                        .numpy()
+                        if (~gathered_terminate_hist_stack).any()
+                        else 0.0
+                    )
 
                 failed_keys = self.env._motion_lib._motion_data_keys[
                     gathered_terminate_hist_stack.cpu().numpy()
@@ -792,6 +973,29 @@ class ImEvalCallback(TrainerCallback):
                         all_metrics_dict["per_env_obj_ori_error"] = [
                             v for batch in self.obj_ori_error_all for v in batch
                         ]
+                if has_anchor_metrics:
+                    all_metrics_dict["anchor_xy_error_mean"] = (
+                        gathered_anchor_xy_mean.cpu().numpy()
+                    )
+                    all_metrics_dict["anchor_xy_error_max"] = gathered_anchor_xy_max.cpu().numpy()
+                    all_metrics_dict["anchor_xy_error_final"] = (
+                        gathered_anchor_xy_final.cpu().numpy()
+                    )
+                    all_metrics_dict["anchor_z_error_mean"] = gathered_anchor_z_mean.cpu().numpy()
+                    all_metrics_dict["anchor_heading_error_mean"] = (
+                        gathered_anchor_heading_mean.cpu().numpy()
+                    )
+                    all_metrics_dict["anchor_heading_error_max"] = (
+                        gathered_anchor_heading_max.cpu().numpy()
+                    )
+                    all_metrics_dict["anchor_heading_error_final"] = (
+                        gathered_anchor_heading_final.cpu().numpy()
+                    )
+                    all_metrics_dict["anchor_ori_error_mean"] = (
+                        gathered_anchor_ori_mean.cpu().numpy()
+                    )
+                    if self.eval_only and self.save_eval_trace:
+                        all_metrics_dict["anchor_error_traces"] = self.anchor_trace_all
 
                 failed_metrics_dict = {
                     k: all_metrics[gathered_terminate_hist_stack, idx].cpu().numpy()
@@ -810,6 +1014,13 @@ class ImEvalCallback(TrainerCallback):
                     failed_metrics_dict["obj_ori_error"] = (
                         gathered_obj_ori_err[gathered_terminate_hist_stack].cpu().numpy()
                     )
+                if has_anchor_metrics:
+                    failed_metrics_dict["anchor_xy_error_mean"] = (
+                        gathered_anchor_xy_mean[gathered_terminate_hist_stack].cpu().numpy()
+                    )
+                    failed_metrics_dict["anchor_heading_error_mean"] = (
+                        gathered_anchor_heading_mean[gathered_terminate_hist_stack].cpu().numpy()
+                    )
 
                 if self.accelerator.is_main_process:
                     print(f"Success Rate: {success_rate:.10f}")
@@ -818,6 +1029,15 @@ class ImEvalCallback(TrainerCallback):
                         print(
                             f"Object Pos Error (all): {obj_pos_err_mean:.4f}m | "
                             f"Object Ori Error (all): {obj_ori_err_mean:.4f}rad"
+                        )
+                    if has_anchor_metrics:
+                        print(
+                            "Anchor Error (all): "
+                            f"xy_mean={metrics_all_print['anchor_xy_error_mean']:.4f}m | "
+                            f"xy_max={metrics_all_print['anchor_xy_error_max']:.4f}m | "
+                            "heading_mean="
+                            f"{metrics_all_print['anchor_heading_error_mean']:.4f}rad | "
+                            f"heading_max={metrics_all_print['anchor_heading_error_max']:.4f}rad"
                         )
                     print(
                         "All: ", " \t".join([f"{k}: {v:.3f}" for k, v in metrics_all_print.items()])
@@ -856,6 +1076,15 @@ class ImEvalCallback(TrainerCallback):
                         self.obj_pos_error_all,
                         self.obj_ori_error,
                         self.obj_ori_error_all,
+                        self.anchor_xy_error,
+                        self.anchor_xy_error_all,
+                        self.anchor_z_error,
+                        self.anchor_z_error_all,
+                        self.anchor_heading_error,
+                        self.anchor_heading_error_all,
+                        self.anchor_ori_error,
+                        self.anchor_ori_error_all,
+                        self.anchor_trace_all,
                     )
                     gc.collect()
                     torch.cuda.empty_cache()
@@ -880,7 +1109,15 @@ class ImEvalCallback(TrainerCallback):
                 self.pred_pos,
                 self.obj_pos_error,
                 self.obj_ori_error,
+                self.anchor_xy_error,
+                self.anchor_z_error,
+                self.anchor_heading_error,
+                self.anchor_ori_error,
             ) = (
+                [],
+                [],
+                [],
+                [],
                 [],
                 [],
                 [],
