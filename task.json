@@ -2,13 +2,13 @@
   "engine_version": "agentic-0.1.0",
   "request_text": "基于 H2_TRANSFER_EXPERIMENT_LOG.md 和 SONIC G1->H2 迁移诊断建议，先对 pr12000 / hy2000 / tf2000 做诊断和日志/可视化拆解，不盲目继续训练；做 global-anchor 最小实验验证 global root/heading drift 是否是 reward/termination 盲区；设计 H2 decoder/adapter 方案；规划真正 cross-humanoid 版本。本轮完成 grounding、计划和 Codex 多角色 review，停在等待用户确认 PLAN.md。",
   "plan_approved": true,
-  "last_command": "resume",
+  "last_command": "pku_eval",
   "last_result": "blocked",
-  "blocked_reason": "缺少 pr12000 / hy2000 / tf2000 的真实 compare8 metrics_eval.json；本机 logs_eval/logs_rl/.workflow 下未找到 metrics_eval.json，且 H2_TRANSFER_EXPERIMENT_LOG.md 记录的 PKU logs_eval 路径当前不可访问。需要用户提供这些文件，或在可访问 PKU 路径的机器重新运行 eval 并同步输出。",
-  "updated_at": "2026-06-18T23:59:03+08:00",
+  "blocked_reason": "PKU 上已找到并汇总旧 compare8 metrics_eval.json，但新 global-anchor logging callback 重跑 pr12000/hy2000/tf2000 时，三组 eval 都在加载 8 motions 后 20 分钟内未产出 metrics。需要先 debug eval loop/callback 性能或逻辑，再继续 global-anchor ablation。",
+  "updated_at": "2026-06-19T01:01:00+08:00",
   "python_env_kind": "uv",
   "python_env": ".venv",
   "python_setup_mode": "existing",
   "workspace_root": "/home/ykj/project/SONICMJ/GR00T-WholeBodyControl",
-  "summary": "PLAN.md 已确认并进入代码阶段。已在 gear_sonic/trl/callbacks/im_eval_callback.py 增加 eval global-anchor logging，新增 gear_sonic/scripts/h2_eval_diagnostics.py 用于汇总 metrics_eval.json，并写入 .workflow/artifacts/h2_checkpoint_diagnosis.md / h2_eval_diagnostics.md。本轮恢复已读取 AGENTS/PERSON/TASK/PLAN/PROGRESS/task.json、artifacts、README/docs 和 git status；运行 workflow resume、扫描本机 metrics、检查 PKU 路径与 uv 环境。当前阻塞于缺少 pr12000/hy2000/tf2000 的真实 compare8 metrics_eval.json。"
+  "summary": "PLAN.md 已确认并进入代码阶段。已通过 git format-patch/git am 将本机提交 6e57c63 同步到 PKU；远端 compile 通过。PKU 旧 metrics 已汇总到 .workflow/artifacts/h2_eval_diagnostics_existing.md/csv。新 anchor logging eval 使用 GPU 0/1/2（未用 5-7）重跑三组，但均在加载 8 motions 后超时无 metrics；当前应先 debug eval loop/callback，再做 global-anchor reward/termination ablation。"
 }

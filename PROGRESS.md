@@ -61,6 +61,45 @@ uv run python gear_sonic/scripts/h2_eval_diagnostics.py \
   --output-csv .workflow/artifacts/h2_eval_diagnostics.csv
 ```
 
+## 2026-06-19T01:01:00+08:00 - PKU 同步与 H2 compare8 诊断执行
+
+### 已执行
+- 本机提交并推送 `6e57c63 Add H2 eval anchor diagnostics` 到 `origin/cross_humanoid`。
+- PKU 服务器 `/home/nvme02/GR00T/GR00T` 因远端 `git fetch` 走 HTTPS 卡住，改用 `git format-patch` + `git am` 同步同一提交；没有 reset 或覆盖远端已有未提交改动。
+- 远端工作区仍保留原有 H2 配置、mesh、SonicMJ 迁移等未提交改动；本轮只叠加诊断提交。
+- 远端 compile 通过：
+  `./.venv/bin/python -m compileall -q gear_sonic/trl/callbacks/im_eval_callback.py gear_sonic/scripts/h2_eval_diagnostics.py`
+
+### 旧 metrics 诊断
+- 在 PKU 找到已有 compare8 metrics：
+  - `logs_eval/20260617_precision_compare_h2/metrics_pr012000/metrics_eval.json`
+  - `logs_eval/20260618_hybrid_compare_h2/metrics_hy002000/metrics_eval.json`
+  - `logs_eval/20260615_tracking_first_compare_h2/metrics_tf2000/metrics_eval.json`
+- 已运行：
+  `./.venv/bin/python gear_sonic/scripts/h2_eval_diagnostics.py ...`
+- 结果同步回本机：
+  - `.workflow/artifacts/h2_eval_diagnostics_existing.md`
+  - `.workflow/artifacts/h2_eval_diagnostics_existing.csv`
+
+### 诊断结论
+- `pr12000`：8/8 terminated，平均 progress `0.191803`，`mpjpe_g=0.070255`，是 precision 端点。
+- `hy2000`：6/8 terminated，平均 progress `0.400499`，`mpjpe_g=0.125726`，两个成功 motion 的 global error 已明显偏大。
+- `tf2000`：3/8 terminated，平均 progress `0.689094`，`mpjpe_g=0.151636`，是 survival/progress 端点但 global/foot/VR drift 更明显。
+
+### 新 anchor logging eval 尝试
+- 按用户要求只使用 `0-4` GPU 范围；实际尝试使用 GPU `0`，随后并行使用 GPU `0,1,2`，没有使用 `5,6,7`。
+- 尝试用新 `im_eval_callback.py` 重跑 `pr12000/hy2000/tf2000`，数据目录：
+  `/home/nvme02/GR00T/dataset/h2_v30_chest_soft_reverse/motion_lib_eval_compare8`
+- 先后尝试：
+  - 单卡 `pr12000`，保存 trace，超过 12 分钟无 metrics，手动停止。
+  - 单卡 `pr12000`，不保存 trace，`algo.config.eval.num_eval_episodes=8`，300 秒 timeout，无 metrics。
+  - 三组并行，GPU `0/1/2`，不保存 trace，`algo.config.eval.num_eval_episodes=8`，1200 秒 timeout，无 metrics。
+- 三组日志均停在加载 8 motions 后，没有进入最终 `Success Rate`/metrics 输出；没有残留 eval 进程，GPU 已释放。
+
+### 当前阻塞
+- 新 anchor scalar/trace metrics 尚未生成。当前问题从“缺少 PKU metrics”变为“新 callback/当前 eval 路径在 PKU 上加载 motion 后无法在 20 分钟内完成”。
+- 不建议继续启动 global-anchor reward/termination ablation；下一步应先单独 debug eval loop 性能或 callback 逻辑，确认为什么旧 compare8 eval 能产出 metrics，而当前新 callback 版本不能在合理时间结束。
+
 ## 2026-06-18T23:58:00+08:00 - PLAN.md 代码阶段 M0/M1/M2 logging 部分执行，因 compare8 metrics 缺失暂停
 
 ### 已读取
