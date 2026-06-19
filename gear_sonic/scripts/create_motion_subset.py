@@ -81,6 +81,7 @@ def create_subset(
     include: list[str],
     exclude: list[str],
     max_motions: int | None,
+    per_include_limit: int | None,
     overwrite: bool,
     symlink: bool,
 ) -> int:
@@ -94,14 +95,31 @@ def create_subset(
 
     include_patterns = _compile_patterns(include)
     exclude_patterns = _compile_patterns(exclude)
-    selected: list[tuple[str, Path]] = []
+    candidates: list[tuple[str, Path]] = []
     for src_path in _iter_motion_files(source_dir):
         key = src_path.stem
-        if include_patterns and not _matches(key, include_patterns):
-            continue
         if exclude_patterns and _matches(key, exclude_patterns):
             continue
-        selected.append((key, src_path))
+        candidates.append((key, src_path))
+
+    if per_include_limit is not None and include_patterns:
+        selected_by_key: dict[str, Path] = {}
+        for pattern in include_patterns:
+            matches = [
+                (key, src_path)
+                for key, src_path in candidates
+                if pattern.search(key)
+            ]
+            matches.sort(key=lambda item: item[0])
+            for key, src_path in matches[:per_include_limit]:
+                selected_by_key.setdefault(key, src_path)
+        selected = list(selected_by_key.items())
+    else:
+        selected = [
+            (key, src_path)
+            for key, src_path in candidates
+            if not include_patterns or _matches(key, include_patterns)
+        ]
     selected.sort(key=lambda item: item[0])
     if max_motions is not None:
         selected = selected[:max_motions]
@@ -148,6 +166,12 @@ def main() -> int:
         help="Keep at most this many matched motions after sorting by motion key.",
     )
     parser.add_argument(
+        "--per-include-limit",
+        type=int,
+        default=None,
+        help="When set, keep up to this many motions per --include regex before merging.",
+    )
+    parser.add_argument(
         "--symlink",
         action="store_true",
         help="Create symlinks instead of copying PKL files.",
@@ -160,6 +184,7 @@ def main() -> int:
         include=args.include,
         exclude=args.exclude,
         max_motions=args.max_motions,
+        per_include_limit=args.per_include_limit,
         overwrite=args.overwrite,
         symlink=args.symlink,
     )
