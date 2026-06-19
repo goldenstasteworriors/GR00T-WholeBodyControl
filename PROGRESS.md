@@ -2,6 +2,77 @@
 
 记录 workflow agent 的进度、测试、阻塞和恢复点。
 
+## 2026-06-19T16:34:39+08:00 - locomotion-only 诊断、子集工具与 locovel192 s050
+
+### 代码与工具
+- 新增 `gear_sonic/scripts/create_motion_subset.py`：
+  - 从递归 motion_lib 目录按 regex 生成子集目录。
+  - 支持复制或 symlink。
+  - 支持 `--max-motions` 和 `--per-include-limit`，用于快速生成固定大小或均衡子集。
+- 扩展 `gear_sonic/scripts/h2_eval_diagnostics.py`：
+  - 新增 `--group LABEL=REGEX`，可在同一 metrics 表里额外输出 group summary。
+  - 本轮用 `--group locomotion="^(walk|jog|jump)"` 明确拆出走跑跳。
+- 本地 smoke：
+  - `uv run python -m compileall -q gear_sonic/scripts/create_motion_subset.py gear_sonic/scripts/h2_eval_diagnostics.py` 通过。
+  - 临时 metrics / motion subset smoke 通过，临时目录已删除。
+
+### PKU 数据与 eval 子集
+- 生成训练池：
+  - `/home/nvme02/GR00T/dataset/h2_v30_chest_soft_reverse/motion_lib_locomotion_v1`：33990 个 locomotion-ish motions，加载过重，不适合快速 ablation。
+  - `/home/nvme02/GR00T/dataset/h2_v30_chest_soft_reverse/motion_lib_locomotion_train1024_v1`：1024 个 motion，但排序后偏 `idle_turn/jog_arc`，仍偏重且不均衡。
+  - `/home/nvme02/GR00T/dataset/h2_v30_chest_soft_reverse/motion_lib_locomotion_train192_balanced_v1`：192 个 motion，`walk_ff/jog_ff/jump_ff` 各 64。
+- 生成固定 eval 子集：
+  - `/home/nvme02/GR00T/dataset/h2_v30_chest_soft_reverse/motion_lib_eval_locomotion3`
+  - 包含 `jog_ff_start_180_R_003__A234_M`、`walk_ff_loop_315_R_001__A237_M`、`jump_ff_180_R_003__A238_M`。
+
+### grouped diagnostics 结论
+- compare8 的 grouped summary 显示所有 checkpoint 的 locomotion success 都是 `0.000000`：
+  - `pr12000:locomotion`: `progress=0.144156`, `mpjpe_g=0.055525`, `anchor_xy_max=0.070773`。
+  - `hy2000:locomotion`: `progress=0.171042`, `mpjpe_g=0.128115`, `anchor_xy_max=0.433407`。
+  - `tf2000:locomotion`: `progress=0.170917`, `mpjpe_g=0.084002`, `anchor_xy_max=0.120612`。
+  - `pr_recovery_s050:locomotion`: `progress=0.494849`, 但 `mpjpe_g=0.547007`, `anchor_xy_max=3.310442`。
+- `tf2000` 的高 overall success 主要来自 static/upper-body，不能说明 locomotion 学好了。
+
+### locomotion3 baseline
+- 使用修正后的 eval 命令完成 `pr12000/hy2000/tf2000` 三组 locomotion3 eval。
+- 关键结果：
+  - `pr12000`: `success=0.000000`, `progress=0.161246`, `mpjpe_g=0.058456`, `anchor_xy_max=0.095861`。
+  - `hy2000`: `success=0.000000`, `progress=0.263827`, `mpjpe_g=0.137998`, `anchor_xy_max=0.492422`。
+  - `tf2000`: `success=0.000000`, `progress=0.180282`, `mpjpe_g=0.080870`, `anchor_xy_max=0.123774`。
+
+### locovel192 s050
+- 先尝试 `locovel_from_pr12000_s100` 和 `locovel1024_from_pr12000_s100`：
+  - 33990 子集加载太重，停止。
+  - 1024 子集仍不够轻且不均衡，停止。
+- 最终运行 `locovel192_from_pr12000_s050`：
+  - checkpoint: `logs_rl/TRL_H2_Track/manager/universal_token/all_modes/sonic_h2_locovel192_from_pr12000_s050-20260619_161546/model_step_000050.pt`
+  - 训练池：`motion_lib_locomotion_train192_balanced_v1`
+  - 权重重点：`tracking_body_linvel.weight=3.0`、`tracking_body_angvel.weight=1.5`、anchor pos/ori 分别 `1.5/1.2`，termination 小幅放松。
+  - 训练中 mean length 从 `14.59500` 提升到最高约 `29.04000`，但 `Env/Metrics/motion/error_anchor_pos` 从 `0.1027` 增到约 `0.2450`。
+- locomotion3 eval:
+  - `locovel192_s050`: `success=0.000000`, `progress=0.189316`, `mpjpe_g=0.066461`, `anchor_xy_mean=0.029546`, `anchor_xy_max=0.085436`, `heading_max=0.541856`。
+  - 对比 `pr12000`: progress `0.161246 -> 0.189316`，`anchor_xy_max 0.095861 -> 0.085436`，但 success 仍为 0。
+  - per-motion:
+    - jog progress `0.164021 -> 0.190476`，但 `mpjpe_g 0.074569 -> 0.085381`。
+    - walk progress `0.031056 -> 0.037267`，基本没有解决。
+    - jump progress `0.288660 -> 0.340206`，且 `anchor_xy_max 0.042412 -> 0.016497`。
+
+### 判断
+- balanced locomotion-only + velocity reward 没有复现 `pr_recovery` 的米级 global drift，是比纯 relaxed termination 更安全的方向。
+- 但 50 iter 只带来很小 progress 增益，walk 仍几乎立即失败；这说明 walk 的问题不是简单 body velocity 权重不够。
+- 下一步不建议直接把该 run 扩到长训练。更合理的是：
+  - 对 walk 单独做数据/轨迹检查：root velocity、heading、foot contact、motion 初始姿态是否和 H2 可达性冲突。
+  - 做 walk-only 小集，而不是 walk/jog/jump 混训。
+  - 若继续训练，先加入或诊断 contact/gait 相关信号；当前 reward 里没有显式 gait phase/contact tracking。
+
+### 本轮 artifact
+- `.workflow/artifacts/h2_ablation_compare_s050_grouped.md`
+- `.workflow/artifacts/h2_ablation_compare_s050_grouped.csv`
+- `.workflow/artifacts/h2_locomotion3_baseline.md`
+- `.workflow/artifacts/h2_locomotion3_baseline.csv`
+- `.workflow/artifacts/h2_locomotion3_locovel192_s050.md`
+- `.workflow/artifacts/h2_locomotion3_locovel192_s050.csv`
+
 ## 2026-06-19T14:51:31+08:00 - PKU H2 两组 s050 ablation 完成并停止无效长跑
 
 ### 已执行

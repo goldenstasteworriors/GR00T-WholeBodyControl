@@ -2,13 +2,13 @@
   "engine_version": "agentic-0.1.0",
   "request_text": "基于 H2_TRANSFER_EXPERIMENT_LOG.md 和 SONIC G1->H2 迁移诊断建议，先对 pr12000 / hy2000 / tf2000 做诊断和日志/可视化拆解，不盲目继续训练；做 global-anchor 最小实验验证 global root/heading drift 是否是 reward/termination 盲区；设计 H2 decoder/adapter 方案；规划真正 cross-humanoid 版本。本轮完成 grounding、计划和 Codex 多角色 review，停在等待用户确认 PLAN.md。",
   "plan_approved": true,
-  "last_command": "pku_h2_ablation_s050",
-  "last_result": "ablation_stopped_after_diagnostics",
+  "last_command": "pku_h2_locomotion3_locovel192_s050",
+  "last_result": "locomotion_only_diagnostics_complete",
   "blocked_reason": null,
-  "updated_at": "2026-06-19T14:51:31+08:00",
+  "updated_at": "2026-06-19T16:34:39+08:00",
   "python_env_kind": "uv",
   "python_env": ".venv",
   "python_setup_mode": "existing",
   "workspace_root": "/home/ykj/project/SONICMJ/GR00T-WholeBodyControl",
-  "summary": "PLAN.md 已确认并进入代码阶段。已通过 git format-patch/git am 将本机诊断代码同步到 PKU；远端 compile 通过。PKU 旧 metrics 已汇总到 .workflow/artifacts/h2_eval_diagnostics_existing.md/csv。已定位 anchor eval 超时原因并完成 pr12000/hy2000/tf2000 anchor eval，结果写入 .workflow/artifacts/h2_eval_anchor_diagnostics_pku.md/csv。已在 PKU 0-4 卡范围内完成两组短 ablation 的 s050 eval：hy_drift_guard_from_hy2000_s500 提升 success/progress 但放大 anchor drift；pr_recovery_relaxed_from_pr12000_s500 让 walk progress 到 0.944099 但 anchor_xy_max 到 3.310442m。两组 500 轮训练均已停止，GPU 已释放。结论：不能继续统一加 anchor reward 或统一放松 termination；下一步应拆分 static/upper-body 与 locomotion，优先做 locomotion-only 小集的 root velocity/contact/gait 约束诊断与最小训练。"
+  "summary": "PLAN.md 已确认并进入代码阶段。已完成 PKU anchor eval、s050 ablation、grouped diagnostics 和 locomotion-only 最小实验。新增 create_motion_subset.py，支持 regex/symlink/max/per-include-limit；h2_eval_diagnostics.py 支持 --group。已生成 locomotion3 固定 eval 子集和 balanced walk_ff/jog_ff/jump_ff 192 训练池。compare8 grouped summary 显示所有 checkpoint 的 locomotion success 都为 0，tf2000 的 success 主要来自 static/upper-body。locovel192_from_pr12000_s050 在 GPU 0-3 训练 50 iter，locomotion3 eval 为 success=0、progress=0.189316、mpjpe_g=0.066461、anchor_xy_max=0.085436；相比 pr12000 progress 只小幅提升 0.161246->0.189316，walk 仍几乎立即失败。结论：locomotion-only + velocity reward 比 relaxed termination 更安全，没有米级 drift，但不足以解决 walk；下一步应做 walk-only 数据/轨迹诊断，重点看 root velocity、heading、foot contact/gait，而不是继续统一长训。"
 }
