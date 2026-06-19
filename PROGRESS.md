@@ -2,6 +2,49 @@
 
 记录 workflow agent 的进度、测试、阻塞和恢复点。
 
+## 2026-06-19T13:05:00+08:00 - PKU anchor eval 修复并完成三组诊断
+
+### 问题定位
+- 上一轮新 anchor logging eval 超时，不是 `im_eval_callback.py` 的 anchor 统计本身卡住，而是运行命令漏了旧成功 eval 的关键 Hydra overrides：
+  - `++eval_callbacks=im_eval`
+  - `++run_eval_loop=False`
+  - `++eval_output_dir=...`
+  - `+manager_env/terminations=tracking/eval`
+  - `++manager_env.commands.motion.motion_lib_cfg.max_unique_motions=8`
+  - `++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=data/smpl_filtered`
+- 漏掉这些参数后，`eval_agent_trl.py` 没有触发 `ImEvalCallback.evaluate_policy()`，而是进入普通 eval loop，因此长时间不生成 `metrics_eval.json`。
+- PKU `.venv/bin/accelerate` 的 shebang 指向旧路径 `/home/nvme02/GR00T/GR00T-WholeBodyControl/.venv/bin/python3`，直接执行会返回 `126`；本轮改用 `.venv/bin/python -m accelerate.commands.launch`，没有修改环境。
+
+### 已执行
+- 在 PKU `/home/nvme02/GR00T/GR00T` 用 GPU `0/1/2` 并行完成三组 eval：
+  - `pr12000`: `model_step_012000.pt`
+  - `hy2000`: `model_step_002000.pt`
+  - `tf2000`: `model_step_002000.pt`
+- 数据集：
+  `/home/nvme02/GR00T/dataset/h2_v30_chest_soft_reverse/motion_lib_eval_compare8`
+- 三组均正常进入 `Evaluating policy` 并写出：
+  - `logs_eval/20260619_anchor_compare_h2_fixed/metrics_pr12000/metrics_eval.json`
+  - `logs_eval/20260619_anchor_compare_h2_fixed/metrics_hy2000/metrics_eval.json`
+  - `logs_eval/20260619_anchor_compare_h2_fixed/metrics_tf2000/metrics_eval.json`
+- 已生成并同步回本机：
+  - `.workflow/artifacts/h2_eval_anchor_diagnostics_pku.md`
+  - `.workflow/artifacts/h2_eval_anchor_diagnostics_pku.csv`
+
+### 新 anchor 诊断结论
+- `pr12000`: `success=0.000000`, `progress=0.192842`, `mpjpe_g=0.070260`, `anchor_xy_mean=0.026190`, `anchor_xy_max=0.118835`, `heading_mean=0.065750`, `heading_max=0.394442`。
+- `hy2000`: `success=0.250000`, `progress=0.399373`, `mpjpe_g=0.121227`, `anchor_xy_mean=0.083130`, `anchor_xy_max=0.433407`, `heading_mean=0.099540`, `heading_max=0.943376`。
+- `tf2000`: `success=0.625000`, `progress=0.689094`, `mpjpe_g=0.143952`, `anchor_xy_mean=0.089988`, `anchor_xy_max=0.420850`, `heading_mean=0.079153`, `heading_max=0.358851`。
+- 关键判断：`pr12000` 的 global anchor XY / heading 误差已经很小，但仍 8/8 early terminate；因此“效果一般”的主因不应简单归结为 root/heading global drift。它更像是过度追求局部精度/严格 tracking 后，策略鲁棒性和恢复能力不足。
+- `hy2000/tf2000` 的成功动作主要是 checking/itching/brush/body stretch/sneeze 等较静态或上肢动作；这些成功样本允许更大的 anchor XY 偏差。尤其 `tf2000` 的 `body_stretch` 成功但 `mpjpe_g=0.273337`、`vr_g=0.379224`、`anchor_xy_mean=0.199024`，说明 survival 是以明显全局/末端漂移换来的。
+- `walk_ff_loop_315` 在三组都失败早期，且 `hy2000` 的 `anchor_xy_mean=0.193922`、`heading_mean=0.354494` 最差；后续 locomotion 类动作要单独处理，不应和静态上肢动作共用同一组 reward/termination 权重判断。
+
+### 下一步建议
+- 不建议只加大 global-anchor reward/termination。`pr12000` 已证明 anchor 小误差不等于能跑完整动作。
+- 下一组最小实验应分两条：
+  1. `hy2000/tf2000` 路线加轻量 global drift guard：控制 `anchor_xy_max`/heading 爆点，目标是在保留 progress 的同时压低 `mpjpe_g` 和 VR/foot 漂移。
+  2. `pr12000` 路线放松 early termination 或做 recovery/curriculum：目标是提高 progress，而不是继续加精度项。
+- 评估必须按 motion type 拆分：locomotion (`jog/walk/jump`) 与 static/upper-body (`checking/itching/brush/body_stretch/sneeze`) 分开看。
+
 ## 2026-06-18T23:56:45+08:00 - workflow 恢复检查：确认真实 compare8 metrics 缺失，标记阻塞
 
 ### 已读取
