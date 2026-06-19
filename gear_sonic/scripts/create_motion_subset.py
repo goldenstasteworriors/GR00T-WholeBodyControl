@@ -80,6 +80,7 @@ def create_subset(
     output_dir: Path,
     include: list[str],
     exclude: list[str],
+    max_motions: int | None,
     overwrite: bool,
     symlink: bool,
 ) -> int:
@@ -101,6 +102,9 @@ def create_subset(
         if exclude_patterns and _matches(key, exclude_patterns):
             continue
         selected.append((key, src_path))
+    selected.sort(key=lambda item: item[0])
+    if max_motions is not None:
+        selected = selected[:max_motions]
 
     if not selected:
         raise ValueError("no motions matched the requested filters")
@@ -138,6 +142,12 @@ def main() -> int:
     )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
+        "--max-motions",
+        type=int,
+        default=None,
+        help="Keep at most this many matched motions after sorting by motion key.",
+    )
+    parser.add_argument(
         "--symlink",
         action="store_true",
         help="Create symlinks instead of copying PKL files.",
@@ -149,6 +159,7 @@ def main() -> int:
         output_dir=args.output_dir,
         include=args.include,
         exclude=args.exclude,
+        max_motions=args.max_motions,
         overwrite=args.overwrite,
         symlink=args.symlink,
     )
