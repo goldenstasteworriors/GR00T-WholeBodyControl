@@ -2,6 +2,41 @@
 
 记录 workflow agent 的进度、测试、阻塞和恢复点。
 
+## 2026-06-19T14:51:31+08:00 - PKU H2 两组 s050 ablation 完成并停止无效长跑
+
+### 已执行
+- 在 PKU `/home/nvme02/GR00T/GR00T` 继续使用 GPU `0-4` 范围完成两组短实验的首个 checkpoint eval：
+  - `hy_drift_guard_from_hy2000_s500`：从 `hy2000` 继续训练，增大 anchor pos/ori reward，目标是验证轻量 drift guard 是否能在保留 progress 的同时压低 global drift。
+  - `pr_recovery_relaxed_from_pr12000_s500`：从 `pr12000` 继续训练，放松 reward/termination，目标是验证 recovery/relaxed termination 是否能提升 progress。
+- 两组都只评估到 `s050/last.pt` 后停止，没有继续跑满 500 轮：
+  - `hy_drift_guard_from_hy2000_s500` 在 s050 诊断后停止。
+  - `pr_recovery_relaxed_from_pr12000_s500` 在 s050 诊断后停止。
+- 远端训练进程已清理，GPU `0-4` 已释放。
+- 已生成并同步回本机：
+  - `.workflow/artifacts/h2_ablation_compare_s050.md`
+  - `.workflow/artifacts/h2_ablation_compare_s050.csv`
+
+### s050 诊断结果
+- `pr12000` baseline：`success=0.000000`, `progress=0.192842`, `mpjpe_g=0.070260`, `anchor_xy_mean=0.026190`, `anchor_xy_max=0.118835`。
+- `hy2000` baseline：`success=0.250000`, `progress=0.399373`, `mpjpe_g=0.121227`, `anchor_xy_mean=0.083130`, `anchor_xy_max=0.433407`。
+- `hy_drift_s050`：`success=0.500000`, `progress=0.627104`, 但 `mpjpe_g=0.205374`, `anchor_xy_mean=0.170107`, `anchor_xy_max=1.403964`。
+- `pr_recovery_s050`：`success=0.375000`, `progress=0.612899`, 但 `mpjpe_g=0.294705`, `anchor_xy_mean=0.257364`, `anchor_xy_max=3.310442`。
+- 最明显的失败样本是 `walk_ff_loop_315_R_001__A237_M`：
+  - `pr_recovery_s050` 的 walk progress 提升到 `0.944099`，但 `mpjpe_g=1.454077`, `foot_g=1.541801`, `vr_g=1.444202`, `anchor_xy_max=3.310442`。
+  - 这说明 relaxed/recovery 方案确实让策略“活得更久”，但不是稳定跟踪，而是沿着错误 root 轨迹漂走。
+
+### 判断
+- “只增大 anchor reward”不是有效 drift guard：它提高了成功率和平均 progress，但同时明显放大 global MPJPE、foot/VR error 和 anchor XY 爆点。
+- “只放松 termination/reward”也不是可用 recovery：它能让 walk 接近跑完整段，但全局位置漂移已到米级，不能作为下一阶段训练基线。
+- 当前问题不是单一 global-anchor reward 缺失，而是 locomotion 与 static/upper-body motion 混在同一组 reward/termination 下优化，导致 survival/progress 与 global tracking 互相牵制。
+
+### 下一步
+- 不再继续这两组 500 轮 ablation。
+- 下一轮应把 eval 和训练按 motion type 拆开：
+  - `static/upper-body`：保留较宽松 termination，但加入显式 anchor drift cap 或分段重置，避免成功样本积累 global drift。
+  - `locomotion`：单独做 walk/jog/jump curriculum，增加 root velocity / contact / gait 约束，不能靠统一 relaxed termination 解决。
+- 若继续做最小实验，优先选择 locomotion-only 8/16 motions 小集，观察 walk 的 root velocity、heading、contact 与 anchor XY 曲线，而不是再看全量平均 success。
+
 ## 2026-06-19T13:05:00+08:00 - PKU anchor eval 修复并完成三组诊断
 
 ### 问题定位
