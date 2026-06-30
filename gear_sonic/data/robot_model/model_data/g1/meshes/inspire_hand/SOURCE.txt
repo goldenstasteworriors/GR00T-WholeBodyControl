@@ -1,0 +1,4 @@
+Source: https://github.com/unitreerobotics/xr_teleoperate
+Commit: 7dc9aa1a6edbf4a9f4f887d8ab6fc449ea5135f6
+Original path: assets/inspire_hand/meshes
+License: Apache License 2.0, see xr_teleoperate/LICENSE.

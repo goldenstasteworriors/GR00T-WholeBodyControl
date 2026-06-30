@@ -7,7 +7,7 @@ from scipy.spatial.transform import Rotation as R
 
 from decoupled_wbc.control.base.humanoid_env import Hands, HumanoidEnv
 from decoupled_wbc.control.envs.g1.g1_body import G1Body
-from decoupled_wbc.control.envs.g1.g1_hand import G1ThreeFingerHand
+from decoupled_wbc.control.envs.g1.g1_hand import G1InspireHand, G1ThreeFingerHand
 from decoupled_wbc.control.envs.g1.sim.simulator_factory import SimulatorFactory, init_channel
 from decoupled_wbc.control.envs.g1.utils.joint_safety import JointSafetyMonitor
 from decoupled_wbc.control.robot_model.instantiation.g1 import instantiate_g1_robot_model
@@ -52,8 +52,10 @@ class G1Env(HumanoidEnv):
             )
         if self.with_hands:
             self._hands = Hands()
-            self._hands.left = G1ThreeFingerHand(is_left=True)
-            self._hands.right = G1ThreeFingerHand(is_left=False)
+            hand_type = config.get("HAND_TYPE", "dex3")
+            hand_cls = G1InspireHand if hand_type == "inspire" else G1ThreeFingerHand
+            self._hands.left = hand_cls(is_left=True)
+            self._hands.right = hand_cls(is_left=False)
 
         # Initialize simulator if in simulation mode
         self.use_sim = self.config.get("ENV_TYPE") == "sim"

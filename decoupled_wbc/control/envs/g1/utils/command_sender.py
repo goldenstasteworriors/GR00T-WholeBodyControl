@@ -2,7 +2,8 @@ from typing import Dict
 
 import numpy as np
 from unitree_sdk2py.core.channel import ChannelPublisher
-from unitree_sdk2py.idl.default import unitree_hg_msg_dds__HandCmd_
+from unitree_sdk2py.idl.default import unitree_go_msg_dds__MotorCmd_, unitree_hg_msg_dds__HandCmd_
+from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorCmds_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import HandCmd_
 from unitree_sdk2py.utils.crc import CRC
 
@@ -144,3 +145,52 @@ class HandCommandSender:
             self.cmd.motor_cmd[i].kd = self.kd[i]
 
         self.cmd_pub.Write(self.cmd)
+
+
+INSPIRE_HAND_DOF = 6
+INSPIRE_LEGACY_HAND_DOF = 7
+
+# Inspire DDS order:
+# [little, ring, middle, index, thumb_bend, thumb_rotate], 0 = closed, 1 = open.
+INSPIRE_OPEN_Q = np.ones(INSPIRE_HAND_DOF, dtype=np.float64)
+INSPIRE_GRASP_Q = np.array([0.0, 0.0, 0.0, 0.0, 1.0, 1.0], dtype=np.float64)
+
+
+class InspireHandCommandSender:
+    """Publish RH56DFTP Inspire hand commands on Unitree's shared DDS topic."""
+
+    def __init__(self, is_left: bool = True):
+        self.is_left = is_left
+        self.cmd_pub = ChannelPublisher("rt/inspire/cmd", MotorCmds_)
+        self.cmd_pub.Init()
+        self.cmd = MotorCmds_([unitree_go_msg_dds__MotorCmd_() for _ in range(12)])
+        self._last_left_q = INSPIRE_OPEN_Q.copy()
+        self._last_right_q = INSPIRE_OPEN_Q.copy()
+
+    def send_command(self, cmd: np.ndarray):
+        q = np.asarray(cmd, dtype=np.float64)
+        if q.shape[0] == INSPIRE_LEGACY_HAND_DOF:
+            q = self.legacy_dex3_to_inspire(q)
+        elif q.shape[0] != INSPIRE_HAND_DOF:
+            raise ValueError(f"Inspire hand command must have 6 or 7 values, got {q.shape[0]}")
+
+        q = np.clip(q, 0.0, 1.0)
+        if self.is_left:
+            self._last_left_q = q.copy()
+        else:
+            self._last_right_q = q.copy()
+
+        left_q = self._last_left_q
+        right_q = self._last_right_q
+        for i, value in enumerate(right_q):
+            self.cmd.cmds[i].q = float(value)
+        for i, value in enumerate(left_q):
+            self.cmd.cmds[i + INSPIRE_HAND_DOF].q = float(value)
+
+        self.cmd_pub.Write(self.cmd)
+
+    @staticmethod
+    def legacy_dex3_to_inspire(cmd: np.ndarray) -> np.ndarray:
+        """Map the existing 7-DOF Dex3 command shape to binary Inspire open/grasp."""
+        grasp = np.max(np.abs(cmd)) > 0.05
+        return INSPIRE_GRASP_Q.copy() if grasp else INSPIRE_OPEN_Q.copy()

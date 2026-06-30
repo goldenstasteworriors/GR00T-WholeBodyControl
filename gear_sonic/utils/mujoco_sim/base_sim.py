@@ -473,6 +473,19 @@ class DefaultEnv:
 
     def set_unitree_bridge(self, unitree_bridge):
         self.unitree_bridge = unitree_bridge
+        self._apply_hand_qpos_targets()
+
+    def _apply_hand_qpos_targets(self):
+        if self.unitree_bridge is None or self.num_hand_dof <= 0:
+            return
+        hand_qpos = self.compute_hand_qpos()
+        self.mj_data.qpos[self.left_hand_index + self.qpos_offset - 1] = hand_qpos[
+            : self.num_hand_dof
+        ]
+        self.mj_data.qpos[self.right_hand_index + self.qpos_offset - 1] = hand_qpos[
+            self.num_hand_dof :
+        ]
+        mujoco.mj_forward(self.mj_model, self.mj_data)
 
     def get_privileged_obs(self):
         return {}
@@ -525,6 +538,7 @@ class DefaultEnv:
 
     def reset(self):
         mujoco.mj_resetData(self.mj_model, self.mj_data)
+        self._apply_hand_qpos_targets()
 
 
 class BaseSimulator:

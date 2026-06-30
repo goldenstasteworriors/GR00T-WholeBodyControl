@@ -4,8 +4,14 @@ import gymnasium as gym
 import numpy as np
 
 from decoupled_wbc.control.base.env import Env
-from decoupled_wbc.control.envs.g1.utils.command_sender import HandCommandSender
-from decoupled_wbc.control.envs.g1.utils.state_processor import HandStateProcessor
+from decoupled_wbc.control.envs.g1.utils.command_sender import (
+    HandCommandSender,
+    InspireHandCommandSender,
+)
+from decoupled_wbc.control.envs.g1.utils.state_processor import (
+    HandStateProcessor,
+    InspireHandStateProcessor,
+)
 
 
 class G1ThreeFingerHand(Env):
@@ -87,3 +93,17 @@ class G1ThreeFingerHand(Env):
         # done calibrating, set target to zero
         self.hand_q_target = np.zeros_like(hand_q)
         self.queue_action({"hand_q": self.hand_q_target})
+
+
+class G1InspireHand(G1ThreeFingerHand):
+    """RH56DFTP Inspire hand adapter with the same 7-DOF interface as Dex3."""
+
+    def __init__(self, is_left: bool = True):
+        Env.__init__(self)
+        self.is_left = is_left
+        self.hand_state_processor = InspireHandStateProcessor(is_left=self.is_left)
+        self.hand_command_sender = InspireHandCommandSender(is_left=self.is_left)
+        self.hand_q_offset = np.zeros(7)
+
+    def calibrate_hand(self):
+        print("Skipping Inspire hand calibration; using direct open/grasp DDS commands.")
