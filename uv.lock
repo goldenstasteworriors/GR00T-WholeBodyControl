@@ -565,22 +565,28 @@ requires-dist = [
     { name = "depthai", marker = "extra == 'camera'" },
     { name = "easydict" },
     { name = "hydra-core", marker = "extra == 'training'", specifier = "==1.3.2" },
+    { name = "isaac-gr00t", marker = "extra == 'inference'", git = "https://github.com/NVIDIA/Isaac-GR00T.git" },
     { name = "joblib" },
     { name = "lerobot", marker = "extra == 'data-collection'", git = "https://github.com/huggingface/lerobot.git?rev=a445d9c9da6bea99a8972daa4fe1fdd053d711d2" },
     { name = "loguru" },
     { name = "msgpack", marker = "extra == 'camera'" },
     { name = "msgpack", marker = "extra == 'data-collection'" },
+    { name = "msgpack", marker = "extra == 'inference'" },
     { name = "msgpack", marker = "extra == 'sim'" },
     { name = "msgpack", marker = "extra == 'teleop'" },
     { name = "msgpack-numpy", marker = "extra == 'camera'" },
     { name = "msgpack-numpy", marker = "extra == 'data-collection'" },
+    { name = "msgpack-numpy", marker = "extra == 'inference'" },
     { name = "msgpack-numpy", marker = "extra == 'sim'" },
+    { name = "msgpack-numpy", marker = "extra == 'teleop'" },
     { name = "mujoco", marker = "extra == 'sim'" },
     { name = "numpy", specifier = "==1.26.4" },
     { name = "opencv-python", marker = "extra == 'camera'" },
     { name = "opencv-python", marker = "extra == 'data-collection'" },
+    { name = "opencv-python", marker = "extra == 'inference'" },
     { name = "opencv-python", marker = "extra == 'sim'" },
     { name = "pin", marker = "extra == 'data-collection'" },
+    { name = "pin", marker = "extra == 'inference'" },
     { name = "pin", marker = "extra == 'sim'" },
     { name = "pin", marker = "extra == 'teleop'" },
     { name = "pyttsx3", marker = "extra == 'data-collection'", specifier = "==2.90" },
@@ -588,10 +594,13 @@ requires-dist = [
     { name = "pyyaml", marker = "extra == 'sim'" },
     { name = "pyzmq", marker = "extra == 'camera'" },
     { name = "pyzmq", marker = "extra == 'data-collection'" },
+    { name = "pyzmq", marker = "extra == 'inference'" },
     { name = "pyzmq", marker = "extra == 'sim'" },
     { name = "pyzmq", marker = "extra == 'teleop'" },
     { name = "requests", marker = "extra == 'camera'" },
     { name = "scipy", specifier = "==1.15.3" },
+    { name = "scipy", marker = "extra == 'inference'" },
+    { name = "smpl-sim", marker = "extra == 'training'", git = "https://github.com/ZhengyiLuo/SMPLSim.git" },
     { name = "tensorboard", marker = "extra == 'training'" },
     { name = "torch", specifier = ">=2.4.0" },
     { name = "tqdm" },
@@ -599,10 +608,11 @@ requires-dist = [
     { name = "trl", marker = "extra == 'training'", specifier = "==0.28.0" },
     { name = "tyro", marker = "extra == 'camera'" },
     { name = "tyro", marker = "extra == 'data-collection'" },
+    { name = "tyro", marker = "extra == 'inference'" },
     { name = "tyro", marker = "extra == 'sim'" },
     { name = "wandb", marker = "extra == 'training'" },
 ]
-provides-extras = ["teleop", "sim", "data-collection", "camera", "training"]
+provides-extras = ["teleop", "sim", "data-collection", "camera", "inference", "training"]
 
 [[package]]
 name = "gitdb"
@@ -1084,7 +1094,7 @@ wheels = [
 
 [[package]]
 name = "mujoco"
-version = "3.8.1.dev906351914"
+version = "3.10.1.dev941245904"
 source = { registry = "https://py.mujoco.org/" }
 dependencies = [
     { name = "absl-py", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -1094,7 +1104,7 @@ dependencies = [
     { name = "pyopengl", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.8.1.dev906351914-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.10.1.dev941245904-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
 ]
 
 [[package]]

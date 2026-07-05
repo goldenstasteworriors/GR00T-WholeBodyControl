@@ -56,6 +56,21 @@ class CameraViewerConfig:
     max_display_width: int = 640
     """Max width per camera tile in the display window."""
 
+    display: bool = True
+    """Show OpenCV preview window when HighGUI support is available."""
+
+
+def _opencv_highgui_available() -> bool:
+    build_info = cv2.getBuildInformation()
+    if "GUI:                           NONE" in build_info:
+        return False
+    try:
+        cv2.namedWindow("__sonic_highgui_check__", cv2.WINDOW_NORMAL)
+        cv2.destroyWindow("__sonic_highgui_check__")
+    except cv2.error:
+        return False
+    return True
+
 
 def main(config: CameraViewerConfig):
     client = ComposedCameraClientSensor(server_ip=config.camera_host, port=config.camera_port)
@@ -85,12 +100,21 @@ def main(config: CameraViewerConfig):
     loop_period = 1.0 / config.fps
 
     window_name = "SONIC Camera Viewer"
+    display_enabled = config.display and _opencv_highgui_available()
 
     print(f"Target FPS: {config.fps}")
     print(f"Recordings will be saved to: {output_dir}")
-    print("Controls: R = start/stop recording, Q = quit")
+    if display_enabled:
+        print("Controls: R = start/stop recording, Q = quit")
+    else:
+        print(
+            "OpenCV HighGUI is unavailable; running without preview window. "
+            "Use Ctrl+C to quit."
+        )
 
     try:
+        last_status_time = time.time()
+        received_frames = 0
         while True:
             t_start = time.monotonic()
 
@@ -116,6 +140,9 @@ def main(config: CameraViewerConfig):
                 if is_recording and name in video_writers:
                     video_writers[name].write(img_bgr)
 
+                if not display_enabled:
+                    continue
+
                 h, w = img_bgr.shape[:2]
                 if w > config.max_display_width:
                     scale = config.max_display_width / w
@@ -132,7 +159,17 @@ def main(config: CameraViewerConfig):
                 )
                 tiles.append(img_bgr)
 
-            if tiles:
+            received_frames += 1
+            if not display_enabled:
+                now = time.time()
+                if now - last_status_time >= 1.0:
+                    print(
+                        f"Receiving frames: {received_frames} total, "
+                        f"streams={camera_names}"
+                    )
+                    last_status_time = now
+
+            if display_enabled and tiles:
                 max_h = max(t.shape[0] for t in tiles)
                 padded = []
                 for t in tiles:
@@ -155,7 +192,7 @@ def main(config: CameraViewerConfig):
 
                 cv2.imshow(window_name, canvas)
 
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(1) & 0xFF if display_enabled else 255
 
             if key == ord("q"):
                 print("Quit requested.")
@@ -207,7 +244,8 @@ def main(config: CameraViewerConfig):
                 print(f"Final recording: {duration:.1f}s, {frame_count} frames")
 
         client.close()
-        cv2.destroyAllWindows()
+        if display_enabled:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

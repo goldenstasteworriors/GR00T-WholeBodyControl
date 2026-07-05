@@ -30,14 +30,14 @@ from gear_sonic.camera.sensor_server import (
 class RealSenseConfig:
     """Configuration for the RealSense camera."""
 
-    depth_image_dim: tuple[int, int] = (640, 480)
     color_image_dim: tuple[int, int] = (640, 480)
     fps: int = 30
+    frame_timeout_ms: int = 1000
     mount_position: str = CameraMountPosition.EGO_VIEW.value
 
 
 class RealSenseSensor(Sensor, SensorServer):
-    """Sensor for Intel RealSense depth cameras."""
+    """RGB sensor for Intel RealSense cameras."""
 
     def __init__(
         self,
@@ -69,13 +69,6 @@ class RealSenseSensor(Sensor, SensorServer):
                 rs.format.rgb8,
                 config.fps,
             )
-            self.config.enable_stream(
-                rs.stream.depth,
-                config.depth_image_dim[0],
-                config.depth_image_dim[1],
-                rs.format.z16,
-                config.fps,
-            )
             self.pipeline.start(self.config)
         except Exception as e:
             raise RuntimeError(f"Failed to start RealSense pipeline: {e}")
@@ -92,38 +85,30 @@ class RealSenseSensor(Sensor, SensorServer):
 
     def read(self) -> dict[str, Any] | None:
         try:
-            frames = self.pipeline.wait_for_frames()
+            frames = self.pipeline.wait_for_frames(self._realsense_config.frame_timeout_ms)
         except Exception as e:
             print(f"ERROR! Failed to wait for frames: {e}")
             return None
 
         color_frame = frames.get_color_frame()
-        depth_frame = frames.get_depth_frame()
 
-        if not color_frame or not depth_frame:
-            print("WARNING! No color or depth frame")
+        if not color_frame:
+            print("WARNING! No color frame")
             return None
 
         try:
             color_image = np.asanyarray(color_frame.get_data())
-            depth_image = np.asanyarray(depth_frame.get_data())
         except Exception as e:
-            print(f"ERROR! Failed to convert frames to numpy arrays: {e}")
+            print(f"ERROR! Failed to convert color frame to numpy array: {e}")
             return None
 
-        if color_image.size == 0 or depth_image.size == 0:
-            print("WARNING! Empty color or depth image")
+        if color_image.size == 0:
+            print("WARNING! Empty color image")
             return None
 
         current_time = time.time()
-        timestamps = {
-            self.mount_position: current_time,
-            f"{self.mount_position}_depth": current_time,
-        }
-        images = {
-            self.mount_position: color_image,
-            f"{self.mount_position}_depth": depth_image,
-        }
+        timestamps = {self.mount_position: current_time}
+        images = {self.mount_position: color_image}
         return {"timestamps": timestamps, "images": images}
 
     def serialize(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -144,16 +129,6 @@ class RealSenseSensor(Sensor, SensorServer):
                         3,
                     ),
                     dtype=np.uint8,
-                ),
-                "depth_image": gym.spaces.Box(
-                    low=0,
-                    high=255,
-                    shape=(
-                        self._realsense_config.depth_image_dim[1],
-                        self._realsense_config.depth_image_dim[0],
-                        1,
-                    ),
-                    dtype=np.uint16,
                 ),
             }
         )

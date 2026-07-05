@@ -294,8 +294,8 @@ class UnitreeSdk2Bridge:
         q = np.clip(q, 0.0, 1.0)
         result = np.zeros(7, dtype=np.float64)
         result[0:4] = 1.7 * (1.0 - q[0:4])
-        result[4] = -0.1 + q[5] * 1.4
-        result[5] = 0.5 * q[4]
+        result[4] = 1.3 - q[5] * 1.4
+        result[5] = 0.5 * (1.0 - q[4])
         return result
 
     def _read_inspire_cmd_slice(self, offset):
@@ -319,8 +319,8 @@ class UnitreeSdk2Bridge:
         q = np.asarray(q, dtype=np.float64)
         result = np.ones(6, dtype=np.float64)
         result[0:4] = 1.0 - np.clip(q[0:4], 0.0, 1.7) / 1.7
-        result[4] = np.clip(q[5], 0.0, 0.5) / 0.5
-        result[5] = (np.clip(q[4], -0.1, 1.3) + 0.1) / 1.4
+        result[4] = 1.0 - np.clip(q[5], 0.0, 0.5) / 0.5
+        result[5] = (1.3 - np.clip(q[4], -0.1, 1.3)) / 1.4
         return np.clip(result, 0.0, 1.0)
 
     def PublishWirelessController(self):

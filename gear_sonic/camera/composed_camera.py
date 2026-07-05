@@ -100,6 +100,24 @@ class ComposedCameraConfig:
     mjpeg_quality: int = 80
     """MJPEG quality 1-100 (only when use_mjpeg=True)."""
 
+    realsense_frame_timeout_ms: int = 1000
+    """Frame wait timeout for RealSense cameras before counting a read failure."""
+
+    camera_max_init_retries: int = 10
+    """Maximum initialization retries per reconnect attempt."""
+
+    camera_max_reconnect_attempts: int = 100
+    """Maximum reconnect attempts before marking a camera as failed."""
+
+    camera_reconnect_delay: float = 2.0
+    """Seconds to wait before reconnecting a failed camera."""
+
+    camera_max_consecutive_failures: int = 3
+    """Consecutive read failures before reconnecting a camera."""
+
+    camera_warmup_timeout: float = 3.0
+    """Seconds to wait for first frame after camera initialization."""
+
     def __post_init__(self):
         self.run_as_server = self.server
 
@@ -229,8 +247,11 @@ class ComposedCameraSensor(Sensor, SensorServer):
         error_event: threading.Event,
     ):
         """Worker thread with auto-reconnection."""
-        max_init_retries = 10
-        max_reconnect_attempts = 5
+        max_init_retries = self.config.camera_max_init_retries
+        max_reconnect_attempts = self.config.camera_max_reconnect_attempts
+        reconnect_delay = self.config.camera_reconnect_delay
+        max_consecutive_failures = self.config.camera_max_consecutive_failures
+        warmup_timeout = self.config.camera_warmup_timeout
         reconnect_count = 0
 
         while not shutdown_event.is_set() and reconnect_count < max_reconnect_attempts:
@@ -276,10 +297,8 @@ class ComposedCameraSensor(Sensor, SensorServer):
                     self._observation_spaces[mount_position] = True
 
                 consecutive_failures = 0
-                max_consecutive_failures = 10
                 warmup_period = True
                 warmup_start_time = time.time()
-                warmup_timeout = 5.0
 
                 while not shutdown_event.is_set():
                     try:
@@ -327,8 +346,11 @@ class ComposedCameraSensor(Sensor, SensorServer):
 
                 if not shutdown_event.is_set():
                     reconnect_count += 1
-                    print(f"[{mount_position}] Waiting 5 seconds before reconnect attempt...")
-                    time.sleep(5.0)
+                    print(
+                        f"[{mount_position}] Waiting {reconnect_delay:.1f} seconds "
+                        "before reconnect attempt..."
+                    )
+                    time.sleep(reconnect_delay)
 
             except Exception as e:
                 print(f"[{mount_position}] Camera error: {e}")
@@ -343,10 +365,10 @@ class ComposedCameraSensor(Sensor, SensorServer):
                     reconnect_count += 1
                     if reconnect_count < max_reconnect_attempts:
                         print(
-                            f"[{mount_position}] Waiting 5 seconds before reconnect "
+                            f"[{mount_position}] Waiting {reconnect_delay:.1f} seconds before reconnect "
                             f"attempt {reconnect_count}/{max_reconnect_attempts}..."
                         )
-                        time.sleep(5.0)
+                        time.sleep(reconnect_delay)
 
         if reconnect_count >= max_reconnect_attempts and not shutdown_event.is_set():
             error_msg = (
@@ -373,10 +395,13 @@ class ComposedCameraSensor(Sensor, SensorServer):
             return OAKSensor(config=oak_config, mount_position=mount_position, device_id=device_id)
 
         elif camera_type == "realsense":
-            from gear_sonic.camera.drivers.realsense import RealSenseSensor
+            from gear_sonic.camera.drivers.realsense import RealSenseConfig, RealSenseSensor
 
+            realsense_config = RealSenseConfig()
+            realsense_config.fps = self.config.fps
+            realsense_config.frame_timeout_ms = self.config.realsense_frame_timeout_ms
             print(f"Initializing RealSense sensor for camera type: {camera_type}")
-            return RealSenseSensor(mount_position=mount_position)
+            return RealSenseSensor(config=realsense_config, mount_position=mount_position)
 
         elif camera_type.endswith(".mp4"):
             from gear_sonic.camera.drivers.dummy import ReplayDummySensor
