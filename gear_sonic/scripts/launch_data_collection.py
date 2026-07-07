@@ -31,11 +31,13 @@ Usage (from repo root — no venv activation needed):
     python gear_sonic/scripts/launch_data_collection.py --sim                    # MuJoCo sim
     python gear_sonic/scripts/launch_data_collection.py --no-camera-viewer       # skip viewer
     python gear_sonic/scripts/launch_data_collection.py --pico-input-source isaac-teleop  # in-process CloudXR / DeviceIO
+    python gear_sonic/scripts/launch_data_collection.py --deploy-onboard --camera-host 192.168.123.164
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -97,6 +99,22 @@ class DataCollectionLaunchConfig:
     deploy_zmq_host: str = "localhost"
     """ZMQ host for the C++ deploy to listen on."""
 
+    deploy_onboard: bool = False
+    """Run C++ deploy over SSH on the G1 onboard computer instead of on this PC."""
+
+    deploy_onboard_host: str = ""
+    """G1 onboard host/IP for SSH and robot-state ZMQ. Defaults to camera_host."""
+
+    deploy_onboard_user: str = "unitree"
+    """SSH user for onboard deployment."""
+
+    deploy_onboard_repo_root: str = "/home/unitree/data_collection/GR00T-WholeBodyControl"
+    """Repository root on the G1 onboard computer."""
+
+    offboard_zmq_host: str = ""
+    """PC host/IP that onboard deploy should use to reach the PICO ZMQ server.
+    Defaults to this PC's detected LAN IP when --deploy-onboard is set."""
+
     deploy_checkpoint: str = ""
     """Checkpoint path for deploy.sh (e.g., 'policy/checkpoints/my_model/model_step_100000').
     Leave empty to use the deploy.sh default."""
@@ -129,6 +147,12 @@ class DataCollectionLaunchConfig:
     pico_waist_tracking: bool = False
     """Enable waist tracking on the teleop streamer."""
 
+    pico_zmq_feedback_host: str = ""
+    """Host for PICO frozen-target feedback (g1_debug). Defaults to state_zmq_host."""
+
+    pico_zmq_feedback_port: int = 5557
+    """Port for PICO frozen-target feedback (g1_debug)."""
+
     # Data exporter options
     task_prompt: str = "demo"
     """Language task prompt for the data exporter."""
@@ -138,6 +162,21 @@ class DataCollectionLaunchConfig:
 
     data_exporter_frequency: int = 50
     """Data collection frequency (Hz) for the data exporter."""
+
+    overwrite_existing_dataset: bool = False
+    """Delete and recreate the dataset directory if it already exists."""
+
+    sonic_zmq_host: str = "localhost"
+    """Host for SMPL/pose ZMQ from pico_manager_thread_server."""
+
+    sonic_zmq_port: int = 5556
+    """Port for SMPL/pose ZMQ from pico_manager_thread_server."""
+
+    state_zmq_host: str = ""
+    """Host for robot state/config ZMQ from C++ deploy. Defaults to localhost, or onboard host."""
+
+    state_zmq_port: int = 5557
+    """Port for robot state/config ZMQ from C++ deploy."""
 
     record_wrist_cameras: bool = False
     """Record wrist camera streams (left_wrist, right_wrist) in the dataset."""
@@ -154,6 +193,12 @@ class DataCollectionLaunchConfig:
 
     camera_port: int = 5555
     """Camera server port (shared by data exporter and viewer)."""
+
+    profile_timing: bool = False
+    """Enable periodic Python-side timing logs in camera viewer and data exporter."""
+
+    profile_interval: float = 1.0
+    """Seconds between timing profile log lines."""
 
 
 SESSION_NAME = "sonic_data_collection"
@@ -180,11 +225,14 @@ def _check_prerequisites(config: DataCollectionLaunchConfig):
         )
 
     deploy_dir = repo_root / "gear_sonic_deploy"
-    if not (deploy_dir / "deploy.sh").exists():
+    if not config.deploy_onboard and not (deploy_dir / "deploy.sh").exists():
         errors.append(
             f"gear_sonic_deploy/deploy.sh not found at {deploy_dir}. "
             "Ensure the deploy directory is set up."
         )
+
+    if config.deploy_onboard and config.sim:
+        errors.append("--deploy-onboard is only supported for the real robot, not --sim")
 
     if config.sim and not (repo_root / ".venv_sim" / "bin" / "activate").exists():
         errors.append(
@@ -279,11 +327,52 @@ def _check_pane_alive(pane_index: int) -> bool:
     return result.stdout.strip() != "1"
 
 
+def _build_deploy_args(
+    config: DataCollectionLaunchConfig, zmq_host: str, deploy_mode: str
+) -> list[str]:
+    """Build deploy.sh arguments shared by local and onboard deploy."""
+    args = [
+        "./deploy.sh",
+        "--input-type",
+        config.deploy_input_type,
+        "--zmq-host",
+        zmq_host,
+    ]
+    if config.deploy_checkpoint:
+        args += ["--cp", config.deploy_checkpoint]
+    if config.deploy_obs_config:
+        args += ["--obs-config", config.deploy_obs_config]
+    if config.deploy_planner:
+        args += ["--planner", config.deploy_planner]
+    if config.deploy_motion_data:
+        args += ["--motion-data", config.deploy_motion_data]
+    if config.deploy_output_type:
+        args += ["--output-type", config.deploy_output_type]
+    args.append(deploy_mode)
+    return args
+
+
+def _shell_join(args: list[str]) -> str:
+    return " ".join(shlex.quote(arg) for arg in args)
+
+
 def main(config: DataCollectionLaunchConfig):
     repo_root = Path(__file__).resolve().parent.parent.parent
+    local_ip = _get_local_ip()
 
     _check_prerequisites(config)
     _kill_existing_session()
+
+    onboard_host = config.deploy_onboard_host or config.camera_host
+    state_zmq_host = config.state_zmq_host or (
+        onboard_host if config.deploy_onboard else "localhost"
+    )
+    pico_feedback_host = config.pico_zmq_feedback_host or state_zmq_host
+    deploy_zmq_host = (
+        (config.offboard_zmq_host or local_ip)
+        if config.deploy_onboard
+        else config.deploy_zmq_host
+    )
 
     print("=" * 60)
     print("  SONIC Data Collection Launcher")
@@ -291,16 +380,26 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Mode:            {'Simulation' if config.sim else 'Real Robot'}")
     print(f"  Task prompt:     {config.task_prompt}")
     print(f"  Dataset name:    {config.dataset_name or '(auto)'}")
+    print(f"  Deploy location: {'G1 onboard' if config.deploy_onboard else 'Local PC'}")
     print(f"  Deploy input:    {config.deploy_input_type}")
+    print(f"  Deploy ZMQ host: {deploy_zmq_host}")
+    if config.deploy_onboard:
+        print(f"  Onboard host:    {onboard_host}")
+        print(f"  Onboard repo:    {config.deploy_onboard_repo_root}")
     print(f"  Teleop input:    {config.pico_input_source}")
     if config.deploy_checkpoint:
         print(f"  Checkpoint:      {config.deploy_checkpoint}")
     print(f"  Camera:          {config.camera_host}:{config.camera_port}")
+    print(f"  Sonic ZMQ:       {config.sonic_zmq_host}:{config.sonic_zmq_port}")
+    print(f"  State ZMQ:       {state_zmq_host}:{config.state_zmq_port}")
+    print(f"  PICO feedback:   {pico_feedback_host}:{config.pico_zmq_feedback_port}")
     print(f"  DC frequency:    {config.data_exporter_frequency} Hz")
     print(f"  Camera viewer:   {'Yes' if config.camera_viewer else 'No'}")
     print(f"  Wrist cameras:   {'Yes' if config.record_wrist_cameras else 'No'}")
+    print(f"  Profile timing:  {'Yes' if config.profile_timing else 'No'}")
+    print(f"  Overwrite data:  {'Yes' if config.overwrite_existing_dataset else 'No'}")
     print(f"  Text-to-speech:  {'Yes' if config.text_to_speech else 'No'}")
-    print(f"  PC IP (for PICO): {_get_local_ip()}")
+    print(f"  PC IP (for PICO): {local_ip}")
     print(f"  Teleop vis:      vr3pt={config.pico_vis_vr3pt} smpl={config.pico_vis_smpl}")
     print("=" * 60)
 
@@ -333,23 +432,19 @@ def main(config: DataCollectionLaunchConfig):
 
     # --- Pane 0 (top-left): C++ Deploy ---
     deploy_mode = "sim" if config.sim else "real"
-    deploy_cmd = (
-        f"cd {repo_root / 'gear_sonic_deploy'} && "
-        f"./deploy.sh "
-        f"--input-type {config.deploy_input_type} "
-        f"--zmq-host {config.deploy_zmq_host} "
-    )
-    if config.deploy_checkpoint:
-        deploy_cmd += f"--cp {config.deploy_checkpoint} "
-    if config.deploy_obs_config:
-        deploy_cmd += f"--obs-config {config.deploy_obs_config} "
-    if config.deploy_planner:
-        deploy_cmd += f"--planner {config.deploy_planner} "
-    if config.deploy_motion_data:
-        deploy_cmd += f"--motion-data {config.deploy_motion_data} "
-    if config.deploy_output_type:
-        deploy_cmd += f"--output-type {config.deploy_output_type} "
-    deploy_cmd += deploy_mode
+    deploy_args = _build_deploy_args(config, deploy_zmq_host, deploy_mode)
+    if config.deploy_onboard:
+        ssh_target = f"{config.deploy_onboard_user}@{onboard_host}"
+        remote_cmd = (
+            f"cd {shlex.quote(config.deploy_onboard_repo_root + '/gear_sonic_deploy')} && "
+            f"{_shell_join(deploy_args)}"
+        )
+        deploy_cmd = f"ssh -t {shlex.quote(ssh_target)} {shlex.quote(remote_cmd)}"
+    else:
+        deploy_cmd = (
+            f"cd {shlex.quote(str(repo_root / 'gear_sonic_deploy'))} && "
+            f"{_shell_join(deploy_args)}"
+        )
 
     print("Starting C++ deploy (pane 0)...")
     _send_to_pane(0, deploy_cmd, wait=3.0)
@@ -362,7 +457,9 @@ def main(config: DataCollectionLaunchConfig):
         f"cd {repo_root} && "
         f"source .venv_teleop/bin/activate && "
         f"python gear_sonic/scripts/pico_manager_thread_server.py "
-        f"--input-source {config.pico_input_source}"
+        f"--input-source {config.pico_input_source} "
+        f"--zmq_feedback_host {pico_feedback_host} "
+        f"--zmq_feedback_port {config.pico_zmq_feedback_port}"
     )
     if config.pico_manager:
         pico_cmd += " --manager"
@@ -385,6 +482,8 @@ def main(config: DataCollectionLaunchConfig):
             f"--camera-host {config.camera_host} "
             f"--camera-port {config.camera_port}"
         )
+        if config.profile_timing:
+            viewer_cmd += f" --profile-timing --profile-interval {config.profile_interval}"
         print("Starting camera viewer (pane 3)...")
         _send_to_pane(3, viewer_cmd, wait=2.0)
 
@@ -396,12 +495,20 @@ def main(config: DataCollectionLaunchConfig):
         f"--task-prompt '{config.task_prompt}' "
         f"--data-collection-frequency {config.data_exporter_frequency} "
         f"--camera-host {config.camera_host} "
-        f"--camera-port {config.camera_port}"
+        f"--camera-port {config.camera_port} "
+        f"--sonic-zmq-host {config.sonic_zmq_host} "
+        f"--sonic-zmq-port {config.sonic_zmq_port} "
+        f"--state-zmq-host {state_zmq_host} "
+        f"--state-zmq-port {config.state_zmq_port}"
     )
+    if config.profile_timing:
+        exporter_cmd += f" --profile-timing --profile-interval {config.profile_interval}"
     if config.dataset_name:
         exporter_cmd += f" --dataset-name '{config.dataset_name}'"
     if config.record_wrist_cameras:
         exporter_cmd += " --record-wrist-cameras"
+    if config.overwrite_existing_dataset:
+        exporter_cmd += " --overwrite-existing-dataset"
     if not config.text_to_speech:
         exporter_cmd += " --no-text-to-speech"
 
@@ -424,13 +531,16 @@ def main(config: DataCollectionLaunchConfig):
         print("    MuJoCo Simulator (.venv_sim)")
         print()
     print("  Window 'data_collection':")
-    print("    Pane 0 (top-left):     C++ Deploy")
+    print(
+        "    Pane 0 (top-left):     C++ Deploy"
+        + (" (SSH to G1 onboard)" if config.deploy_onboard else "")
+    )
     print("    Pane 1 (bottom-left):  Teleop Streamer")
     print("    Pane 2 (top-right):    Data Exporter  <-- you are here")
     if config.camera_viewer:
         print("    Pane 3 (bottom-right): Camera Viewer")
     print()
-    print("  ** deploy.sh (pane 0) is waiting for confirmation —")
+    print("  ** deploy.sh (pane 0) is waiting for confirmation --")
     print("     click on pane 0 and press Enter to proceed **")
     print()
     print("  Controls:")

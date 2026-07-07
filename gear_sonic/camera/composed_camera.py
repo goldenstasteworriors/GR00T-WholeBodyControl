@@ -91,6 +91,12 @@ class ComposedCameraConfig:
     test_latency: bool = False
     """Decode QR-code timestamps in each frame to measure latency."""
 
+    profile_timing: bool = False
+    """Print camera server timing for capture, serialization, send, and image age."""
+
+    profile_interval: float = 1.0
+    """Seconds between timing profile log lines."""
+
     queue_size: int = 3
     """Per-camera image queue depth."""
 
@@ -487,23 +493,61 @@ class ComposedCameraSensor(Sensor, SensorServer):
         idx = 0
         server_start_time = time.monotonic()
         fps_print_time = time.monotonic()
+        profile_print_time = time.monotonic()
+        profile_samples = []
         frame_interval = 1.0 / self.config.fps
 
         while True:
             target_time = server_start_time + (idx + 1) * frame_interval
 
+            read_start = time.perf_counter()
             message = self.read()
+            read_ms = (time.perf_counter() - read_start) * 1000.0
             if message:
                 if self.config.test_latency:
                     read_qr_code(message)
 
+                serialize_start = time.perf_counter()
                 serialized_message = self.serialize_message(message)
+                serialize_ms = (time.perf_counter() - serialize_start) * 1000.0
+
+                send_start = time.perf_counter()
                 self.send_message(serialized_message)
+                send_ms = (time.perf_counter() - send_start) * 1000.0
                 idx += 1
+
+                if self.config.profile_timing:
+                    timestamps = serialized_message.get("timestamps", {})
+                    now_wall = time.time()
+                    max_age_ms = (
+                        max((now_wall - float(ts)) * 1000.0 for ts in timestamps.values())
+                        if timestamps
+                        else 0.0
+                    )
+                    profile_samples.append((read_ms, serialize_ms, send_ms, max_age_ms))
 
                 if idx % 10 == 0:
                     print(f"Image sending FPS: {10 / (time.monotonic() - fps_print_time):.2f}")
                     fps_print_time = time.monotonic()
+
+            if self.config.profile_timing:
+                now = time.monotonic()
+                if now - profile_print_time >= self.config.profile_interval:
+                    if profile_samples:
+                        arr = np.asarray(profile_samples, dtype=np.float64)
+                        print(
+                            "[CameraServerProfile] "
+                            f"n={len(profile_samples)} "
+                            f"read={arr[:, 0].mean():.2f}ms "
+                            f"serialize={arr[:, 1].mean():.2f}ms "
+                            f"send={arr[:, 2].mean():.2f}ms "
+                            f"image_age={arr[:, 3].mean():.1f}ms "
+                            f"image_age_max={arr[:, 3].max():.1f}ms"
+                        )
+                    else:
+                        print("[CameraServerProfile] no complete camera messages")
+                    profile_samples.clear()
+                    profile_print_time = now
 
             current_time = time.monotonic()
             sleep_time = target_time - current_time

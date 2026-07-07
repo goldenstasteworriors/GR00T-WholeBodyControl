@@ -71,6 +71,9 @@ class SonicDataExporterConfig:
     data_collection_frequency: int = 50
     """Data collection frequency (Hz)."""
 
+    overwrite_existing_dataset: bool = False
+    """Delete and recreate the dataset directory if it already exists."""
+
 
     # Camera
     camera_host: str = "localhost"
@@ -102,6 +105,12 @@ class SonicDataExporterConfig:
 
     text_to_speech: bool = True
     """Use text-to-speech voice feedback."""
+
+    profile_timing: bool = False
+    """Print periodic data exporter timing breakdown even when the loop does not miss."""
+
+    profile_interval: float = 1.0
+    """Seconds between timing profile log lines."""
 
 
 # ---------------------------------------------------------------------------
@@ -227,10 +236,14 @@ class GrootDataCollector:
         sonic_data_zmq_port: int = 5556,
         state_zmq_host: str = "localhost",
         state_zmq_port: int = 5557,
+        profile_timing: bool = False,
+        profile_interval: float = 1.0,
     ):
         self.text_to_speech = text_to_speech
         self.frequency = frequency
         self.loop_period = 1.0 / frequency
+        self.profile_timing = profile_timing
+        self.profile_interval = profile_interval
         self.data_exporter = data_exporter
         self.robot_model = robot_model
 
@@ -280,6 +293,7 @@ class GrootDataCollector:
         )
 
         self._last_latency_log_time = 0.0
+        self._last_profile_log_time = time.monotonic()
         self._initial_yaw = None
 
         print(f"Recording to {self.data_exporter.meta.root}")
@@ -874,6 +888,12 @@ class GrootDataCollector:
                         img_msg = self._image_subscriber.read()
                         if img_msg is not None:
                             self.latest_image_msg = img_msg
+                            timestamps = img_msg.get("timestamps", {})
+                            if timestamps:
+                                image_age = max(
+                                    time.time() - float(ts) for ts in timestamps.values()
+                                )
+                                self.telemetry.record_value("image_age", image_age)
 
                     with self.telemetry.timer("add_frame"):
                         self._add_data_frame()
@@ -892,6 +912,14 @@ class GrootDataCollector:
                     self.telemetry.log_timing_info(
                         context="Data Exporter Loop Missed", threshold=0.001
                     )
+                elif self.profile_timing:
+                    now = time.monotonic()
+                    if now - self._last_profile_log_time >= self.profile_interval:
+                        self.telemetry.log_timing_info(
+                            context="Data Exporter Profile",
+                            threshold=0.0,
+                        )
+                        self._last_profile_log_time = now
 
         except KeyboardInterrupt:
             print("Data exporter terminated by user")
@@ -937,6 +965,7 @@ def main(config: SonicDataExporterConfig):
         modality_config=modality_config,
         task=config.task_prompt,
         script_config={**robot_config, "record_wrist_cameras": config.record_wrist_cameras},
+        overwrite_existing=config.overwrite_existing_dataset,
     )
 
     data_collector = GrootDataCollector(
@@ -950,6 +979,8 @@ def main(config: SonicDataExporterConfig):
         sonic_data_zmq_port=config.sonic_zmq_port,
         state_zmq_host=config.state_zmq_host,
         state_zmq_port=config.state_zmq_port,
+        profile_timing=config.profile_timing,
+        profile_interval=config.profile_interval,
     )
     data_collector.run()
 

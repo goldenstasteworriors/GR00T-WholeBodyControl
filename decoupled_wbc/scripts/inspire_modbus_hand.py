@@ -16,8 +16,10 @@ REG_FORCE_SET = 1498
 REG_SPEED_SET = 1522
 
 INSPIRE_HAND_DOF = 6
-FULL_OPEN = [1000, 1000, 1000, 1000, 1000, 1000]
-FULL_GRASP = [0, 0, 0, 0, 1000, 1000]
+THUMB_ROTATE_INDEX = 5
+DEFAULT_THUMB_ROTATE = 0.5
+FULL_OPEN = [1000, 1000, 1000, 1000, 1000, 500]
+FULL_GRASP = [0, 0, 0, 0, 1000, 500]
 
 
 class ModbusTcpError(RuntimeError):
@@ -91,11 +93,12 @@ class InspireModbusHand:
         self.write_registers(REG_ANGLE_SET, angle_values)
 
 
-def normalized_to_angle(values: Iterable[float]) -> list[int]:
+def normalized_to_angle(values: Iterable[float], thumb_rotate_default: float = DEFAULT_THUMB_ROTATE) -> list[int]:
     q = np.asarray(list(values), dtype=np.float64)
     if q.shape != (INSPIRE_HAND_DOF,):
         raise ValueError(f"expected 6 normalized values, got shape {q.shape}")
     q = np.clip(q, 0.0, 1.0)
+    q[THUMB_ROTATE_INDEX] = np.clip(float(thumb_rotate_default), 0.0, 1.0)
     return [int(round(v * 1000.0)) for v in q]
 
 
@@ -123,9 +126,12 @@ def run_command(args, hands: dict[str, InspireModbusHand]) -> None:
 
 def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
     last_command = None
+    profile_samples = []
+    last_profile_time = time.monotonic()
 
     def callback(msg: MotorCmds_) -> None:
-        nonlocal last_command
+        nonlocal last_command, last_profile_time
+        callback_start = time.perf_counter()
         if len(msg.cmds) < 12:
             print(f"skip short inspire command: {len(msg.cmds)}")
             return
@@ -138,10 +144,30 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
         last_command = command_key
 
         try:
-            right_angle = normalized_to_angle(right_q)
-            left_angle = normalized_to_angle(left_q)
+            right_angle = normalized_to_angle(right_q, args.thumb_rotate_default)
+            left_angle = normalized_to_angle(left_q, args.thumb_rotate_default)
+            right_start = time.perf_counter()
             hands["right"].set_angle(right_angle, speed=args.speed, force=args.force)
+            right_ms = (time.perf_counter() - right_start) * 1000.0
+            left_start = time.perf_counter()
             hands["left"].set_angle(left_angle, speed=args.speed, force=args.force)
+            left_ms = (time.perf_counter() - left_start) * 1000.0
+            total_ms = (time.perf_counter() - callback_start) * 1000.0
+            if args.profile_timing:
+                profile_samples.append((right_ms, left_ms, total_ms))
+                now = time.monotonic()
+                if now - last_profile_time >= args.profile_interval:
+                    arr = np.asarray(profile_samples, dtype=np.float64)
+                    print(
+                        "[InspireHandProfile] "
+                        f"n={len(profile_samples)} "
+                        f"right_modbus={arr[:, 0].mean():.2f}ms "
+                        f"left_modbus={arr[:, 1].mean():.2f}ms "
+                        f"callback_total={arr[:, 2].mean():.2f}ms "
+                        f"callback_max={arr[:, 2].max():.2f}ms"
+                    )
+                    profile_samples.clear()
+                    last_profile_time = now
             print(f"DDS -> Modbus right={right_angle} left={left_angle}")
         except Exception as exc:
             print(f"DDS -> Modbus failed: {exc}")
@@ -169,6 +195,14 @@ def parse_args():
     parser.add_argument("--command", choices=["open", "grasp", "toggle"], default="toggle")
     parser.add_argument("--period", type=float, default=1.0)
     parser.add_argument("--count", type=int, default=10)
+    parser.add_argument("--profile-timing", action="store_true", help="Print DDS to Modbus timing.")
+    parser.add_argument("--profile-interval", type=float, default=1.0)
+    parser.add_argument(
+        "--thumb-rotate-default",
+        type=float,
+        default=DEFAULT_THUMB_ROTATE,
+        help="Default normalized thumb rotation in DDS mode, 0.0 closed to 1.0 open.",
+    )
     return parser.parse_args()
 
 

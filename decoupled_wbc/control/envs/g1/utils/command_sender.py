@@ -152,8 +152,8 @@ INSPIRE_LEGACY_HAND_DOF = 7
 
 # Inspire DDS order:
 # [little, ring, middle, index, thumb_bend, thumb_rotate], 0 = closed, 1 = open.
-INSPIRE_OPEN_Q = np.ones(INSPIRE_HAND_DOF, dtype=np.float64)
-INSPIRE_GRASP_Q = np.array([0.0, 0.0, 0.0, 0.0, 1.0, 1.0], dtype=np.float64)
+INSPIRE_OPEN_Q = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.5], dtype=np.float64)
+INSPIRE_GRASP_Q = np.array([0.0, 0.0, 0.0, 0.0, 1.0, 0.5], dtype=np.float64)
 
 
 class InspireHandCommandSender:

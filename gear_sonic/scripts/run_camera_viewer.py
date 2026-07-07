@@ -59,6 +59,12 @@ class CameraViewerConfig:
     display: bool = True
     """Show OpenCV preview window when HighGUI support is available."""
 
+    profile_timing: bool = False
+    """Print receive/decode/display timing and camera frame age."""
+
+    profile_interval: float = 1.0
+    """Seconds between timing profile log lines."""
+
 
 def _opencv_highgui_available() -> bool:
     build_info = cv2.getBuildInformation()
@@ -115,10 +121,14 @@ def main(config: CameraViewerConfig):
     try:
         last_status_time = time.time()
         received_frames = 0
+        last_profile_time = time.monotonic()
+        profile_samples = []
         while True:
             t_start = time.monotonic()
 
+            read_start = time.perf_counter()
             image_data = client.read(blocking=False)
+            read_ms = (time.perf_counter() - read_start) * 1000.0
             if image_data is None or not image_data.get("images"):
                 elapsed = time.monotonic() - t_start
                 remaining = loop_period - elapsed
@@ -126,6 +136,7 @@ def main(config: CameraViewerConfig):
                     time.sleep(remaining)
                 continue
 
+            process_start = time.perf_counter()
             tiles = []
             for name in camera_names:
                 img = image_data["images"].get(name)
@@ -190,7 +201,37 @@ def main(config: CameraViewerConfig):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2,
                     )
 
+                display_start = time.perf_counter()
                 cv2.imshow(window_name, canvas)
+                display_ms = (time.perf_counter() - display_start) * 1000.0
+            else:
+                display_ms = 0.0
+
+            process_ms = (time.perf_counter() - process_start) * 1000.0
+            if config.profile_timing:
+                timestamps = image_data.get("timestamps", {})
+                now_wall = time.time()
+                max_age_ms = (
+                    max((now_wall - float(ts)) * 1000.0 for ts in timestamps.values())
+                    if timestamps
+                    else 0.0
+                )
+                profile_samples.append((read_ms, process_ms, display_ms, max_age_ms))
+                now = time.monotonic()
+                if now - last_profile_time >= config.profile_interval:
+                    if profile_samples:
+                        arr = np.asarray(profile_samples, dtype=np.float64)
+                        print(
+                            "[CameraViewerProfile] "
+                            f"n={len(profile_samples)} "
+                            f"read_decode={arr[:, 0].mean():.2f}ms "
+                            f"process={arr[:, 1].mean():.2f}ms "
+                            f"display={arr[:, 2].mean():.2f}ms "
+                            f"image_age={arr[:, 3].mean():.1f}ms "
+                            f"image_age_max={arr[:, 3].max():.1f}ms"
+                        )
+                    profile_samples.clear()
+                    last_profile_time = now
 
             key = cv2.waitKey(1) & 0xFF if display_enabled else 255
 
