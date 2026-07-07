@@ -56,6 +56,27 @@ class CameraViewerConfig:
     max_display_width: int = 640
     """Max width per camera tile in the display window."""
 
+    display: bool = True
+    """Show OpenCV preview window when HighGUI support is available."""
+
+    profile_timing: bool = False
+    """Print receive/decode/display timing and camera frame age."""
+
+    profile_interval: float = 1.0
+    """Seconds between timing profile log lines."""
+
+
+def _opencv_highgui_available() -> bool:
+    build_info = cv2.getBuildInformation()
+    if "GUI:                           NONE" in build_info:
+        return False
+    try:
+        cv2.namedWindow("__sonic_highgui_check__", cv2.WINDOW_NORMAL)
+        cv2.destroyWindow("__sonic_highgui_check__")
+    except cv2.error:
+        return False
+    return True
+
 
 def main(config: CameraViewerConfig):
     client = ComposedCameraClientSensor(server_ip=config.camera_host, port=config.camera_port)
@@ -85,16 +106,29 @@ def main(config: CameraViewerConfig):
     loop_period = 1.0 / config.fps
 
     window_name = "SONIC Camera Viewer"
+    display_enabled = config.display and _opencv_highgui_available()
 
     print(f"Target FPS: {config.fps}")
     print(f"Recordings will be saved to: {output_dir}")
-    print("Controls: R = start/stop recording, Q = quit")
+    if display_enabled:
+        print("Controls: R = start/stop recording, Q = quit")
+    else:
+        print(
+            "OpenCV HighGUI is unavailable; running without preview window. "
+            "Use Ctrl+C to quit."
+        )
 
     try:
+        last_status_time = time.time()
+        received_frames = 0
+        last_profile_time = time.monotonic()
+        profile_samples = []
         while True:
             t_start = time.monotonic()
 
+            read_start = time.perf_counter()
             image_data = client.read(blocking=False)
+            read_ms = (time.perf_counter() - read_start) * 1000.0
             if image_data is None or not image_data.get("images"):
                 elapsed = time.monotonic() - t_start
                 remaining = loop_period - elapsed
@@ -102,6 +136,7 @@ def main(config: CameraViewerConfig):
                     time.sleep(remaining)
                 continue
 
+            process_start = time.perf_counter()
             tiles = []
             for name in camera_names:
                 img = image_data["images"].get(name)
@@ -115,6 +150,9 @@ def main(config: CameraViewerConfig):
 
                 if is_recording and name in video_writers:
                     video_writers[name].write(img_bgr)
+
+                if not display_enabled:
+                    continue
 
                 h, w = img_bgr.shape[:2]
                 if w > config.max_display_width:
@@ -132,7 +170,17 @@ def main(config: CameraViewerConfig):
                 )
                 tiles.append(img_bgr)
 
-            if tiles:
+            received_frames += 1
+            if not display_enabled:
+                now = time.time()
+                if now - last_status_time >= 1.0:
+                    print(
+                        f"Receiving frames: {received_frames} total, "
+                        f"streams={camera_names}"
+                    )
+                    last_status_time = now
+
+            if display_enabled and tiles:
                 max_h = max(t.shape[0] for t in tiles)
                 padded = []
                 for t in tiles:
@@ -153,9 +201,39 @@ def main(config: CameraViewerConfig):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2,
                     )
 
+                display_start = time.perf_counter()
                 cv2.imshow(window_name, canvas)
+                display_ms = (time.perf_counter() - display_start) * 1000.0
+            else:
+                display_ms = 0.0
 
-            key = cv2.waitKey(1) & 0xFF
+            process_ms = (time.perf_counter() - process_start) * 1000.0
+            if config.profile_timing:
+                timestamps = image_data.get("timestamps", {})
+                now_wall = time.time()
+                max_age_ms = (
+                    max((now_wall - float(ts)) * 1000.0 for ts in timestamps.values())
+                    if timestamps
+                    else 0.0
+                )
+                profile_samples.append((read_ms, process_ms, display_ms, max_age_ms))
+                now = time.monotonic()
+                if now - last_profile_time >= config.profile_interval:
+                    if profile_samples:
+                        arr = np.asarray(profile_samples, dtype=np.float64)
+                        print(
+                            "[CameraViewerProfile] "
+                            f"n={len(profile_samples)} "
+                            f"read_decode={arr[:, 0].mean():.2f}ms "
+                            f"process={arr[:, 1].mean():.2f}ms "
+                            f"display={arr[:, 2].mean():.2f}ms "
+                            f"image_age={arr[:, 3].mean():.1f}ms "
+                            f"image_age_max={arr[:, 3].max():.1f}ms"
+                        )
+                    profile_samples.clear()
+                    last_profile_time = now
+
+            key = cv2.waitKey(1) & 0xFF if display_enabled else 255
 
             if key == ord("q"):
                 print("Quit requested.")
@@ -207,7 +285,8 @@ def main(config: CameraViewerConfig):
                 print(f"Final recording: {duration:.1f}s, {frame_count} frames")
 
         client.close()
-        cv2.destroyAllWindows()
+        if display_enabled:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

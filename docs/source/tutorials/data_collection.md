@@ -255,6 +255,34 @@ python gear_sonic/scripts/launch_data_collection.py \
     --record-wrist-cameras
 ```
 
+**With onboard C++ deploy** (useful when the workstation has no NVIDIA GPU):
+
+```bash
+python gear_sonic/scripts/launch_data_collection.py \
+    --deploy-onboard \
+    --camera-host 192.168.123.164 \
+    --deploy-checkpoint policy/low_latency/model \
+    --deploy-obs-config policy/low_latency/observation_config.yaml \
+    --task-prompt "pick up the cup"
+```
+
+In this mode, pane 0 SSHes into the G1 onboard computer and starts
+`gear_sonic_deploy/deploy.sh` there. The PICO streamer, data exporter, and camera
+viewer still run on the workstation. The onboard deploy process connects back to
+the workstation's PICO ZMQ server on port `5556`, while the data exporter and
+PICO feedback reader subscribe to the onboard `g1_debug` stream on port `5557`.
+
+If auto-detecting the workstation IP does not pick the robot-network interface,
+set it explicitly:
+
+```bash
+python gear_sonic/scripts/launch_data_collection.py \
+    --deploy-onboard \
+    --camera-host 192.168.123.164 \
+    --offboard-zmq-host <workstation_robot_network_ip> \
+    --task-prompt "pick up the cup"
+```
+
 ```{tip}
 No need to activate a virtual environment first — the launcher automatically detects and uses `.venv_data_collection` if the required dependencies are not in the current Python.
 ```
@@ -276,6 +304,10 @@ Common options:
 | `--deploy-obs-config` | *(default)* | Custom observation config for deploy.sh |
 | `--deploy-planner` | *(default)* | Custom planner model path for deploy.sh |
 | `--deploy-motion-data` | *(default)* | Custom motion data path for deploy.sh |
+| `--deploy-onboard` | `False` | Run C++ deploy on the G1 onboard computer over SSH |
+| `--deploy-onboard-host` | *(camera host)* | G1 host/IP for SSH and robot-state ZMQ |
+| `--offboard-zmq-host` | *(auto-detected)* | Workstation IP that onboard deploy uses to reach PICO ZMQ |
+| `--state-zmq-host` | *(local or onboard)* | Robot state publisher host |
 | `--record-wrist-cameras` | `False` | Record left/right wrist camera streams in the dataset |
 | `--no-text-to-speech` | *(on)* | Disable voice feedback via espeak |
 
