@@ -46,6 +46,14 @@ import sys
 import time
 
 
+DEFAULT_INSPIRE_HAND_POSE_CONFIG = (
+    Path(__file__).resolve().parent.parent
+    / "config"
+    / "data_collection"
+    / "inspire_hand_pose.json"
+)
+
+
 def _bootstrap_venv():
     """Re-exec with the .venv_data_collection Python if tyro is not available."""
     try:
@@ -153,6 +161,25 @@ class DataCollectionLaunchConfig:
     pico_zmq_feedback_port: int = 5557
     """Port for PICO frozen-target feedback (g1_debug)."""
 
+    # Inspire hand bridge options
+    inspire_hand_bridge: bool = True
+    """Start decoupled_wbc/scripts/inspire_modbus_hand.py DDS->Modbus bridge."""
+
+    restart_inspire_hand_bridge: bool = True
+    """Kill existing inspire_modbus_hand.py --mode dds processes before launching the bridge."""
+
+    inspire_hand_network: str = "enp7s0"
+    """DDS network interface for the Inspire hand bridge."""
+
+    inspire_left_ip: str = "192.168.123.210"
+    """Left Inspire hand Modbus TCP IP."""
+
+    inspire_right_ip: str = "192.168.123.211"
+    """Right Inspire hand Modbus TCP IP."""
+
+    inspire_hand_pose_config: str = str(DEFAULT_INSPIRE_HAND_POSE_CONFIG)
+    """JSON file controlling PICO-trigger hand open/grasp poses for the Inspire bridge."""
+
     # Data exporter options
     task_prompt: str = "demo"
     """Language task prompt for the data exporter."""
@@ -255,6 +282,18 @@ def _kill_existing_session():
     """Kill any existing tmux session with our name."""
     subprocess.run(
         ["tmux", "kill-session", "-t", SESSION_NAME],
+        capture_output=True,
+    )
+
+
+def _kill_existing_inspire_hand_bridge():
+    """Stop stale DDS->Modbus bridge processes so the new hand pose config is used."""
+    subprocess.run(
+        [
+            "pkill",
+            "-f",
+            "decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds",
+        ],
         capture_output=True,
     )
 
@@ -393,6 +432,9 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Sonic ZMQ:       {config.sonic_zmq_host}:{config.sonic_zmq_port}")
     print(f"  State ZMQ:       {state_zmq_host}:{config.state_zmq_port}")
     print(f"  PICO feedback:   {pico_feedback_host}:{config.pico_zmq_feedback_port}")
+    print(f"  Inspire bridge:  {'Yes' if config.inspire_hand_bridge else 'No'}")
+    if config.inspire_hand_bridge:
+        print(f"  Inspire config:  {config.inspire_hand_pose_config}")
     print(f"  DC frequency:    {config.data_exporter_frequency} Hz")
     print(f"  Camera viewer:   {'Yes' if config.camera_viewer else 'No'}")
     print(f"  Wrist cameras:   {'Yes' if config.record_wrist_cameras else 'No'}")
@@ -405,6 +447,36 @@ def main(config: DataCollectionLaunchConfig):
 
     _create_tmux_session()
     print(f"Created tmux session: {SESSION_NAME}")
+
+    # --- Window: Inspire hand DDS->Modbus bridge ---
+    if config.inspire_hand_bridge and not config.sim:
+        if config.restart_inspire_hand_bridge:
+            _kill_existing_inspire_hand_bridge()
+            time.sleep(0.5)
+
+        subprocess.run(
+            ["tmux", "new-window", "-t", SESSION_NAME, "-n", "inspire_hand"],
+        )
+        inspire_cmd = (
+            f"cd {repo_root} && "
+            f"source .venv_teleop/bin/activate && "
+            f"python decoupled_wbc/scripts/inspire_modbus_hand.py "
+            f"--mode dds "
+            f"--network {shlex.quote(config.inspire_hand_network)} "
+            f"--left-ip {shlex.quote(config.inspire_left_ip)} "
+            f"--right-ip {shlex.quote(config.inspire_right_ip)} "
+            f"--hand-pose-config {shlex.quote(config.inspire_hand_pose_config)} "
+            f"--dds-pose-mode profile"
+        )
+        hand_target = f"{SESSION_NAME}:inspire_hand"
+        subprocess.run(
+            ["tmux", "send-keys", "-t", hand_target, inspire_cmd, "C-m"],
+        )
+        print("Starting Inspire hand bridge (window: inspire_hand)...")
+        time.sleep(1.0)
+        subprocess.run(
+            ["tmux", "select-window", "-t", f"{SESSION_NAME}:data_collection"],
+        )
 
     # --- Window 1 (sim only): MuJoCo Simulator ---
     if config.sim:
@@ -529,6 +601,10 @@ def main(config: DataCollectionLaunchConfig):
     if config.sim:
         print("  Window 'sim':")
         print("    MuJoCo Simulator (.venv_sim)")
+        print()
+    if config.inspire_hand_bridge and not config.sim:
+        print("  Window 'inspire_hand':")
+        print("    Inspire DDS -> Modbus bridge (.venv_teleop)")
         print()
     print("  Window 'data_collection':")
     print(

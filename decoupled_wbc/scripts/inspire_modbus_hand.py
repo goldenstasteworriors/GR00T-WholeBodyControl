@@ -1,5 +1,7 @@
 import argparse
 import itertools
+import json
+from pathlib import Path
 import socket
 import struct
 import time
@@ -17,9 +19,18 @@ REG_SPEED_SET = 1522
 
 INSPIRE_HAND_DOF = 6
 THUMB_ROTATE_INDEX = 5
-DEFAULT_THUMB_ROTATE = 0.5
-FULL_OPEN = [1000, 1000, 1000, 1000, 1000, 500]
-FULL_GRASP = [0, 0, 0, 0, 1000, 500]
+DEFAULT_OPEN_Q = [1.0, 1.0, 1.0, 1.0, 1.0, 0.2]
+DEFAULT_GRASP_Q = [0.15, 0.15, 0.15, 0.15, 1.0, 0.2]
+DEFAULT_THUMB_ROTATE = None
+DEFAULT_HAND_POSE_CONFIG = (
+    Path(__file__).resolve().parents[2]
+    / "gear_sonic"
+    / "config"
+    / "data_collection"
+    / "inspire_hand_pose.json"
+)
+FULL_OPEN = [1000, 1000, 1000, 1000, 1000, 200]
+FULL_GRASP = [150, 150, 150, 150, 1000, 200]
 
 
 class ModbusTcpError(RuntimeError):
@@ -93,13 +104,69 @@ class InspireModbusHand:
         self.write_registers(REG_ANGLE_SET, angle_values)
 
 
-def normalized_to_angle(values: Iterable[float], thumb_rotate_default: float = DEFAULT_THUMB_ROTATE) -> list[int]:
+def validate_normalized_pose(values: Iterable[float], name: str) -> list[float]:
     q = np.asarray(list(values), dtype=np.float64)
     if q.shape != (INSPIRE_HAND_DOF,):
-        raise ValueError(f"expected 6 normalized values, got shape {q.shape}")
+        raise ValueError(f"{name} must have {INSPIRE_HAND_DOF} values, got shape {q.shape}")
+    if np.any(q < 0.0) or np.any(q > 1.0):
+        raise ValueError(f"{name} values must be in [0.0, 1.0], got {q.tolist()}")
+    return q.tolist()
+
+
+def normalized_to_angle(
+    values: Iterable[float],
+    thumb_rotate_default: float | None = DEFAULT_THUMB_ROTATE,
+) -> list[int]:
+    q = np.asarray(validate_normalized_pose(values, "normalized hand pose"), dtype=np.float64)
     q = np.clip(q, 0.0, 1.0)
-    q[THUMB_ROTATE_INDEX] = np.clip(float(thumb_rotate_default), 0.0, 1.0)
+    if thumb_rotate_default is not None:
+        q[THUMB_ROTATE_INDEX] = np.clip(float(thumb_rotate_default), 0.0, 1.0)
     return [int(round(v * 1000.0)) for v in q]
+
+
+def load_pose_config(path: str) -> dict[str, list[float]]:
+    with Path(path).expanduser().open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+
+    open_q = data.get("open")
+    grasp_q = data.get("grasp", data.get("closed"))
+    if open_q is None or grasp_q is None:
+        raise ValueError(f"{path} must define 'open' and 'grasp' (or 'closed')")
+    return {
+        "open": validate_normalized_pose(open_q, "open"),
+        "grasp": validate_normalized_pose(grasp_q, "grasp"),
+    }
+
+
+def resolve_hand_profiles(args) -> None:
+    profiles = {
+        "open": DEFAULT_OPEN_Q.copy(),
+        "grasp": DEFAULT_GRASP_Q.copy(),
+    }
+    if args.hand_pose_config:
+        profiles.update(load_pose_config(args.hand_pose_config))
+    if args.open_q is not None:
+        profiles["open"] = validate_normalized_pose(args.open_q, "--open-q")
+    if args.grasp_q is not None:
+        profiles["grasp"] = validate_normalized_pose(args.grasp_q, "--grasp-q")
+
+    args.open_q = profiles["open"]
+    args.grasp_q = profiles["grasp"]
+    args.open_angle = normalized_to_angle(args.open_q)
+    args.grasp_angle = normalized_to_angle(args.grasp_q)
+
+
+def profile_pose_from_dds(q: Iterable[float], args) -> list[float]:
+    q_arr = np.asarray(list(q), dtype=np.float64)
+    if q_arr.shape != (INSPIRE_HAND_DOF,):
+        raise ValueError(f"DDS hand pose must have {INSPIRE_HAND_DOF} values, got {q_arr.shape}")
+    if args.dds_pose_mode == "passthrough":
+        return validate_normalized_pose(q_arr, "DDS hand pose")
+
+    finger_open_mean = float(np.mean(q_arr[:4]))
+    return args.grasp_q if finger_open_mean < args.dds_profile_threshold else args.open_q
 
 
 def send_to_target(hands: dict[str, InspireModbusHand], target: str, values: list[int], speed: int, force: int) -> None:
@@ -112,14 +179,14 @@ def send_to_target(hands: dict[str, InspireModbusHand], target: str, values: lis
 def run_command(args, hands: dict[str, InspireModbusHand]) -> None:
     if args.command == "toggle":
         for i in range(args.count):
-            values = FULL_GRASP if i % 2 == 0 else FULL_OPEN
+            values = args.grasp_angle if i % 2 == 0 else args.open_angle
             label = "grasp" if i % 2 == 0 else "open"
             print(f"sending {label}: {values}")
             send_to_target(hands, args.side, values, args.speed, args.force)
             time.sleep(args.period)
         return
 
-    values = FULL_GRASP if args.command == "grasp" else FULL_OPEN
+    values = args.grasp_angle if args.command == "grasp" else args.open_angle
     print(f"sending {args.command}: {values}")
     send_to_target(hands, args.side, values, args.speed, args.force)
 
@@ -144,8 +211,10 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
         last_command = command_key
 
         try:
-            right_angle = normalized_to_angle(right_q, args.thumb_rotate_default)
-            left_angle = normalized_to_angle(left_q, args.thumb_rotate_default)
+            right_pose = profile_pose_from_dds(right_q, args)
+            left_pose = profile_pose_from_dds(left_q, args)
+            right_angle = normalized_to_angle(right_pose, args.thumb_rotate_default)
+            left_angle = normalized_to_angle(left_pose, args.thumb_rotate_default)
             right_start = time.perf_counter()
             hands["right"].set_angle(right_angle, speed=args.speed, force=args.force)
             right_ms = (time.perf_counter() - right_start) * 1000.0
@@ -176,6 +245,9 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
     subscriber = ChannelSubscriber("rt/inspire/cmd", MotorCmds_)
     subscriber.Init(callback, 10)
     print("DDS -> Modbus bridge running on rt/inspire/cmd. Press Ctrl+C to stop.")
+    print(f"Hand open q={args.open_q} angle={args.open_angle}")
+    print(f"Hand grasp q={args.grasp_q} angle={args.grasp_angle}")
+    print(f"DDS pose mode={args.dds_pose_mode}")
     while True:
         time.sleep(1.0)
 
@@ -201,9 +273,54 @@ def parse_args():
         "--thumb-rotate-default",
         type=float,
         default=DEFAULT_THUMB_ROTATE,
-        help="Default normalized thumb rotation in DDS mode, 0.0 closed to 1.0 open.",
+        help=(
+            "Deprecated override for DDS passthrough thumb rotation. "
+            "Prefer setting the sixth value in --open-q/--grasp-q."
+        ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--open-q",
+        nargs=INSPIRE_HAND_DOF,
+        type=float,
+        default=None,
+        metavar=("LITTLE", "RING", "MIDDLE", "INDEX", "THUMB_BEND", "THUMB_ROTATE"),
+        help="Normalized open pose, 6 values in [0, 1]. Default: 1 1 1 1 1 0.2.",
+    )
+    parser.add_argument(
+        "--grasp-q",
+        "--closed-q",
+        nargs=INSPIRE_HAND_DOF,
+        type=float,
+        default=None,
+        metavar=("LITTLE", "RING", "MIDDLE", "INDEX", "THUMB_BEND", "THUMB_ROTATE"),
+        help="Normalized grasp/closed pose, 6 values in [0, 1]. Default: 0.15 0.15 0.15 0.15 1 0.2.",
+    )
+    parser.add_argument(
+        "--hand-pose-config",
+        default=str(DEFAULT_HAND_POSE_CONFIG),
+        help=(
+            "Optional JSON with {'open': [6 values], 'grasp': [6 values]}. "
+            "CLI --open-q/--grasp-q override this file."
+        ),
+    )
+    parser.add_argument(
+        "--dds-pose-mode",
+        choices=["profile", "passthrough"],
+        default="profile",
+        help=(
+            "In DDS mode, 'profile' maps upstream open/grasp commands to --open-q/--grasp-q; "
+            "'passthrough' forwards the 6 DDS q values directly."
+        ),
+    )
+    parser.add_argument(
+        "--dds-profile-threshold",
+        type=float,
+        default=0.5,
+        help="Finger mean threshold used by --dds-pose-mode profile to choose grasp vs open.",
+    )
+    args = parser.parse_args()
+    resolve_hand_profiles(args)
+    return args
 
 
 def main():

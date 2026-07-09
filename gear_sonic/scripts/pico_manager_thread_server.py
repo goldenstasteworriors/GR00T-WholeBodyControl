@@ -77,6 +77,15 @@ try:
 except ImportError:
     xrt = None
 
+
+def _start_xrt_service_if_needed() -> None:
+    """Start XRoboToolkit service unless an external launcher already did it."""
+    if os.environ.get("SONIC_SKIP_XRT_SERVICE_START") == "1":
+        print("Skipping XRoboToolkit service start; using externally managed service.")
+        return
+    subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
+
+
 try:
     from gear_sonic.utils.teleop.solver.hand.g1_gripper_ik_solver import (
         G1GripperInverseKinematicsSolver,
@@ -363,7 +372,7 @@ def run_vr3pt_live_visualizer():
     print("=" * 60)
 
     # Initialize XRT
-    subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
+    _start_xrt_service_if_needed()
     xrt.init()
     print("Waiting for body tracking data...")
     while not xrt.is_body_data_available():
@@ -413,7 +422,7 @@ def run_vr3pt_realtime_visualizer(update_hz: int = 10):
     print("=" * 60)
 
     # Initialize XRT
-    subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
+    _start_xrt_service_if_needed()
     xrt.init()
     print("Waiting for body tracking data...")
     while not xrt.is_body_data_available():
@@ -1584,7 +1593,7 @@ def _init_input_source(
             "XRoboToolkit SDK not available. Install xrobotoolkit_sdk to run Pico streaming."
         )
 
-    subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
+    _start_xrt_service_if_needed()
     xrt.init()
     print("Waiting for body tracking data...")
     while not xrt.is_body_data_available():

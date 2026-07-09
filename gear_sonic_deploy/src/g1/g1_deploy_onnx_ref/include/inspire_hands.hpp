@@ -4,8 +4,8 @@
  *
  * The full-body controller still produces the legacy 7-DOF-per-hand buffers.
  * This adapter maps those buffers to the two states needed for RH56DFTP:
- * open  = [1, 1, 1, 1, 1, 1]
- * grasp = [0, 0, 0, 0, 1, 1]
+ * open  = [1, 1, 1, 1, 1, 0.2]
+ * grasp = [0.15, 0.15, 0.15, 0.15, 1, 0.2]
  *
  * DDS order is:
  * [little, ring, middle, index, thumb_bend, thumb_rotate] for right hand,
@@ -139,8 +139,8 @@ private:
     std::array<double, INSPIRE_MOTOR_MAX> right_q_ {};
     double max_close_ratio_ = 1.0;
 
-    static constexpr std::array<double, INSPIRE_MOTOR_MAX> OPEN_Q = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
-    static constexpr std::array<double, INSPIRE_MOTOR_MAX> GRASP_Q = {0.0, 0.0, 0.0, 0.0, 1.0, 1.0};
+    static constexpr std::array<double, INSPIRE_MOTOR_MAX> OPEN_Q = {1.0, 1.0, 1.0, 1.0, 1.0, 0.2};
+    static constexpr std::array<double, INSPIRE_MOTOR_MAX> GRASP_Q = {0.15, 0.15, 0.15, 0.15, 1.0, 0.2};
 };
 
 #endif // INSPIRE_HANDS_HPP
