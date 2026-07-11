@@ -25,9 +25,17 @@ def main(config: TeleopConfig):
     if config.robot == "g1":
         waist_location = "lower_and_upper_body" if config.enable_waist else "lower_body"
         robot_model = instantiate_g1_robot_model(
-            waist_location=waist_location, high_elbow_pose=config.high_elbow_pose
+            waist_location=waist_location,
+            high_elbow_pose=config.high_elbow_pose,
+            with_hands=config.with_hands,
         )
-        left_hand_ik_solver, right_hand_ik_solver = instantiate_g1_hand_ik_solver()
+        if config.with_hands:
+            left_hand_ik_solver, right_hand_ik_solver = instantiate_g1_hand_ik_solver()
+            hand_control_device = config.hand_control_device
+        else:
+            left_hand_ik_solver = None
+            right_hand_ik_solver = None
+            hand_control_device = None
     else:
         raise ValueError(f"Unsupported robot name: {config.robot}")
 
@@ -48,7 +56,7 @@ def main(config: TeleopConfig):
             robot_model=robot_model,
             retargeting_ik=retargeting_ik,
             body_control_device=config.body_control_device,
-            hand_control_device=config.hand_control_device,
+            hand_control_device=hand_control_device,
             body_streamer_ip=config.body_streamer_ip,  # vive tracker, leap motion does not require
             body_streamer_keyword=config.body_streamer_keyword,
             enable_real_device=config.enable_real_device,
@@ -77,8 +85,13 @@ def main(config: TeleopConfig):
                 t_now = time.monotonic()
                 data["timestamp"] = t_now
 
+                # A safety return-to-initial command supplies one fixed deadline.
+                # Do not overwrite it every cycle, otherwise the interpolation
+                # target keeps moving forward and never completes its return.
+                if "target_time" in data:
+                    pass
                 # Set target completion time - longer for initial pose, then match control frequency
-                if iteration == 0:
+                elif iteration == 0:
                     data["target_time"] = t_now + time_to_get_to_initial_pose
                 else:
                     data["target_time"] = t_now + (1 / config.teleop_frequency)

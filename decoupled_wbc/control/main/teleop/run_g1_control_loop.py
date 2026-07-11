@@ -12,6 +12,7 @@ from decoupled_wbc.control.main.constants import (
     JOINT_SAFETY_STATUS_TOPIC,
     LOWER_BODY_POLICY_STATUS_TOPIC,
     ROBOT_CONFIG_TOPIC,
+    SIM_RESET_TOPIC,
     STATE_TOPIC_NAME,
 )
 from decoupled_wbc.control.main.teleop.configs.configs import ControlLoopConfig
@@ -36,6 +37,16 @@ from decoupled_wbc.control.utils.telemetry import Telemetry
 CONTROL_NODE_NAME = "ControlPolicy"
 
 
+class SimResetKeyboardPublisher:
+    def __init__(self, publisher: ROSMsgPublisher):
+        self.publisher = publisher
+
+    def handle_keyboard_button(self, key):
+        if key in {"r", "backspace"}:
+            print(f"Requesting MuJoCo reset from keyboard: {key}")
+            self.publisher.publish({"reason": f"keyboard:{key}", "timestamp": time.time()})
+
+
 def main(config: ControlLoopConfig):
     ros_manager = ROSManager(node_name=CONTROL_NODE_NAME)
     node = ros_manager.node
@@ -48,13 +59,16 @@ def main(config: ControlLoopConfig):
     data_exp_pub = ROSMsgPublisher(STATE_TOPIC_NAME)
     lower_body_policy_status_pub = ROSMsgPublisher(LOWER_BODY_POLICY_STATUS_TOPIC)
     joint_safety_status_pub = ROSMsgPublisher(JOINT_SAFETY_STATUS_TOPIC)
+    sim_reset_pub = ROSMsgPublisher(SIM_RESET_TOPIC)
 
     # Initialize telemetry
     telemetry = Telemetry(window_size=100)
 
     waist_location = "lower_and_upper_body" if config.enable_waist else "lower_body"
     robot_model = instantiate_g1_robot_model(
-        waist_location=waist_location, high_elbow_pose=config.high_elbow_pose
+        waist_location=waist_location,
+        high_elbow_pose=config.high_elbow_pose,
+        with_hands=config.with_hands,
     )
 
     env = G1Env(
@@ -66,10 +80,11 @@ def main(config: ControlLoopConfig):
     if env.sim and not config.sim_sync_mode:
         env.start_simulator()
 
-    wbc_policy = get_wbc_policy("g1", robot_model, wbc_config, config.upper_body_joint_speed)
+    wbc_policy = get_wbc_policy("g1", robot_model, wbc_config)
 
     keyboard_listener_pub = KeyboardListenerPublisher()
     keyboard_estop = KeyboardEStop()
+    sim_reset_keyboard_pub = SimResetKeyboardPublisher(sim_reset_pub)
     if config.keyboard_dispatcher_type == "raw":
         dispatcher = KeyboardDispatcher()
     elif config.keyboard_dispatcher_type == "ros":
@@ -81,6 +96,7 @@ def main(config: ControlLoopConfig):
     dispatcher.register(env)
     dispatcher.register(wbc_policy)
     dispatcher.register(keyboard_listener_pub)
+    dispatcher.register(sim_reset_keyboard_pub)
     dispatcher.register(keyboard_estop)
     dispatcher.start()
 
@@ -115,6 +131,10 @@ def main(config: ControlLoopConfig):
                         last_teleop_cmd = upper_body_cmd.copy()
                         if config.ik_indicator:
                             env.set_ik_indicator(upper_body_cmd)
+                    if wbc_goal.get("emergency_stop", False):
+                        print("Emergency stop requested from teleop")
+                        wbc_goal["navigate_cmd"] = DEFAULT_NAV_CMD
+                        wbc_goal["set_policy_action"] = False
                     # Send goal to policy
                     if wbc_goal:
                         wbc_goal["interpolation_garbage_collection_time"] = t_now - 2 * (
@@ -165,6 +185,7 @@ def main(config: ControlLoopConfig):
 
                 if env.use_sim and wbc_goal.get("reset_env_and_policy", False):
                     print("Resetting sim environment and policy")
+                    sim_reset_pub.publish({"reason": "teleop_reset_env_and_policy", "timestamp": time.time()})
                     # Reset teleop policy & sim env
                     dispatcher.handle_key("k")
 

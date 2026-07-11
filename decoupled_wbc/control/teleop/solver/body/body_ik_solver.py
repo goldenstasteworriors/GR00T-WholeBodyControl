@@ -75,9 +75,7 @@ class BodyIKSolver(Solver):
         else:
             self.solver = qpsolvers.available_solvers[0]
 
-        q_default = self.robot.q_zero.copy()
-        q_default[self.robot.joint_to_dof_index["left_shoulder_roll_joint"]] = 0.2
-        q_default[self.robot.joint_to_dof_index["right_shoulder_roll_joint"]] = -0.2
+        q_default = self.robot.clip_configuration(self.robot.default_body_pose)
 
         self.configuration = pink.Configuration(
             self.robot.pinocchio_wrapper.model,

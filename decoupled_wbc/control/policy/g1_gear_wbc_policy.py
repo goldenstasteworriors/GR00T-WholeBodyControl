@@ -179,7 +179,9 @@ class G1GearWbcPolicy(Policy):
             goal: Dictionary containing the goal for the policy
         """
 
-        if "toggle_policy_action" in goal:
+        if "set_policy_action" in goal:
+            self.use_policy_action = bool(goal["set_policy_action"])
+        elif "toggle_policy_action" in goal:
             if goal["toggle_policy_action"]:
                 self.use_policy_action = not self.use_policy_action
 

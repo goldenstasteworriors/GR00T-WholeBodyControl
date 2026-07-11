@@ -80,6 +80,7 @@ class G1DecoupledWholeBodyPolicy(Policy):
         lower_body_keys = [
             "toggle_stand_command",
             "toggle_policy_action",
+            "set_policy_action",
         ]
         for key in lower_body_keys:
             if key in goal:

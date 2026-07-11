@@ -18,10 +18,10 @@ R_HEADSET_TO_WORLD = np.array(
 
 class PicoStreamer(BaseStreamer):
     def __init__(self):
-        self.xr_client = XrClient()
         self.run_pico_service()
+        self.xr_client = XrClient()
 
-        self.reset_status()
+        self.reset_status(reset_control_enabled=True)
 
     def run_pico_service(self):
         # Run the pico service
@@ -38,15 +38,57 @@ class PicoStreamer(BaseStreamer):
         else:
             print("Pico service not running")
 
-    def reset_status(self):
+    def reset_status(self, reset_control_enabled: bool = False):
         self.current_base_height = 0.74  # Initial base height, 0.74m (standing height)
         self.toggle_policy_action_last = False
         self.toggle_activation_last = False
         self.toggle_data_collection_last = False
         self.toggle_data_abort_last = False
+        self.start_stop_combo_last = False
+        self.upper_body_combo_last = False
+        self.combo_suppression_active = False
+        if reset_control_enabled or not hasattr(self, "control_enabled"):
+            self.control_enabled = False
 
     def start_streaming(self):
-        pass
+        print("Waiting for PICO/XRoboToolkit headset and controller data...")
+        last_report_time = 0.0
+        first_timestamp = None
+        while True:
+            try:
+                left_pose = self.xr_client.get_pose_by_name("left_controller")
+                right_pose = self.xr_client.get_pose_by_name("right_controller")
+                head_pose = self.xr_client.get_pose_by_name("headset")
+                timestamp = self.xr_client.get_timestamp_ns()
+                poses_ready = (
+                    self._is_valid_xr_pose(left_pose)
+                    and self._is_valid_xr_pose(right_pose)
+                    and self._is_valid_xr_pose(head_pose)
+                )
+                if poses_ready and timestamp > 0:
+                    if first_timestamp is None:
+                        first_timestamp = timestamp
+                    elif timestamp != first_timestamp:
+                        print("PICO headset and controller data received.")
+                        return
+            except Exception as exc:
+                if time.monotonic() - last_report_time >= 1.0:
+                    print(f"waiting for headset/controller data... ({exc})")
+                    last_report_time = time.monotonic()
+                time.sleep(0.1)
+                continue
+
+            if time.monotonic() - last_report_time >= 1.0:
+                print("waiting for headset/controller data...")
+                last_report_time = time.monotonic()
+            time.sleep(0.1)
+
+    @staticmethod
+    def _is_valid_xr_pose(pose) -> bool:
+        pose = np.asarray(pose)
+        if pose.shape[0] < 7 or not np.isfinite(pose[:7]).all():
+            return False
+        return np.linalg.norm(pose[3:7]) > 1e-6
 
     def stop_streaming(self):
         self.xr_client.close()
@@ -123,11 +165,48 @@ class PicoStreamer(BaseStreamer):
         lin_vel_y = self._apply_dead_zone(strafe_input, DEAD_ZONE) * MAX_LINEAR_VEL
         ang_vel_z = self._apply_dead_zone(yaw_input, DEAD_ZONE) * MAX_ANGULAR_VEL
 
+        face_combo_pressed = pico_data["A"] and pico_data["B"] and pico_data["X"] and pico_data["Y"]
+        upper_body_combo_pressed = pico_data["A"] and pico_data["X"] and not (
+            pico_data["B"] or pico_data["Y"]
+        )
+        face_button_pressed = pico_data["A"] or pico_data["B"] or pico_data["X"] or pico_data["Y"]
+        start_stop_event = face_combo_pressed and not self.start_stop_combo_last
+        upper_body_event = upper_body_combo_pressed and not self.upper_body_combo_last
+        self.start_stop_combo_last = face_combo_pressed
+        self.upper_body_combo_last = upper_body_combo_pressed
+
+        if face_combo_pressed or upper_body_combo_pressed:
+            self.combo_suppression_active = True
+        elif self.combo_suppression_active and not face_button_pressed:
+            self.combo_suppression_active = False
+
+        set_policy_action = None
+        set_teleop_active = None
+        toggle_activation = False
+        emergency_stop = False
+        if start_stop_event:
+            self.control_enabled = not self.control_enabled
+            set_policy_action = self.control_enabled
+            emergency_stop = not self.control_enabled
+            print(
+                "[PicoStreamer] A+B+X+Y detected: "
+                f"{'starting policy' if self.control_enabled else 'stopping policy'}",
+                flush=True,
+            )
+            if emergency_stop:
+                set_teleop_active = False
+                lin_vel_x = 0.0
+                lin_vel_y = 0.0
+                ang_vel_z = 0.0
+        elif upper_body_event:
+            toggle_activation = True
+            print("[PicoStreamer] A+X detected: toggling upper-body teleop", flush=True)
+
         # Get base height command
         height_increment = 0.01  # Small step per call when button is pressed
-        if pico_data["Y"]:
+        if not self.combo_suppression_active and pico_data["Y"]:
             self.current_base_height += height_increment
-        elif pico_data["X"]:
+        elif not self.combo_suppression_active and pico_data["X"]:
             self.current_base_height -= height_increment
         self.current_base_height = np.clip(self.current_base_height, 0.2, 0.74)
 
@@ -148,28 +227,44 @@ class PicoStreamer(BaseStreamer):
         self.toggle_policy_action_last = toggle_policy_action_tmp
 
         if self.toggle_activation_last != toggle_activation_tmp:
-            toggle_activation = toggle_activation_tmp
+            toggle_activation = toggle_activation or toggle_activation_tmp
         else:
-            toggle_activation = False
+            toggle_activation = bool(toggle_activation)
         self.toggle_activation_last = toggle_activation_tmp
 
-        # Get data collection commands
-        toggle_data_collection_tmp = pico_data["A"]
-        toggle_data_abort_tmp = pico_data["B"]
+        # Match Sonic VLA collection controls: left grip + A toggles recording,
+        # left grip + B discards. Suppress A/B during face-button combos.
+        data_collection_modifier = pico_data["left_grip"] > 0.5
+        toggle_data_collection_tmp = (
+            pico_data["A"] and data_collection_modifier and not self.combo_suppression_active
+        )
+        toggle_data_abort_tmp = (
+            pico_data["B"] and data_collection_modifier and not self.combo_suppression_active
+        )
 
-        if self.toggle_data_collection_last != toggle_data_collection_tmp:
-            toggle_data_collection = toggle_data_collection_tmp
-        else:
-            toggle_data_collection = False
+        toggle_data_collection = (
+            toggle_data_collection_tmp and not self.toggle_data_collection_last
+        )
         self.toggle_data_collection_last = toggle_data_collection_tmp
 
-        if self.toggle_data_abort_last != toggle_data_abort_tmp:
-            toggle_data_abort = toggle_data_abort_tmp
-        else:
-            toggle_data_abort = False
+        toggle_data_abort = toggle_data_abort_tmp and not self.toggle_data_abort_last
         self.toggle_data_abort_last = toggle_data_abort_tmp
 
-        # print(f"toggle_data_collection: {toggle_data_collection}, toggle_data_abort: {toggle_data_abort}")
+        control_data = {
+            "base_height_command": self.current_base_height,
+            "navigate_cmd": [lin_vel_x, lin_vel_y, ang_vel_z],
+            "toggle_policy_action": toggle_policy_action,
+        }
+        if set_policy_action is not None:
+            control_data["set_policy_action"] = set_policy_action
+        if emergency_stop:
+            control_data["emergency_stop"] = True
+
+        teleop_data = {
+            "toggle_activation": toggle_activation,
+        }
+        if set_teleop_active is not None:
+            teleop_data["set_active"] = set_teleop_active
 
         return StreamerOutput(
             ik_data={
@@ -178,14 +273,8 @@ class PicoStreamer(BaseStreamer):
                 "left_fingers": {"position": left_fingers},
                 "right_fingers": {"position": right_fingers},
             },
-            control_data={
-                "base_height_command": self.current_base_height,
-                "navigate_cmd": [lin_vel_x, lin_vel_y, ang_vel_z],
-                "toggle_policy_action": toggle_policy_action,
-            },
-            teleop_data={
-                "toggle_activation": toggle_activation,
-            },
+            control_data=control_data,
+            teleop_data=teleop_data,
             data_collection_data={
                 "toggle_data_collection": toggle_data_collection,
                 "toggle_data_abort": toggle_data_abort,
@@ -245,23 +334,19 @@ class PicoStreamer(BaseStreamer):
         return sign * (abs(value) - dead_zone) / (1.0 - dead_zone)
 
     def _generate_finger_data(self, pico_data, hand):
-        """Generate finger position data."""
+        """Generate finger position data.
+
+        Match the main Sonic VLA PICO streamer: trigger controls hand grasp,
+        while grip is reserved for controller modifiers such as data collection.
+        """
         fingertips = np.zeros([25, 4, 4])
 
         thumb = 0
-        index = 5
         middle = 10
-        ring = 15
 
-        # Control thumb based on shoulder button state (index 4 is thumb tip)
         fingertips[4 + thumb, 0, 3] = 1.0  # open thumb
-        if not pico_data["left_menu_button"]:
-            if pico_data[f"{hand}_trigger"] > 0.5 and not pico_data[f"{hand}_grip"] > 0.5:
-                fingertips[4 + index, 0, 3] = 1.0  # close index
-            elif pico_data[f"{hand}_trigger"] > 0.5 and pico_data[f"{hand}_grip"] > 0.5:
-                fingertips[4 + middle, 0, 3] = 1.0  # close middle
-            elif not pico_data[f"{hand}_trigger"] > 0.5 and pico_data[f"{hand}_grip"] > 0.5:
-                fingertips[4 + ring, 0, 3] = 1.0  # close ring
+        if pico_data[f"{hand}_trigger"] > 0.5:
+            fingertips[4 + middle, 0, 3] = 1.0  # close middle
 
         return fingertips
 
