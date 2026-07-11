@@ -182,7 +182,7 @@ class TeleopStreamer:
 
         return streamer_data
 
-    def calibrate(self):
+    def calibrate(self, reference_body_q=None):
         """Calibrate the pre-processors using only IK data."""
         if self.replay_mode:
             ik_data = self.replay_calibration_data
@@ -191,7 +191,11 @@ class TeleopStreamer:
             ik_data = streamer_data.ik_data
 
         if self.body_pre_processor:
-            self.body_pre_processor.calibrate(ik_data, self.body_control_device)
+            self.body_pre_processor.calibrate(
+                ik_data,
+                self.body_control_device,
+                reference_body_q=reference_body_q,
+            )
         if self.left_hand_pre_processor:
             self.left_hand_pre_processor.calibrate(ik_data, self.hand_control_device)
         if self.right_hand_pre_processor:

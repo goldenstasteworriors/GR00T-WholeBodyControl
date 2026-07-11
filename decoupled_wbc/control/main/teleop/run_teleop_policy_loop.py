@@ -3,7 +3,7 @@ import time
 import rclpy
 import tyro
 
-from decoupled_wbc.control.main.constants import CONTROL_GOAL_TOPIC
+from decoupled_wbc.control.main.constants import CONTROL_GOAL_TOPIC, STATE_TOPIC_NAME
 from decoupled_wbc.control.main.teleop.configs.configs import TeleopConfig
 from decoupled_wbc.control.policy.lerobot_replay_policy import LerobotReplayPolicy
 from decoupled_wbc.control.policy.teleop_policy import TeleopPolicy
@@ -12,7 +12,7 @@ from decoupled_wbc.control.teleop.solver.hand.instantiation.g1_hand_ik_instantia
     instantiate_g1_hand_ik_solver,
 )
 from decoupled_wbc.control.teleop.teleop_retargeting_ik import TeleopRetargetingIK
-from decoupled_wbc.control.utils.ros_utils import ROSManager, ROSMsgPublisher
+from decoupled_wbc.control.utils.ros_utils import ROSManager, ROSMsgPublisher, ROSMsgSubscriber
 from decoupled_wbc.control.utils.telemetry import Telemetry
 
 TELEOP_NODE_NAME = "TeleopPolicy"
@@ -65,6 +65,7 @@ def main(config: TeleopConfig):
 
     # Create a publisher for the navigation commands
     control_publisher = ROSMsgPublisher(CONTROL_GOAL_TOPIC)
+    robot_state_subscriber = ROSMsgSubscriber(STATE_TOPIC_NAME)
 
     # Create rate controller
     rate = node.create_rate(config.teleop_frequency)
@@ -77,6 +78,9 @@ def main(config: TeleopConfig):
         while rclpy.ok():
             with telemetry.timer("total_loop"):
                 t_start = time.monotonic()
+                robot_state = robot_state_subscriber.get_msg()
+                if robot_state is not None and hasattr(teleop_policy, "set_robot_state"):
+                    teleop_policy.set_robot_state(robot_state)
                 # Get the current teleop action
                 with telemetry.timer("get_action"):
                     data = teleop_policy.get_action()
@@ -85,13 +89,8 @@ def main(config: TeleopConfig):
                 t_now = time.monotonic()
                 data["timestamp"] = t_now
 
-                # A safety return-to-initial command supplies one fixed deadline.
-                # Do not overwrite it every cycle, otherwise the interpolation
-                # target keeps moving forward and never completes its return.
-                if "target_time" in data:
-                    pass
-                # Set target completion time - longer for initial pose, then match control frequency
-                elif iteration == 0:
+                # Set target completion time - longer for initial pose, then match control frequency.
+                if iteration == 0:
                     data["target_time"] = t_now + time_to_get_to_initial_pose
                 else:
                     data["target_time"] = t_now + (1 / config.teleop_frequency)

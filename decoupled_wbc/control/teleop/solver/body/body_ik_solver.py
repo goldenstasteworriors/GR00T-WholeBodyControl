@@ -68,14 +68,16 @@ class BodyIKSolver(Solver):
         self.robot = robot
         self.initialize()
 
-    def initialize(self):
+    def initialize(self, initial_configuration: np.ndarray | None = None):
         self.solver = qpsolvers.available_solvers[0]
         if "quadprog" in qpsolvers.available_solvers:
             self.solver = "quadprog"
         else:
             self.solver = qpsolvers.available_solvers[0]
 
-        q_default = self.robot.clip_configuration(self.robot.default_body_pose)
+        if initial_configuration is None:
+            initial_configuration = self.robot.default_body_pose
+        q_default = self.robot.clip_configuration(np.asarray(initial_configuration).copy())
 
         self.configuration = pink.Configuration(
             self.robot.pinocchio_wrapper.model,
