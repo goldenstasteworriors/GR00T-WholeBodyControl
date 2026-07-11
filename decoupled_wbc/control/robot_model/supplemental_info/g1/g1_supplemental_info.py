@@ -37,8 +37,9 @@ class G1SupplementalInfo(RobotSupplementalInfo):
         self,
         waist_location: WaistLocation = WaistLocation.LOWER_BODY,
         elbow_pose: ElbowPose = ElbowPose.LOW,
+        with_hands: bool = True,
     ):
-        name = "G1_G1ThreeFinger"
+        name = "G1_G1ThreeFinger" if with_hands else "G1_29DOF"
 
         # Define all actuated joints
         body_actuated_joints = [
@@ -279,8 +280,16 @@ class G1SupplementalInfo(RobotSupplementalInfo):
 
         hand_rotation_correction = np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]])
 
+        if not with_hands:
+            left_hand_actuated_joints = []
+            right_hand_actuated_joints = []
+            joint_groups["left_hand"] = {"joints": [], "groups": []}
+            joint_groups["right_hand"] = {"joints": [], "groups": []}
+            joint_groups["hands"] = {"joints": [], "groups": []}
+            joint_groups["upper_body"] = {"joints": [], "groups": ["upper_body_no_hands"]}
+            default_joint_q = {}
         # Configure default joint positions based on elbow pose
-        if elbow_pose == ElbowPose.HIGH:
+        elif elbow_pose == ElbowPose.HIGH:
             default_joint_q = {
                 "shoulder_roll": {"left": 0.5, "right": -0.5},
                 "shoulder_pitch": {"left": -0.2, "right": -0.2},
@@ -290,9 +299,7 @@ class G1SupplementalInfo(RobotSupplementalInfo):
                 "wrist_pitch": {"left": -0.2, "right": -0.2},
             }
         else:  # ElbowPose.LOW
-            default_joint_q = {
-                "shoulder_roll": {"left": 0.2, "right": -0.2},
-            }
+            default_joint_q = {}
 
         teleop_upper_body_motion_scale = 1.0
 

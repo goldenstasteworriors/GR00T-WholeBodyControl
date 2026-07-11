@@ -37,6 +37,7 @@ Usage (from repo root — no venv activation needed):
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -71,6 +72,11 @@ _bootstrap_venv()
 
 import tyro
 
+from gear_sonic.utils.data_collection.inspire_hand_tasks import (
+    DEFAULT_HAND_TASK,
+    default_hand_task_config_path,
+)
+
 
 def _get_local_ip() -> str:
     """Best-effort detection of the PC's LAN IP address."""
@@ -82,6 +88,31 @@ def _get_local_ip() -> str:
         return ip
     except Exception:
         return "unknown"
+
+
+def _sanitize_log_name(name: str) -> str:
+    name = name.strip() or time.strftime("%Y%m%d_%H%M%S")
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
+    return name.strip("._-") or time.strftime("%Y%m%d_%H%M%S")
+
+
+def _allocate_profile_log_dir(repo_root: Path, dataset_name: str, base_dir: str) -> Path:
+    safe_dataset = _sanitize_log_name(dataset_name)
+    root = repo_root / base_dir
+    root.mkdir(parents=True, exist_ok=True)
+    for idx in range(10000):
+        candidate = root / f"{safe_dataset}_{idx:03d}"
+        if not candidate.exists():
+            candidate.mkdir(parents=True)
+            return candidate
+    raise RuntimeError(f"Could not allocate profile log directory under {root}")
+
+
+def _pipe_pane_to_log(pane_index: int, log_file: Path) -> None:
+    target = f"{SESSION_NAME}:0.{pane_index}"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    pipe_cmd = f"cat >> {shlex.quote(str(log_file))}"
+    subprocess.run(["tmux", "pipe-pane", "-o", "-t", target, pipe_cmd], check=True)
 
 
 @dataclass
@@ -147,6 +178,9 @@ class DataCollectionLaunchConfig:
     pico_waist_tracking: bool = False
     """Enable waist tracking on the teleop streamer."""
 
+    hand_task: str = DEFAULT_HAND_TASK
+    """Task-specific hand mapping for Pico-triggered dexterous hand commands."""
+
     pico_zmq_feedback_host: str = ""
     """Host for PICO frozen-target feedback (g1_debug). Defaults to state_zmq_host."""
 
@@ -199,6 +233,12 @@ class DataCollectionLaunchConfig:
 
     profile_interval: float = 1.0
     """Seconds between timing profile log lines."""
+
+    save_profile_logs: bool = False
+    """Save timing-related tmux pane output to logs named by dataset and run index."""
+
+    profile_log_dir: str = "logs/profile_timing"
+    """Base directory for saved profile logs."""
 
 
 SESSION_NAME = "sonic_data_collection"
@@ -358,6 +398,7 @@ def _shell_join(args: list[str]) -> str:
 
 def main(config: DataCollectionLaunchConfig):
     repo_root = Path(__file__).resolve().parent.parent.parent
+    hand_task_config_path = default_hand_task_config_path()
     local_ip = _get_local_ip()
 
     _check_prerequisites(config)
@@ -387,6 +428,8 @@ def main(config: DataCollectionLaunchConfig):
         print(f"  Onboard host:    {onboard_host}")
         print(f"  Onboard repo:    {config.deploy_onboard_repo_root}")
     print(f"  Teleop input:    {config.pico_input_source}")
+    print(f"  Hand task:       {config.hand_task}")
+    print(f"  Hand task config:{hand_task_config_path}")
     if config.deploy_checkpoint:
         print(f"  Checkpoint:      {config.deploy_checkpoint}")
     print(f"  Camera:          {config.camera_host}:{config.camera_port}")
@@ -397,6 +440,7 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Camera viewer:   {'Yes' if config.camera_viewer else 'No'}")
     print(f"  Wrist cameras:   {'Yes' if config.record_wrist_cameras else 'No'}")
     print(f"  Profile timing:  {'Yes' if config.profile_timing else 'No'}")
+    print(f"  Profile logs:    {'Yes' if config.save_profile_logs else 'No'}")
     print(f"  Overwrite data:  {'Yes' if config.overwrite_existing_dataset else 'No'}")
     print(f"  Text-to-speech:  {'Yes' if config.text_to_speech else 'No'}")
     print(f"  PC IP (for PICO): {local_ip}")
@@ -405,6 +449,19 @@ def main(config: DataCollectionLaunchConfig):
 
     _create_tmux_session()
     print(f"Created tmux session: {SESSION_NAME}")
+
+    profile_log_dir = None
+    if config.save_profile_logs:
+        profile_log_dir = _allocate_profile_log_dir(
+            repo_root,
+            config.dataset_name or config.task_prompt,
+            config.profile_log_dir,
+        )
+        _pipe_pane_to_log(0, profile_log_dir / "cxx_deploy.log")
+        _pipe_pane_to_log(2, profile_log_dir / "data_exporter.log")
+        if config.camera_viewer:
+            _pipe_pane_to_log(3, profile_log_dir / "camera_viewer.log")
+        print(f"Saving profile logs to: {profile_log_dir}")
 
     # --- Window 1 (sim only): MuJoCo Simulator ---
     if config.sim:
@@ -435,14 +492,22 @@ def main(config: DataCollectionLaunchConfig):
     deploy_args = _build_deploy_args(config, deploy_zmq_host, deploy_mode)
     if config.deploy_onboard:
         ssh_target = f"{config.deploy_onboard_user}@{onboard_host}"
+        remote_hand_task_config = (
+            f"{config.deploy_onboard_repo_root}/gear_sonic/config/data_collection/"
+            "inspire_hand_tasks.json"
+        )
         remote_cmd = (
             f"cd {shlex.quote(config.deploy_onboard_repo_root + '/gear_sonic_deploy')} && "
+            f"SONIC_HAND_TASK={shlex.quote(config.hand_task)} "
+            f"SONIC_HAND_TASK_CONFIG={shlex.quote(remote_hand_task_config)} "
             f"{_shell_join(deploy_args)}"
         )
         deploy_cmd = f"ssh -t {shlex.quote(ssh_target)} {shlex.quote(remote_cmd)}"
     else:
         deploy_cmd = (
             f"cd {shlex.quote(str(repo_root / 'gear_sonic_deploy'))} && "
+            f"SONIC_HAND_TASK={shlex.quote(config.hand_task)} "
+            f"SONIC_HAND_TASK_CONFIG={shlex.quote(str(hand_task_config_path))} "
             f"{_shell_join(deploy_args)}"
         )
 
@@ -456,8 +521,10 @@ def main(config: DataCollectionLaunchConfig):
     pico_cmd = (
         f"cd {repo_root} && "
         f"source .venv_teleop/bin/activate && "
+        f"SONIC_HAND_TASK_CONFIG={shlex.quote(str(hand_task_config_path))} "
         f"python gear_sonic/scripts/pico_manager_thread_server.py "
         f"--input-source {config.pico_input_source} "
+        f"--hand-task {config.hand_task} "
         f"--zmq_feedback_host {pico_feedback_host} "
         f"--zmq_feedback_port {config.pico_zmq_feedback_port}"
     )
@@ -539,6 +606,14 @@ def main(config: DataCollectionLaunchConfig):
     print("    Pane 2 (top-right):    Data Exporter  <-- you are here")
     if config.camera_viewer:
         print("    Pane 3 (bottom-right): Camera Viewer")
+    if profile_log_dir is not None:
+        print()
+        print("  Profile logs:")
+        print(f"    {profile_log_dir}")
+        print("    cxx_deploy.log       - C++ loop timing / Policy us")
+        print("    data_exporter.log    - Data Exporter Profile")
+        if config.camera_viewer:
+            print("    camera_viewer.log    - CameraViewerProfile")
     print()
     print("  ** deploy.sh (pane 0) is waiting for confirmation --")
     print("     click on pane 0 and press Enter to proceed **")

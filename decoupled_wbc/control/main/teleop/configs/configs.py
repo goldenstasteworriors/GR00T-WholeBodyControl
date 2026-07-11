@@ -65,6 +65,19 @@ def override_wbc_config(
         # update waist pitch damping, index 14
         wbc_config["MOTOR_KD"][14] = wbc_config["MOTOR_KD"][14] - 10
 
+    if config.env_type == "sim" and config.with_hands:
+        wbc_config["ROBOT_SCENE"] = (
+            "decoupled_wbc/control/robot_model/model_data/g1/scene_29dof_activated3dex.xml"
+        )
+        wbc_config["NUM_HAND_MOTORS"] = 7
+        wbc_config["NUM_HAND_JOINTS"] = 7
+        wbc_config["HAND_TYPE"] = "dex3"
+    elif not config.with_hands:
+        wbc_config["ROBOT_SCENE"] = "decoupled_wbc/control/robot_model/model_data/g1/scene_29dof.xml"
+        wbc_config["NUM_HAND_MOTORS"] = 0
+        wbc_config["NUM_HAND_JOINTS"] = 0
+        wbc_config["HAND_TYPE"] = "none"
+
     return wbc_config
 
 

@@ -31,6 +31,8 @@ class TeleopPolicy(Policy):
         replay_speed: float = 1.0,
         wait_for_activation: int = 5,
         activate_keyboard_listener: bool = True,
+        return_to_initial_duration: float = 2.0,
+        activation_hold_duration: float = 0.5,
     ):
         if activate_keyboard_listener:
             from decoupled_wbc.control.utils.keyboard_dispatcher import KeyboardListenerSubscriber
@@ -54,6 +56,12 @@ class TeleopPolicy(Policy):
         self.robot_model = robot_model
         self.retargeting_ik = retargeting_ik
         self.is_active = False
+        self.return_to_initial_duration = return_to_initial_duration
+        self.activation_hold_duration = activation_hold_duration
+        self._teleop_state = "paused"
+        self._return_deadline: Optional[float] = None
+        self._activation_deadline: Optional[float] = None
+        self._initial_upper_body_pose = robot_model.get_initial_upper_body_pose().copy()
 
         self.latest_left_wrist_data = np.eye(4)
         self.latest_right_wrist_data = np.eye(4)
@@ -75,7 +83,9 @@ class TeleopPolicy(Policy):
 
         action = {}
 
-        # Process streamer data if active
+        # Process streamer data only after the arming hold has completed.  During
+        # pause and return-to-initial phases the upper-body target is explicitly
+        # held at the safe initial pose instead of retaining a stale IK target.
         if self.is_active and streamer_output.ik_data:
             body_data = streamer_output.ik_data["body_data"]
             left_hand_data = streamer_output.ik_data["left_hand_data"]
@@ -126,10 +136,23 @@ class TeleopPolicy(Policy):
             }
         )
 
-        # Run retargeting IK
-        if "ik_data" in action:
-            self.retargeting_ik.set_goal(action["ik_data"])
-        action["target_upper_body_pose"] = self.retargeting_ik.get_action()
+        # Run retargeting IK only in active teleoperation.  A return command is
+        # published with one fixed deadline so the control-side interpolator can
+        # generate a continuous, bounded trajectory to the initial pose.
+        if self._teleop_state == "returning":
+            action["target_upper_body_pose"] = self._initial_upper_body_pose.copy()
+            action["target_time"] = self._return_deadline
+        elif self._teleop_state in {"paused", "arming"}:
+            action["target_upper_body_pose"] = self._initial_upper_body_pose.copy()
+        else:
+            if "ik_data" in action:
+                self.retargeting_ik.set_goal(action["ik_data"])
+            action["target_upper_body_pose"] = self.retargeting_ik.get_action()
+
+        if self._teleop_state in {"returning", "paused", "arming"}:
+            # A clutch/return operation must not preserve a joystick command
+            # that was held when A+X was pressed.
+            action["navigate_cmd"] = np.zeros(3)
 
         return action
 
@@ -143,27 +166,81 @@ class TeleopPolicy(Policy):
         toggle_activation_by_keyboard = key == "l"
         reset_teleop_policy_by_keyboard = key == "k"
         toggle_activation_by_teleop = teleop_data.get("toggle_activation", False)
+        set_active = teleop_data.get("set_active", None)
 
         if reset_teleop_policy_by_keyboard:
             print("Resetting teleop policy")
             self.reset()
 
-        if toggle_activation_by_keyboard or toggle_activation_by_teleop:
-            self.is_active = not self.is_active
-            if self.is_active:
-                print("Starting teleop policy")
+        now = time.monotonic()
 
-                if wait_for_activation > 0 and toggle_activation_by_keyboard:
-                    print(f"Sleeping for {wait_for_activation} seconds before starting teleop...")
-                    for i in range(wait_for_activation, 0, -1):
-                        print(f"Starting in {i}...")
-                        time.sleep(1)
+        if self._teleop_state == "returning":
+            if now >= self._return_deadline:
+                self._enter_paused()
+            return
 
-                # dda: calibration logic should use current IK data
-                self.teleop_streamer.calibrate()
-                print("Teleop policy calibrated")
-            else:
-                print("Stopping teleop policy")
+        if self._teleop_state == "arming":
+            if now >= self._activation_deadline:
+                self._teleop_state = "active"
+                self.is_active = True
+                self._activation_deadline = None
+                print("Teleop policy active")
+            return
+
+        # A+B+X+Y sends an explicit set_active=False together with the
+        # lower-body emergency-stop request.  Preserve the existing last upper
+        # body target for that separate emergency path; the A+X clutch path
+        # below is the only path that performs a controlled return-to-initial.
+        if set_active is False:
+            self.is_active = False
+            self._teleop_state = "emergency_paused"
+            self._return_deadline = None
+            self._activation_deadline = None
+            print("Teleop stopped by emergency request")
+            return
+
+        requested_active = None
+        if set_active is not None:
+            requested_active = bool(set_active)
+        elif toggle_activation_by_keyboard or toggle_activation_by_teleop:
+            requested_active = self._teleop_state in {"paused", "emergency_paused"}
+
+        if requested_active is None:
+            return
+
+        if requested_active:
+            self._arm_teleop(now)
+        elif self._teleop_state == "active":
+            self._start_return_to_initial(now)
+
+    def _start_return_to_initial(self, now: float) -> None:
+        """Safely leave teleoperation through a time-bounded initial-pose return."""
+        self.is_active = False
+        self._teleop_state = "returning"
+        self._return_deadline = now + self.return_to_initial_duration
+        print(
+            "Pausing teleop: returning upper body to the initial pose "
+            f"over {self.return_to_initial_duration:.1f}s"
+        )
+
+    def _enter_paused(self) -> None:
+        self.is_active = False
+        self._teleop_state = "paused"
+        self._return_deadline = None
+        self.retargeting_ik.reset()
+        print("Teleop paused at the initial pose")
+
+    def _arm_teleop(self, now: float) -> None:
+        """Calibrate at the already-held initial pose before accepting IK motion."""
+        self.is_active = False
+        self.retargeting_ik.reset()
+        self.teleop_streamer.calibrate()
+        self._teleop_state = "arming"
+        self._activation_deadline = now + self.activation_hold_duration
+        print(
+            "Teleop calibrated at the initial pose; holding for "
+            f"{self.activation_hold_duration:.1f}s before activation"
+        )
 
     @contextmanager
     def activate(self):

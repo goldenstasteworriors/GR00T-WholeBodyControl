@@ -1,6 +1,12 @@
+import os
+import threading
 from typing import Dict
 
 import numpy as np
+from gear_sonic.utils.data_collection.inspire_hand_tasks import (
+    DEFAULT_HAND_TASK,
+    resolve_hand_task_pose,
+)
 from unitree_sdk2py.core.channel import ChannelPublisher
 from unitree_sdk2py.idl.default import unitree_go_msg_dds__MotorCmd_, unitree_hg_msg_dds__HandCmd_
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorCmds_
@@ -159,38 +165,56 @@ INSPIRE_GRASP_Q = np.array([0.0, 0.0, 0.0, 0.0, 1.0, 0.5], dtype=np.float64)
 class InspireHandCommandSender:
     """Publish RH56DFTP Inspire hand commands on Unitree's shared DDS topic."""
 
+    _shared_lock = threading.Lock()
+    _shared_hand_task: str | None = None
+    _shared_left_q: np.ndarray | None = None
+    _shared_right_q: np.ndarray | None = None
+
     def __init__(self, is_left: bool = True):
         self.is_left = is_left
+        self.hand_task = os.environ.get("SONIC_HAND_TASK", DEFAULT_HAND_TASK)
         self.cmd_pub = ChannelPublisher("rt/inspire/cmd", MotorCmds_)
         self.cmd_pub.Init()
         self.cmd = MotorCmds_([unitree_go_msg_dds__MotorCmd_() for _ in range(12)])
-        self._last_left_q = INSPIRE_OPEN_Q.copy()
-        self._last_right_q = INSPIRE_OPEN_Q.copy()
+        task_open_q = np.asarray(resolve_hand_task_pose(self.hand_task, pressed=False), dtype=np.float64)
+        with self._shared_lock:
+            if (
+                self.__class__._shared_hand_task != self.hand_task
+                or self.__class__._shared_left_q is None
+                or self.__class__._shared_right_q is None
+            ):
+                self.__class__._shared_hand_task = self.hand_task
+                self.__class__._shared_left_q = task_open_q.copy()
+                self.__class__._shared_right_q = task_open_q.copy()
 
     def send_command(self, cmd: np.ndarray):
         q = np.asarray(cmd, dtype=np.float64)
         if q.shape[0] == INSPIRE_LEGACY_HAND_DOF:
-            q = self.legacy_dex3_to_inspire(q)
+            q = self.legacy_dex3_to_inspire(q, self.hand_task)
         elif q.shape[0] != INSPIRE_HAND_DOF:
             raise ValueError(f"Inspire hand command must have 6 or 7 values, got {q.shape[0]}")
 
         q = np.clip(q, 0.0, 1.0)
-        if self.is_left:
-            self._last_left_q = q.copy()
-        else:
-            self._last_right_q = q.copy()
+        with self._shared_lock:
+            if self.is_left:
+                self.__class__._shared_left_q = q.copy()
+            else:
+                self.__class__._shared_right_q = q.copy()
 
-        left_q = self._last_left_q
-        right_q = self._last_right_q
-        for i, value in enumerate(right_q):
-            self.cmd.cmds[i].q = float(value)
-        for i, value in enumerate(left_q):
-            self.cmd.cmds[i + INSPIRE_HAND_DOF].q = float(value)
+            left_q = self.__class__._shared_left_q
+            right_q = self.__class__._shared_right_q
+            assert left_q is not None and right_q is not None
+            for i, value in enumerate(right_q):
+                self.cmd.cmds[i].q = float(value)
+            for i, value in enumerate(left_q):
+                self.cmd.cmds[i + INSPIRE_HAND_DOF].q = float(value)
 
-        self.cmd_pub.Write(self.cmd)
+            self.cmd_pub.Write(self.cmd)
 
     @staticmethod
-    def legacy_dex3_to_inspire(cmd: np.ndarray) -> np.ndarray:
+    def legacy_dex3_to_inspire(cmd: np.ndarray, hand_task: str = "pick_up_pipette") -> np.ndarray:
         """Map the existing 7-DOF Dex3 command shape to binary Inspire open/grasp."""
         grasp = np.max(np.abs(cmd)) > 0.05
-        return INSPIRE_GRASP_Q.copy() if grasp else INSPIRE_OPEN_Q.copy()
+        if not grasp:
+            return np.asarray(resolve_hand_task_pose(hand_task, pressed=False), dtype=np.float64)
+        return np.asarray(resolve_hand_task_pose(hand_task, pressed=True), dtype=np.float64)

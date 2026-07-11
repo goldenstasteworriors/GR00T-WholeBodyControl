@@ -36,6 +36,11 @@ import torch
 import zmq
 
 from gear_sonic.utils.teleop import input_readers
+from gear_sonic.utils.data_collection.inspire_hand_tasks import (
+    DEFAULT_HAND_TASK,
+    HAND_TASK_CONFIG_ENV,
+    available_hand_tasks,
+)
 from gear_sonic.utils.teleop.zmq.zmq_poller import ZMQPoller
 from gear_sonic.trl.utils.rotation_conversion import decompose_rotation_aa
 from gear_sonic.trl.utils.torch_transform import (
@@ -1609,14 +1614,17 @@ def run_pico(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     input_source: str = "xrt",
+    hand_task: str = DEFAULT_HAND_TASK,
 ):
     """Run body tracking with real-time visualization and ZMQ streaming."""
     reader = _init_input_source(input_source, buffer_size)
+    os.environ["SONIC_HAND_TASK"] = hand_task
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     socket.bind(f"tcp://*:{port}")
     time.sleep(0.1)
     print(f"ZMQ socket bound to port {port}")
+    print(f"Hand task: {hand_task}")
     if build_command_message is not None and build_planner_message is not None:
         try:
             socket.send(build_command_message(start=False, stop=False, planner=False))
@@ -1912,6 +1920,7 @@ def run_pico_manager(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     input_source: str = "xrt",
+    hand_task: str = DEFAULT_HAND_TASK,
 ):
     """
     Manager: creates shared PUB socket and runs pose/planner streamers based on current mode.
@@ -1920,12 +1929,14 @@ def run_pico_manager(
       A+B+X+Y: Toggle policy start/stop
     """
     reader = _init_input_source(input_source, buffer_size)
+    os.environ["SONIC_HAND_TASK"] = hand_task
 
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     socket.bind(f"tcp://*:{port}")
     time.sleep(0.1)
     print(f"[Manager] ZMQ socket bound to port {port}")
+    print(f"[Manager] Hand task: {hand_task}")
 
     # Print available locomotion modes
     try:
@@ -2251,7 +2262,24 @@ if __name__ == "__main__":
             "'isaac-teleop' for in-process IsaacTeleop / CloudXR DeviceIO"
         ),
     )
+    parser.add_argument(
+        "--hand-task",
+        type=str,
+        default=DEFAULT_HAND_TASK,
+        help="Task-specific dexterous hand mapping name from inspire_hand_tasks.json.",
+    )
+    parser.add_argument(
+        "--hand-task-config",
+        type=str,
+        default="",
+        help="Optional path to inspire_hand_tasks.json. Defaults to the project config.",
+    )
     args = parser.parse_args()
+    if args.hand_task_config:
+        os.environ[HAND_TASK_CONFIG_ENV] = args.hand_task_config
+    known_tasks = available_hand_tasks()
+    if args.hand_task not in known_tasks:
+        raise ValueError(f"Unknown --hand-task {args.hand_task!r}. Known tasks: {', '.join(known_tasks)}")
 
     # Standalone VR3Pt test modes (exit after finishing)
     if args.vr3pt_test:
@@ -2292,6 +2320,7 @@ if __name__ == "__main__":
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
             input_source=args.input_source,
+            hand_task=args.hand_task,
         )
     else:
         # Run legacy single-thread pose streaming
@@ -2308,4 +2337,5 @@ if __name__ == "__main__":
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
             input_source=args.input_source,
+            hand_task=args.hand_task,
         )
