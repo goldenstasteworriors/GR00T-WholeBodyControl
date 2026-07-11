@@ -131,6 +131,8 @@ class G1Env(HumanoidEnv):
             right_hand_ddq = right_hand_obs["hand_ddq"]
             left_hand_tau_est = left_hand_obs["hand_tau_est"]
             right_hand_tau_est = right_hand_obs["hand_tau_est"]
+            left_hand_inspire_q = left_hand_obs.get("inspire_hand_q")
+            right_hand_inspire_q = right_hand_obs.get("inspire_hand_q")
 
             # Body and hand joint measurements come in actuator order, so we need to convert them to joint order
             whole_q = self.robot_model.get_configuration_from_actuated_joints(
@@ -182,6 +184,9 @@ class G1Env(HumanoidEnv):
             "torso_quat": body_obs["torso_quat"],
             "torso_ang_vel": body_obs["torso_ang_vel"],
         }
+        if self.with_hands and left_hand_inspire_q is not None and right_hand_inspire_q is not None:
+            obs["left_hand_inspire_q"] = left_hand_inspire_q
+            obs["right_hand_inspire_q"] = right_hand_inspire_q
 
         if self.use_sim and self.sim:
             obs.update(self.sim.get_privileged_obs())
