@@ -32,7 +32,7 @@ class TeleopPolicy(Policy):
         wait_for_activation: int = 5,
         activate_keyboard_listener: bool = True,
         activation_hold_duration: float = 0.5,
-        resume_max_joint_delta: float = 0.02,
+        resume_max_joint_delta: float = 0.005,
     ):
         if activate_keyboard_listener:
             from decoupled_wbc.control.utils.keyboard_dispatcher import KeyboardListenerSubscriber
@@ -97,8 +97,8 @@ class TeleopPolicy(Policy):
         action = {}
 
         # Process streamer data only after the arming hold has completed. During
-        # clutch pause the upper-body target is the measured pose at the instant
-        # of pause, never an old IK target or the nominal initial pose.
+        # clutch pause the upper-body target is the last command sent to the
+        # controller, so the pause itself never changes the commanded target.
         if self.is_active and streamer_output.ik_data:
             body_data = streamer_output.ik_data["body_data"]
             left_hand_data = streamer_output.ik_data["left_hand_data"]
@@ -156,14 +156,27 @@ class TeleopPolicy(Policy):
         else:
             if "ik_data" in action:
                 self.retargeting_ik.set_goal(action["ik_data"])
-            target = self.retargeting_ik.get_action()
+            raw_target = self.retargeting_ik.get_action()
+            target = raw_target
             if self._resume_ramp_deadline is not None:
                 target = np.clip(
                     target,
                     self._last_safe_upper_target - self.resume_max_joint_delta,
                     self._last_safe_upper_target + self.resume_max_joint_delta,
                 )
-                if time.monotonic() >= self._resume_ramp_deadline:
+                # Do not remove the limiter merely because the initial hold
+                # elapsed: doing so could release a large latent IK delta in a
+                # single control cycle.  Keep rate-limiting until the IK result
+                # has caught up with the commanded target.
+                if (
+                    time.monotonic() >= self._resume_ramp_deadline
+                    and np.allclose(
+                        raw_target,
+                        target,
+                        atol=self.resume_max_joint_delta,
+                        rtol=0.0,
+                    )
+                ):
                     self._resume_ramp_deadline = None
             action["target_upper_body_pose"] = target
             self._last_safe_upper_target = target.copy()
@@ -229,22 +242,26 @@ class TeleopPolicy(Policy):
             self._enter_clutch_pause()
 
     def _enter_clutch_pause(self) -> None:
-        """Freeze the measured robot pose and use it as the next IK reference."""
+        """Hold the last controller target and use it as the next IK reference."""
         self.is_active = False
         self._teleop_state = "paused"
+        upper_indices = self.robot_model.get_joint_group_indices("upper_body")
         if self._latest_robot_q is not None:
             self._held_body_q = self._latest_robot_q.copy()
         else:
             self._held_body_q = self.robot_model.default_body_pose.copy()
-            upper_indices = self.robot_model.get_joint_group_indices("upper_body")
-            self._held_body_q[upper_indices] = self._last_safe_upper_target
-            print("WARNING: no fresh robot state while pausing; holding last commanded pose")
-        upper_indices = self.robot_model.get_joint_group_indices("upper_body")
-        self._held_upper_body_pose = self._held_body_q[upper_indices].copy()
-        self._last_safe_upper_target = self._held_upper_body_pose.copy()
+            print("WARNING: no fresh robot state while pausing; using nominal lower-body reference")
+
+        # Feedback q can lag the interpolated command slightly, especially at
+        # the wrists under gravity.  Replacing the command with feedback here
+        # creates the visible downward step reported at pause.  Retain feedback
+        # for the non-upper-body reference, but always hold the last published
+        # upper-body command exactly.
+        self._held_body_q[upper_indices] = self._last_safe_upper_target
+        self._held_upper_body_pose = self._last_safe_upper_target.copy()
         self._resume_ramp_deadline = None
         self.retargeting_ik.reset(reference_full_q=self._held_body_q)
-        print("Teleop paused: holding the current upper-body pose")
+        print("Teleop paused: holding the last commanded upper-body pose")
 
     def _arm_teleop(self, now: float) -> None:
         """Rebase PICO at the held robot pose before accepting IK motion."""
