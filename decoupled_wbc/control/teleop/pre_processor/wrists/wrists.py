@@ -21,7 +21,7 @@ class WristsPreProcessor(PreProcessor):
 
         self.latest_data = None
 
-    def calibrate(self, data, control_device):
+    def calibrate(self, data, control_device, reference_body_q=None):
         left_elbow_joint_name = self.robot.supplemental_info.joint_name_mapping["elbow_pitch"][
             "left"
         ]
@@ -40,7 +40,16 @@ class WristsPreProcessor(PreProcessor):
             )
 
         if self.calibration_ee_pose:
-            q = deepcopy(self.robot.q_zero)
+            q = (
+                deepcopy(self.robot.q_zero)
+                if reference_body_q is None
+                else np.asarray(reference_body_q, dtype=np.float64).copy()
+            )
+            if q.shape != self.robot.q_zero.shape:
+                raise ValueError(
+                    f"reference_body_q shape {q.shape} does not match robot configuration "
+                    f"shape {self.robot.q_zero.shape}"
+                )
             # set pose
             for joint, degree in self.calibration_ee_pose.items():
                 joint_idx = self.robot.joint_to_dof_index[joint]

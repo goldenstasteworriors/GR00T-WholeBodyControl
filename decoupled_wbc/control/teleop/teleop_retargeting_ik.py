@@ -123,14 +123,29 @@ class TeleopRetargetingIK(Policy):
 
         return body_q
 
-    def reset(self):
+    def reset(self, reference_full_q: np.ndarray | None = None):
         """Reset the robot model and IK solvers to the initial state, and re-activate the warmup procedure."""
-        self.body.reset_forward_kinematics()  # self.body is the same one as self.body_ik_solver.robot
-        self.full_robot.reset_forward_kinematics()
-        self.body_ik_solver.initialize()
+        if reference_full_q is None:
+            reference_full_q = self.full_robot.default_body_pose.copy()
+        else:
+            reference_full_q = np.asarray(reference_full_q, dtype=np.float64).copy()
+            if reference_full_q.shape != self.full_robot.default_body_pose.shape:
+                raise ValueError(
+                    f"reference_full_q shape {reference_full_q.shape} does not match "
+                    f"robot configuration shape {self.full_robot.default_body_pose.shape}"
+                )
+
+        if self.using_reduced_robot_model:
+            reference_body_q = self.body.full_to_reduced_configuration(reference_full_q)
+        else:
+            reference_body_q = reference_full_q
+
+        self.body.cache_forward_kinematics(reference_body_q, auto_clip=False)
+        self.full_robot.cache_forward_kinematics(reference_full_q, auto_clip=False)
+        self.body_ik_solver.initialize(reference_body_q)
         # If in the future, the hand IK solver has initialize method, call it
         self._most_recent_ik_data = None
-        self._most_recent_q = self.full_robot.default_body_pose.copy()
+        self._most_recent_q = reference_full_q
         self.in_warmup = True
 
     def set_goal(self, ik_data: dict):
