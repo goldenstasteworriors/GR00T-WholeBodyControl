@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 import io
 import json
+import queue
 import shutil
 import subprocess
 import threading
@@ -146,7 +147,7 @@ class TimeDeltaException(Exception):
 
 
 class AudioCue:
-    """Best-effort local tone cues for recording state changes."""
+    """Serialize local tone cues so one state change cannot cut off another."""
 
     def __init__(self, volume: float = 0.35, sample_rate: int = 44100):
         self.volume = volume
@@ -174,22 +175,31 @@ class AudioCue:
             "stop": [(1175, 0.08), (880, 0.12)],
             "discard": [(260, 0.18), (0, 0.04), (180, 0.24), (0, 0.04), (140, 0.28)],
         }
+        self._playback_queue: queue.Queue[tuple[list[tuple[int, float]], float]] = queue.Queue()
+        self._playback_worker = threading.Thread(target=self._run_playback_worker, daemon=True)
+        self._playback_worker.start()
 
     def play(self, cue: str, *, volume: float | None = None) -> None:
         pattern = self.patterns.get(cue)
         if pattern is None:
             return
-        threading.Thread(
-            target=self._play_pattern,
-            args=(pattern, self.volume if volume is None else volume),
-            daemon=True,
-        ).start()
+        self._playback_queue.put((pattern, self.volume if volume is None else volume))
+
+    def _run_playback_worker(self) -> None:
+        while True:
+            pattern, volume = self._playback_queue.get()
+            try:
+                self._play_pattern(pattern, volume)
+            finally:
+                self._playback_queue.task_done()
 
     def _play_pattern(self, pattern: list[tuple[int, float]], volume: float) -> None:
         try:
             samples = self._make_samples(pattern, volume)
             if self._sd is not None:
-                self._sd.play(samples, self.sample_rate, blocking=False)
+                # sounddevice has one shared output stream. Blocking inside the
+                # dedicated worker keeps a later cue from interrupting this one.
+                self._sd.play(samples, self.sample_rate, blocking=True)
             elif self._audio_cmd is not None:
                 subprocess.Popen(
                     self._audio_cmd,
