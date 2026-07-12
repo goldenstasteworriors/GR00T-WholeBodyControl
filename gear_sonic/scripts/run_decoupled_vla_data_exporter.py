@@ -119,8 +119,8 @@ class DecoupledVLADataExporterConfig:
     record_wrist_cameras: bool = False
     """Record left_wrist/right_wrist camera streams if the camera server provides them."""
 
-    text_to_speech: bool = True
-    """Use text-to-speech voice feedback."""
+    text_to_speech: bool = False
+    """Use optional text-to-speech voice feedback; local tone cues are separate."""
 
     audio_cues: bool = True
     """Use local tone cues for start, stop and discard events."""

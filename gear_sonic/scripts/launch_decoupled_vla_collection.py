@@ -228,8 +228,8 @@ class DecoupledVLACollectionLaunchConfig:
     record_wrist_cameras: bool = False
     """Record wrist camera streams if provided by the camera server."""
 
-    text_to_speech: bool = True
-    """Enable voice feedback in the exporter."""
+    text_to_speech: bool = False
+    """Enable optional voice feedback in the exporter; tone cues remain enabled by default."""
 
     audio_cues: bool = True
     """Enable local tone cues in the exporter."""
