@@ -22,6 +22,11 @@ class WristsPreProcessor(PreProcessor):
         self.latest_data = None
 
     def calibrate(self, data, control_device, reference_body_q=None):
+        # A+X can recalibrate repeatedly.  Rebuild the reference set instead
+        # of retaining duplicate end-effector entries from an earlier session.
+        self.calibration_ee_pose.clear()
+        self.ee_name_list.clear()
+
         left_elbow_joint_name = self.robot.supplemental_info.joint_name_mapping["elbow_pitch"][
             "left"
         ]
@@ -50,10 +55,14 @@ class WristsPreProcessor(PreProcessor):
                     f"reference_body_q shape {q.shape} does not match robot configuration "
                     f"shape {self.robot.q_zero.shape}"
                 )
-            # set pose
-            for joint, degree in self.calibration_ee_pose.items():
-                joint_idx = self.robot.joint_to_dof_index[joint]
-                q[joint_idx] = np.deg2rad(degree)
+            # The initial startup calibration uses a fixed elbow reference.
+            # During A+X resume, reference_body_q is the held robot pose and
+            # must remain intact so a stationary PICO maps back to the same
+            # end-effector pose rather than creating a new IK displacement.
+            if reference_body_q is None:
+                for joint, degree in self.calibration_ee_pose.items():
+                    joint_idx = self.robot.joint_to_dof_index[joint]
+                    q[joint_idx] = np.deg2rad(degree)
             self.robot.cache_forward_kinematics(q, auto_clip=False)
             calibration_ee_poses = [
                 self.robot.frame_placement(ee_name).np for ee_name in self.ee_name_list
