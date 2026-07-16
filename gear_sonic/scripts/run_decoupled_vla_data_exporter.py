@@ -314,6 +314,17 @@ def _vr_orientation_to_rot6d(value: Any) -> np.ndarray:
     return np.zeros(18, dtype=np.float32)
 
 
+def _body_state_joint_indices(robot_model, joint_names: list[str]) -> list[int]:
+    """Map full robot-model DOF indices into the exported 29-DOF body state."""
+    body_state_index = {
+        full_dof_index: state_index
+        for state_index, full_dof_index in enumerate(
+            robot_model.get_body_actuated_joint_indices()
+        )
+    }
+    return [body_state_index[robot_model.dof_index(name)] for name in joint_names]
+
+
 def unpack_pose_message(packed_data: bytes, topic: str) -> dict:
     """Unpack pico_manager_thread_server packed topic messages."""
     header_size = 1280
@@ -454,22 +465,22 @@ class DecoupledVLADataCollector:
         self._initial_yaw: float | None = None
         self._episode_init_base_quat: np.ndarray | None = None
 
-        self._left_wrist_indices = [
-            self.robot_model.dof_index(name)
-            for name in [
+        self._left_wrist_indices = _body_state_joint_indices(
+            self.robot_model,
+            [
                 "left_wrist_roll_joint",
                 "left_wrist_pitch_joint",
                 "left_wrist_yaw_joint",
-            ]
-        ]
-        self._right_wrist_indices = [
-            self.robot_model.dof_index(name)
-            for name in [
+            ],
+        )
+        self._right_wrist_indices = _body_state_joint_indices(
+            self.robot_model,
+            [
                 "right_wrist_roll_joint",
                 "right_wrist_pitch_joint",
                 "right_wrist_yaw_joint",
-            ]
-        ]
+            ],
+        )
 
         print(f"Recording to {self.data_exporter.meta.root}")
         print(
