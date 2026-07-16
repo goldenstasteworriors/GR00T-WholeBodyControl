@@ -7,6 +7,7 @@ import numpy as np
 from gear_sonic.scripts.pico_manager_thread_server import PoseStreamer, _raw_xr_3pt_pose
 from gear_sonic.scripts.run_decoupled_vla_data_exporter import (
     DecoupledVLADataCollector,
+    _body_state_joint_indices,
     unpack_pose_message,
 )
 from gear_sonic.utils.teleop.zmq.zmq_planner_sender import pack_pose_message
@@ -38,6 +39,23 @@ class _YawAccumulator:
         return 0.0
 
 
+class _RobotModel:
+    _dof_indices = {
+        "left_wrist_roll_joint": 19,
+        "left_wrist_pitch_joint": 20,
+        "left_wrist_yaw_joint": 21,
+        "right_wrist_roll_joint": 33,
+        "right_wrist_pitch_joint": 34,
+        "right_wrist_yaw_joint": 35,
+    }
+
+    def get_body_actuated_joint_indices(self):
+        return list(range(22)) + list(range(29, 36))
+
+    def dof_index(self, name):
+        return self._dof_indices[name]
+
+
 def test_raw_xr_3pt_pose_is_head_relative_and_z_up():
     identity = [0.0, 0.0, 0.0, 1.0]
     left = np.array([1.0, 0.0, 0.0, *identity])
@@ -49,6 +67,19 @@ def test_raw_xr_3pt_pose_is_head_relative_and_z_up():
     assert pose is not None
     np.testing.assert_allclose(pose[:, :3], [[0.0, -1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
     np.testing.assert_allclose(pose[:, 3:], [[1.0, 0.0, 0.0, 0.0]] * 3)
+
+
+def test_right_wrist_indices_are_mapped_into_29dof_body_state():
+    indices = _body_state_joint_indices(
+        _RobotModel(),
+        [
+            "right_wrist_roll_joint",
+            "right_wrist_pitch_joint",
+            "right_wrist_yaw_joint",
+        ],
+    )
+
+    assert indices == [26, 27, 28]
 
 
 def test_vr3pt_only_stream_message_does_not_synthesize_smpl(monkeypatch):
