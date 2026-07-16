@@ -579,12 +579,16 @@ class DecoupledVLADataCollector:
         if self._extract_bool(pose_data, "toggle_data_abort"):
             self._manager_toggle_da = True
 
-        if "smpl_joints" not in pose_data:
+        has_smpl = "smpl_joints" in pose_data
+        has_vr_3pt = "vr_position" in pose_data or "vr_orientation" in pose_data
+        if not has_smpl and not has_vr_3pt:
             return
 
-        smpl_joints = pose_data["smpl_joints"]
-        if smpl_joints.ndim == 3:
-            smpl_joints = smpl_joints[0]
+        smpl_joints = np.zeros((24, 3), dtype=np.float32)
+        if has_smpl:
+            smpl_joints = pose_data["smpl_joints"]
+            if smpl_joints.ndim == 3:
+                smpl_joints = smpl_joints[0]
 
         smpl_pose = np.zeros(63, dtype=np.float32)
         if "smpl_pose" in pose_data:
@@ -618,6 +622,7 @@ class DecoupledVLADataCollector:
             heading_increment = float(pose_data["heading_increment"].flat[0])
 
         self.latest_sonic_msg = {
+            "has_smpl": has_smpl,
             "smpl_joints": np.asarray(smpl_joints, dtype=np.float32),
             "smpl_pose": smpl_pose,
             "body_quat_w": body_quat_w,
@@ -896,9 +901,14 @@ class DecoupledVLADataCollector:
             stream_mode = self.config.default_stream_mode_when_pose_available
         frame_data["teleop.stream_mode"] = np.array([stream_mode], dtype=np.int32)
 
-        use_smpl = smpl_fresh and (
-            stream_mode in (1, 4)
-            or self.config.use_sonic_pose_when_stream_off
+        use_smpl = (
+            smpl_fresh
+            and smpl_msg is not None
+            and bool(smpl_msg.get("has_smpl", True))
+            and (
+                stream_mode in (1, 4)
+                or self.config.use_sonic_pose_when_stream_off
+            )
         )
         use_planner = planner_fresh and stream_mode == 5
 
@@ -987,7 +997,7 @@ class DecoupledVLADataCollector:
         )
         frame_data["teleop.vr_3pt_orientation"] = _vr_orientation_to_rot6d(vr_orientation)
 
-        if use_smpl and smpl_age is not None:
+        if smpl_fresh and smpl_age is not None:
             self.sonic_timing_monitor.log_time_delta(smpl_age)
             return smpl_age * 1000.0
         if use_planner and planner_age is not None:
