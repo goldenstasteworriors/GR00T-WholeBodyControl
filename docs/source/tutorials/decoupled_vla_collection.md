@@ -35,8 +35,11 @@ The launcher starts a tmux session with:
 - camera viewer
 - optional PICO metadata streamer for `teleop.smpl_*` and `teleop.vr_3pt_*`
 
-If the extra PICO metadata streamer conflicts with the decoupled PICO teleop
-streamer on your machine, disable it:
+The metadata streamer and decoupled teleop reuse the same RoboticsService
+process. Full-body tracking is optional: when it is unavailable, the exporter
+still records headset/controller data in `teleop.vr_3pt_*`, while
+`teleop.smpl_*` remains zero-filled. If PICO metadata is not needed, disable the
+extra streamer with:
 
 ```bash
 python gear_sonic/scripts/launch_decoupled_vla_collection.py \
@@ -47,9 +50,9 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
   --no-pico-data-streamer
 ```
 
-With `--no-pico-data-streamer`, the dataset schema stays the same, but
-PICO-only SMPL/VR3PT fields are filled with defaults unless they can be derived
-from decoupled state.
+With `--no-pico-data-streamer`, the dataset schema stays the same, but PICO-only
+SMPL/VR3PT fields are filled with defaults unless they can be derived from
+decoupled state.
 
 ## Simulation
 

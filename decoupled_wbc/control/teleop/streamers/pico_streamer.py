@@ -24,7 +24,21 @@ class PicoStreamer(BaseStreamer):
         self.reset_status(reset_control_enabled=True)
 
     def run_pico_service(self):
-        # Run the pico service
+        existing_service = subprocess.run(
+            ["pgrep", "-f", "[rR]obotics[Ss]ervice"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if existing_service.returncode == 0:
+            self.pico_service_pid = None
+            print(
+                "Pico service is already running; reusing it for decoupled teleop "
+                f"(pid {existing_service.stdout.splitlines()[0]})."
+            )
+            return
+
+        # Run the pico service when this is the first PICO consumer.
         self.pico_service_pid = subprocess.Popen(
             ["bash", "/opt/apps/roboticsservice/runService.sh"]
         )
@@ -36,7 +50,7 @@ class PicoStreamer(BaseStreamer):
             subprocess.Popen(["kill", "-9", str(self.pico_service_pid.pid)])
             print(f"Pico service killed with pid {self.pico_service_pid.pid}")
         else:
-            print("Pico service not running")
+            print("Pico service is shared with another process; leaving it running")
 
     def reset_status(self, reset_control_enabled: bool = False):
         self.current_base_height = 0.74  # Initial base height, 0.74m (standing height)
