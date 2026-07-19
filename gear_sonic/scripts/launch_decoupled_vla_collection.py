@@ -181,8 +181,8 @@ class DecoupledVLACollectionLaunchConfig:
     startup_final_pose_duration: float = 4.0
     """Seconds from the T-pose waypoint to the normal initial pose."""
 
-    startup_final_elbow_angle: float = -0.917191007
-    """Final startup elbow angle; raises both wrists about 15 cm versus elbow zero."""
+    startup_final_elbow_angle: float = -0.34906585
+    """Final startup elbow angle; raises both elbows 20 degrees from zero."""
 
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher type for control loop."""
