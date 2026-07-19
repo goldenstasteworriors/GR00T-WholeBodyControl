@@ -27,8 +27,8 @@ class JointSafetyMonitor:
         enable_viz: bool = False,
         env_type: str = "real",
         startup_t_pose: bool = False,
-        startup_t_pose_duration: float = 2.0,
-        startup_final_pose_duration: float = 2.0,
+        startup_t_pose_duration: float = 4.0,
+        startup_final_pose_duration: float = 4.0,
     ):
         """Initialize joint safety monitor.
 

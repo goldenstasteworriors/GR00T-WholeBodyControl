@@ -175,11 +175,14 @@ class DecoupledVLACollectionLaunchConfig:
     startup_t_pose: bool = False
     """Route the startup arm ramp through a verified G1 T-pose waypoint."""
 
-    startup_t_pose_duration: float = 2.0
+    startup_t_pose_duration: float = 4.0
     """Seconds from the measured startup pose to the T-pose waypoint."""
 
-    startup_final_pose_duration: float = 2.0
+    startup_final_pose_duration: float = 4.0
     """Seconds from the T-pose waypoint to the normal initial pose."""
+
+    startup_final_elbow_angle: float = -0.917191007
+    """Final startup elbow angle; raises both wrists about 15 cm versus elbow zero."""
 
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher type for control loop."""
@@ -407,6 +410,8 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.startup_t_pose_duration),
         "--startup-final-pose-duration",
         str(config.startup_final_pose_duration),
+        "--startup-final-elbow-angle",
+        str(config.startup_final_elbow_angle),
         "--keyboard-dispatcher-type",
         config.keyboard_dispatcher_type,
         *_bool_arg("enable-waist", config.enable_waist),
