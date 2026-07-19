@@ -28,6 +28,7 @@ class JointSafetyMonitor:
         env_type: str = "real",
         startup_t_pose: bool = False,
         startup_t_pose_duration: float = 4.0,
+        startup_elbow_pose_duration: float = 4.0,
         startup_final_pose_duration: float = 4.0,
     ):
         """Initialize joint safety monitor.
@@ -42,8 +43,12 @@ class JointSafetyMonitor:
         self.enable_viz = enable_viz
         self.env_type = env_type
 
-        if startup_t_pose_duration <= 0 or startup_final_pose_duration <= 0:
-            raise ValueError("Startup pose durations must both be greater than zero")
+        if (
+            startup_t_pose_duration <= 0
+            or startup_elbow_pose_duration <= 0
+            or startup_final_pose_duration <= 0
+        ):
+            raise ValueError("Startup pose durations must all be greater than zero")
 
         # Startup ramping parameters. The optional T-pose waypoint is used only
         # here; after startup_complete becomes true, teleoperation actions pass
@@ -51,11 +56,16 @@ class JointSafetyMonitor:
         self.control_frequency = 50  # Hz, hardcoded from run_g1_control_loop.py
         self.startup_t_pose = startup_t_pose
         self.startup_t_pose_steps = int(startup_t_pose_duration * self.control_frequency)
+        self.startup_elbow_pose_steps = int(
+            startup_elbow_pose_duration * self.control_frequency
+        )
         final_pose_duration = startup_final_pose_duration if startup_t_pose else 2.0
         self.startup_final_pose_steps = int(final_pose_duration * self.control_frequency)
         self.ramp_duration_steps = self.startup_final_pose_steps
         if startup_t_pose:
-            self.ramp_duration_steps += self.startup_t_pose_steps
+            self.ramp_duration_steps += (
+                self.startup_t_pose_steps + self.startup_elbow_pose_steps
+            )
         self.startup_counter = 0
         self.initial_positions = None
         self.startup_complete = False
@@ -328,6 +338,10 @@ class JointSafetyMonitor:
                     self.robot_model.joint_names[i]
                     for i in self.robot_model.get_joint_group_indices("arms")
                 )
+                elbow_joint_names = {
+                    "left_elbow_joint",
+                    "right_elbow_joint",
+                }
 
                 # Apply ramping only to monitored arm joints
                 for joint_name in self.velocity_limits:  # Only monitored arm joints
@@ -338,8 +352,12 @@ class JointSafetyMonitor:
                         ):
                             initial_pos = self.initial_positions[joint_idx]
                             final_pos = original_action["q"][joint_idx]
-                            if self.startup_t_pose and joint_name in arm_joint_names:
-                                t_pose_pos = t_pose_targets.get(joint_name, 0.0)
+                            if self.startup_t_pose:
+                                t_pose_pos = (
+                                    t_pose_targets.get(joint_name, 0.0)
+                                    if joint_name in arm_joint_names
+                                    else initial_pos
+                                )
                                 if self.startup_counter < self.startup_t_pose_steps:
                                     phase_alpha = (
                                         self.startup_counter / self.startup_t_pose_steps
@@ -347,13 +365,31 @@ class JointSafetyMonitor:
                                     target_pos = initial_pos + phase_alpha * (
                                         t_pose_pos - initial_pos
                                     )
-                                else:
+                                elif self.startup_counter < (
+                                    self.startup_t_pose_steps
+                                    + self.startup_elbow_pose_steps
+                                ):
                                     phase_alpha = (
                                         self.startup_counter - self.startup_t_pose_steps
+                                    ) / self.startup_elbow_pose_steps
+                                    if joint_name in elbow_joint_names:
+                                        target_pos = t_pose_pos + phase_alpha * (
+                                            final_pos - t_pose_pos
+                                        )
+                                    else:
+                                        target_pos = t_pose_pos
+                                else:
+                                    phase_alpha = (
+                                        self.startup_counter
+                                        - self.startup_t_pose_steps
+                                        - self.startup_elbow_pose_steps
                                     ) / self.startup_final_pose_steps
-                                    target_pos = t_pose_pos + phase_alpha * (
-                                        final_pos - t_pose_pos
-                                    )
+                                    if joint_name in elbow_joint_names:
+                                        target_pos = final_pos
+                                    else:
+                                        target_pos = t_pose_pos + phase_alpha * (
+                                            final_pos - t_pose_pos
+                                        )
                             else:
                                 # Hands, and the legacy path without T-pose, use
                                 # one continuous ramp to their normal target.

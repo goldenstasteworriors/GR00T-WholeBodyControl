@@ -178,8 +178,11 @@ class DecoupledVLACollectionLaunchConfig:
     startup_t_pose_duration: float = 4.0
     """Seconds from the measured startup pose to the T-pose waypoint."""
 
+    startup_elbow_pose_duration: float = 4.0
+    """Seconds to move only the elbows from T-pose to their final startup angles."""
+
     startup_final_pose_duration: float = 4.0
-    """Seconds from the T-pose waypoint to the normal initial pose."""
+    """Seconds to move all remaining joints to the normal initial pose."""
 
     startup_final_elbow_angle: float = -0.34906585
     """Final startup elbow angle; raises both elbows 20 degrees from zero."""
@@ -408,6 +411,8 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         *_bool_arg("startup-t-pose", config.startup_t_pose),
         "--startup-t-pose-duration",
         str(config.startup_t_pose_duration),
+        "--startup-elbow-pose-duration",
+        str(config.startup_elbow_pose_duration),
         "--startup-final-pose-duration",
         str(config.startup_final_pose_duration),
         "--startup-final-elbow-angle",
