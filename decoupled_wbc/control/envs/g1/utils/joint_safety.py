@@ -21,7 +21,15 @@ class JointSafetyMonitor:
     ARM_VELOCITY_LIMIT = 6.0  # rad/s for arm joints
     HAND_VELOCITY_LIMIT = 50.0  # rad/s for finger joints
 
-    def __init__(self, robot_model, enable_viz: bool = False, env_type: str = "real"):
+    def __init__(
+        self,
+        robot_model,
+        enable_viz: bool = False,
+        env_type: str = "real",
+        startup_t_pose: bool = False,
+        startup_t_pose_duration: float = 2.0,
+        startup_final_pose_duration: float = 2.0,
+    ):
         """Initialize joint safety monitor.
 
         Args:
@@ -34,9 +42,20 @@ class JointSafetyMonitor:
         self.enable_viz = enable_viz
         self.env_type = env_type
 
-        # Startup ramping parameters
+        if startup_t_pose_duration <= 0 or startup_final_pose_duration <= 0:
+            raise ValueError("Startup pose durations must both be greater than zero")
+
+        # Startup ramping parameters. The optional T-pose waypoint is used only
+        # here; after startup_complete becomes true, teleoperation actions pass
+        # through this method unchanged.
         self.control_frequency = 50  # Hz, hardcoded from run_g1_control_loop.py
-        self.ramp_duration_steps = int(2.0 * self.control_frequency)  # 2 seconds * 50Hz = 100 steps
+        self.startup_t_pose = startup_t_pose
+        self.startup_t_pose_steps = int(startup_t_pose_duration * self.control_frequency)
+        final_pose_duration = startup_final_pose_duration if startup_t_pose else 2.0
+        self.startup_final_pose_steps = int(final_pose_duration * self.control_frequency)
+        self.ramp_duration_steps = self.startup_final_pose_steps
+        if startup_t_pose:
+            self.ramp_duration_steps += self.startup_t_pose_steps
         self.startup_counter = 0
         self.initial_positions = None
         self.startup_complete = False
@@ -293,8 +312,22 @@ class JointSafetyMonitor:
                 and self.initial_positions is not None
                 and "q" in safe_action
             ):
-                # Ramp factor: 0.0 at start → 1.0 at end
                 ramp_factor = self.startup_counter / self.ramp_duration_steps
+
+                # URDF/FK verification for this G1 model shows that arm
+                # abduction is positive on the left shoulder roll and negative
+                # on the right. Both elbows need +pi/2 (their URDF zero pose
+                # points the forearms forward) to extend the full arms sideways.
+                t_pose_targets = {
+                    "left_shoulder_roll_joint": np.pi / 2,
+                    "right_shoulder_roll_joint": -np.pi / 2,
+                    "left_elbow_joint": np.pi / 2,
+                    "right_elbow_joint": np.pi / 2,
+                }
+                arm_joint_names = set(
+                    self.robot_model.joint_names[i]
+                    for i in self.robot_model.get_joint_group_indices("arms")
+                )
 
                 # Apply ramping only to monitored arm joints
                 for joint_name in self.velocity_limits:  # Only monitored arm joints
@@ -304,11 +337,30 @@ class JointSafetyMonitor:
                             self.initial_positions
                         ):
                             initial_pos = self.initial_positions[joint_idx]
-                            target_pos = original_action["q"][joint_idx]
-                            # Linear interpolation: initial + ramp_factor * (target - initial)
-                            safe_action["q"][joint_idx] = initial_pos + ramp_factor * (
-                                target_pos - initial_pos
-                            )
+                            final_pos = original_action["q"][joint_idx]
+                            if self.startup_t_pose and joint_name in arm_joint_names:
+                                t_pose_pos = t_pose_targets.get(joint_name, 0.0)
+                                if self.startup_counter < self.startup_t_pose_steps:
+                                    phase_alpha = (
+                                        self.startup_counter / self.startup_t_pose_steps
+                                    )
+                                    target_pos = initial_pos + phase_alpha * (
+                                        t_pose_pos - initial_pos
+                                    )
+                                else:
+                                    phase_alpha = (
+                                        self.startup_counter - self.startup_t_pose_steps
+                                    ) / self.startup_final_pose_steps
+                                    target_pos = t_pose_pos + phase_alpha * (
+                                        final_pos - t_pose_pos
+                                    )
+                            else:
+                                # Hands, and the legacy path without T-pose, use
+                                # one continuous ramp to their normal target.
+                                target_pos = initial_pos + ramp_factor * (
+                                    final_pos - initial_pos
+                                )
+                            safe_action["q"][joint_idx] = target_pos
 
                 # Increment counter for next iteration
                 self.startup_counter += 1

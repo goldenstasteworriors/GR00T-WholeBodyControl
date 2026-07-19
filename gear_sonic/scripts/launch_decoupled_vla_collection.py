@@ -172,6 +172,15 @@ class DecoupledVLACollectionLaunchConfig:
     upper_body_joint_speed: float = 1000.0
     """Upper-body speed limit for decoupled WBC."""
 
+    startup_t_pose: bool = False
+    """Route the startup arm ramp through a verified G1 T-pose waypoint."""
+
+    startup_t_pose_duration: float = 2.0
+    """Seconds from the measured startup pose to the T-pose waypoint."""
+
+    startup_final_pose_duration: float = 2.0
+    """Seconds from the T-pose waypoint to the normal initial pose."""
+
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher type for control loop."""
 
@@ -393,6 +402,11 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.control_frequency),
         "--upper-body-joint-speed",
         str(config.upper_body_joint_speed),
+        *_bool_arg("startup-t-pose", config.startup_t_pose),
+        "--startup-t-pose-duration",
+        str(config.startup_t_pose_duration),
+        "--startup-final-pose-duration",
+        str(config.startup_final_pose_duration),
         "--keyboard-dispatcher-type",
         config.keyboard_dispatcher_type,
         *_bool_arg("enable-waist", config.enable_waist),
