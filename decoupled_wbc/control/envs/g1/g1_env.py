@@ -34,8 +34,8 @@ class G1Env(HumanoidEnv):
             enable_viz=False,
             env_type=self.config.get("ENV_TYPE", "real"),
             startup_t_pose=self.config.get("startup_t_pose", False),
-            startup_t_pose_duration=self.config.get("startup_t_pose_duration", 2.0),
-            startup_final_pose_duration=self.config.get("startup_final_pose_duration", 2.0),
+            startup_t_pose_duration=self.config.get("startup_t_pose_duration", 4.0),
+            startup_final_pose_duration=self.config.get("startup_final_pose_duration", 4.0),
         )
         self.last_obs = None
         self.last_safety_ok = True  # Track last safety status from queue_action

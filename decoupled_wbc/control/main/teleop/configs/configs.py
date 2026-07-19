@@ -47,6 +47,7 @@ def override_wbc_config(
         "startup_t_pose": config.startup_t_pose,
         "startup_t_pose_duration": config.startup_t_pose_duration,
         "startup_final_pose_duration": config.startup_final_pose_duration,
+        "startup_final_elbow_angle": config.startup_final_elbow_angle,
         "keyboard_dispatcher_type": config.keyboard_dispatcher_type,
         "enable_gravity_compensation": config.enable_gravity_compensation,
         "gravity_compensation_joints": config.gravity_compensation_joints,
@@ -143,11 +144,14 @@ class BaseConfig(ArgsConfigTemplate):
     startup_t_pose: bool = False
     """Route only the startup safety ramp through a G1 T-pose waypoint."""
 
-    startup_t_pose_duration: float = 2.0
+    startup_t_pose_duration: float = 4.0
     """Seconds from the measured startup pose to the T-pose waypoint."""
 
-    startup_final_pose_duration: float = 2.0
+    startup_final_pose_duration: float = 4.0
     """Seconds from the T-pose waypoint to the normal initial pose."""
+
+    startup_final_elbow_angle: float = 0.0
+    """Elbow angle used only for the upper-body startup target."""
 
     env_name: str = "default"
     """Environment name."""
