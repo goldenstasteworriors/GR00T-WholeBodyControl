@@ -35,6 +35,9 @@ class G1Env(HumanoidEnv):
             env_type=self.config.get("ENV_TYPE", "real"),
             startup_t_pose=self.config.get("startup_t_pose", False),
             startup_t_pose_duration=self.config.get("startup_t_pose_duration", 4.0),
+            startup_elbow_pose_duration=self.config.get(
+                "startup_elbow_pose_duration", 4.0
+            ),
             startup_final_pose_duration=self.config.get("startup_final_pose_duration", 4.0),
         )
         self.last_obs = None

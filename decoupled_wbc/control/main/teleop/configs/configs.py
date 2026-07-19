@@ -46,6 +46,7 @@ def override_wbc_config(
         "upper_body_max_joint_speed": config.upper_body_joint_speed,
         "startup_t_pose": config.startup_t_pose,
         "startup_t_pose_duration": config.startup_t_pose_duration,
+        "startup_elbow_pose_duration": config.startup_elbow_pose_duration,
         "startup_final_pose_duration": config.startup_final_pose_duration,
         "startup_final_elbow_angle": config.startup_final_elbow_angle,
         "keyboard_dispatcher_type": config.keyboard_dispatcher_type,
@@ -147,8 +148,11 @@ class BaseConfig(ArgsConfigTemplate):
     startup_t_pose_duration: float = 4.0
     """Seconds from the measured startup pose to the T-pose waypoint."""
 
+    startup_elbow_pose_duration: float = 4.0
+    """Seconds to move only the elbows from T-pose to their final startup angles."""
+
     startup_final_pose_duration: float = 4.0
-    """Seconds from the T-pose waypoint to the normal initial pose."""
+    """Seconds to move all remaining joints to the normal initial pose."""
 
     startup_final_elbow_angle: float = 0.0
     """Elbow angle used only for the upper-body startup target."""
