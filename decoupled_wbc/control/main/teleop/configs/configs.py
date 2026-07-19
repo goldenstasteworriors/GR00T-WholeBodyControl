@@ -44,6 +44,9 @@ def override_wbc_config(
         "verbose": config.verbose,
         "verbose_timing": config.verbose_timing,
         "upper_body_max_joint_speed": config.upper_body_joint_speed,
+        "startup_t_pose": config.startup_t_pose,
+        "startup_t_pose_duration": config.startup_t_pose_duration,
+        "startup_final_pose_duration": config.startup_final_pose_duration,
         "keyboard_dispatcher_type": config.keyboard_dispatcher_type,
         "enable_gravity_compensation": config.enable_gravity_compensation,
         "gravity_compensation_joints": config.gravity_compensation_joints,
@@ -136,6 +139,15 @@ class BaseConfig(ArgsConfigTemplate):
 
     upper_body_joint_speed: float = 1000
     """Upper body joint speed."""
+
+    startup_t_pose: bool = False
+    """Route only the startup safety ramp through a G1 T-pose waypoint."""
+
+    startup_t_pose_duration: float = 2.0
+    """Seconds from the measured startup pose to the T-pose waypoint."""
+
+    startup_final_pose_duration: float = 2.0
+    """Seconds from the T-pose waypoint to the normal initial pose."""
 
     env_name: str = "default"
     """Environment name."""
