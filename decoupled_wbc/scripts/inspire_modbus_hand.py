@@ -205,10 +205,8 @@ def run_state_publisher(
     args,
     hands: dict[str, InspireModbusHand],
     stop_event: threading.Event,
+    publisher: ChannelPublisher,
 ) -> None:
-    publisher = ChannelPublisher("rt/inspire/state", MotorStates_)
-    publisher.Init()
-
     period = 1.0 / max(float(args.state_publish_frequency), 1e-6)
     last_right_q: np.ndarray | None = None
     last_left_q: np.ndarray | None = None
@@ -302,10 +300,24 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
 
     ChannelFactoryInitialize(args.domain_id, args.network)
     stop_event = threading.Event()
+    publisher = None
     if args.publish_state:
+        # CycloneDDS 0.10.x lazily builds global IDL/XTypes metadata while a
+        # Topic is created.  Creating the state publisher in a worker thread
+        # at the same time as the command subscriber can race inside that
+        # metadata initialization, causing either an AttributeError in
+        # key_scan() or a native segmentation fault.  Initialize all topics
+        # serially on this thread before starting the Modbus polling worker.
+        publisher = ChannelPublisher("rt/inspire/state", MotorStates_)
+        publisher.Init()
+
+    subscriber = ChannelSubscriber("rt/inspire/cmd", MotorCmds_)
+    subscriber.Init(callback, 10)
+
+    if publisher is not None:
         state_thread = threading.Thread(
             target=run_state_publisher,
-            args=(args, hands, stop_event),
+            args=(args, hands, stop_event, publisher),
             daemon=True,
         )
         state_thread.start()
@@ -314,8 +326,6 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
             f"at {args.state_publish_frequency:.1f} Hz."
         )
 
-    subscriber = ChannelSubscriber("rt/inspire/cmd", MotorCmds_)
-    subscriber.Init(callback, 10)
     print("DDS -> Modbus bridge running on rt/inspire/cmd. Press Ctrl+C to stop.")
     try:
         while True:
