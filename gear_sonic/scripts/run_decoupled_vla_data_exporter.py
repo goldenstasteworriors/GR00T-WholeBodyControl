@@ -159,23 +159,21 @@ class AudioCue:
             import sounddevice as sd
         except Exception as exc:
             self._sd = None
-            if shutil.which("aplay"):
-                self._audio_cmd = ["aplay", "-q", "-"]
+            # Prefer the native PipeWire client on the collection laptop.
+            if shutil.which("pw-play"):
+                self._audio_cmd = ["pw-play", "-"]
             elif shutil.which("paplay"):
                 self._audio_cmd = ["paplay", "-"]
-            elif shutil.which("pw-play"):
-                self._audio_cmd = ["pw-play", "-"]
+            elif shutil.which("aplay"):
+                self._audio_cmd = ["aplay", "-q", "-"]
             if self._audio_cmd is None:
                 print(f"[AudioCue] disabled: sounddevice unavailable ({exc}); no aplay/paplay fallback")
-            else:
-                print(f"[AudioCue] using {' '.join(self._audio_cmd)} fallback")
         else:
             self._sd = sd
 
         self.patterns = {
             "start": [(880, 0.08), (1175, 0.10)],
             "stop": [(1175, 0.08), (880, 0.12)],
-            "discard": [(260, 0.18), (0, 0.04), (180, 0.24), (0, 0.04), (140, 0.28)],
         }
         self._playback_queue: queue.Queue[tuple[list[tuple[int, float]], float]] = queue.Queue()
         self._playback_worker = threading.Thread(target=self._run_playback_worker, daemon=True)
@@ -203,12 +201,22 @@ class AudioCue:
                 # dedicated worker keeps a later cue from interrupting this one.
                 self._sd.play(samples, self.sample_rate, blocking=True)
             elif self._audio_cmd is not None:
-                subprocess.Popen(
-                    self._audio_cmd,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                ).communicate(self._samples_to_wav(samples))
+                wav_data = self._samples_to_wav(samples)
+                last_error = "unknown playback error"
+                for _ in range(2):
+                    result = subprocess.run(
+                        self._audio_cmd,
+                        input=wav_data,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        timeout=3.0,
+                    )
+                    if result.returncode == 0:
+                        return
+                    last_error = result.stderr.decode(errors="replace").strip() or (
+                        f"exit code {result.returncode}"
+                    )
+                raise RuntimeError(f"{' '.join(self._audio_cmd)}: {last_error}")
         except Exception as exc:
             print(f"[AudioCue] failed to play cue: {exc}")
 
@@ -484,13 +492,6 @@ class DecoupledVLADataCollector:
             ],
         )
 
-        print(f"Recording to {self.data_exporter.meta.root}")
-        print(
-            "[PICO] Subscribed to "
-            f"tcp://{config.sonic_zmq_host}:{config.sonic_zmq_port} "
-            "(pose, planner, manager_state)"
-        )
-
     @property
     def current_episode_index(self):
         return self.data_exporter.episode_buffer["episode_index"]
@@ -708,15 +709,13 @@ class DecoupledVLADataCollector:
                 self._play_audio_cue("stop")
                 self._print_and_say("Stopping recording, preparing to save")
             elif self._episode_state.get_state() == self._episode_state.IDLE:
-                self._print_and_say("Saved episode and back to idle state")
+                pass
         elif key == "x":
             if self._episode_state.get_state() == self._episode_state.RECORDING:
                 self.data_exporter.save_episode_as_discarded()
                 self._episode_state.reset_state()
                 self._initial_yaw = None
                 self._episode_init_base_quat = None
-                self._play_audio_cue("discard")
-                self._print_and_say("Discarded episode")
 
     def _normalise_full_q(
         self,
@@ -1081,10 +1080,6 @@ class DecoupledVLADataCollector:
             print(f"[Latency] PICO pose: {pico_latency_ms:.1f}ms")
 
     def _finalize_frame(self, t_start: float) -> bool:
-        elapsed = time.monotonic() - t_start
-        if elapsed > self.loop_period:
-            print(f"DataExporter Missed: {elapsed} sec")
-
         if self._episode_state.get_state() == self._episode_state.NEED_TO_SAVE:
             buffer_size = self.data_exporter.episode_buffer.get("size", 0)
             if buffer_size > 0:
@@ -1092,9 +1087,6 @@ class DecoupledVLADataCollector:
                 self.sonic_timing_monitor.reset()
                 self._initial_yaw = None
                 self._episode_init_base_quat = None
-                self._print_and_say("Finished saving episode")
-            else:
-                self._print_and_say("Skipping save: no frames collected", say=False)
             self._episode_state.change_state()
         return True
 
@@ -1102,12 +1094,6 @@ class DecoupledVLADataCollector:
         t_start = time.monotonic()
 
         if self.latest_proprio_msg is None or self.latest_image_msg is None:
-            self._print_and_say(
-                "Waiting for message. "
-                f"Avail msg: proprio {self.latest_proprio_msg is not None} | "
-                f"image {self.latest_image_msg is not None}",
-                say=False,
-            )
             return False
 
         if self._episode_state.get_state() != self._episode_state.RECORDING:
@@ -1116,7 +1102,6 @@ class DecoupledVLADataCollector:
         if self.config.require_sonic_pose:
             _, _, smpl_fresh = self._fresh_sonic_pose()
             if not smpl_fresh:
-                self._print_and_say("Waiting for fresh PICO/SMPL pose", say=False)
                 return False
 
         proprio = self.latest_proprio_msg
@@ -1142,15 +1127,9 @@ class DecoupledVLADataCollector:
 
     def save_and_cleanup(self) -> None:
         try:
-            self._print_and_say("saving episode done", blocking=False)
             buffer_size = self.data_exporter.episode_buffer.get("size", 0)
             if buffer_size > 0:
                 self.data_exporter.save_episode()
-            self._print_and_say(
-                f"Recording complete: {self.data_exporter.meta.root}",
-                say=False,
-                blocking=True,
-            )
         except Exception as exc:
             self._print_and_say(f"Error saving episode: {exc}", blocking=True)
 
@@ -1159,7 +1138,6 @@ class DecoupledVLADataCollector:
             self._sonic_zmq_ctx.term()
         except Exception:
             pass
-        self._print_and_say("Shutting down data exporter...", say=False)
 
     def run(self) -> None:
         try:
@@ -1204,7 +1182,6 @@ class DecoupledVLADataCollector:
                         self._last_profile_log_time = now
 
         except KeyboardInterrupt:
-            print("Data exporter terminated by user")
             buffer_size = self.data_exporter.episode_buffer.get("size", 0)
             if buffer_size > 0:
                 self.data_exporter.save_episode_as_discarded()
