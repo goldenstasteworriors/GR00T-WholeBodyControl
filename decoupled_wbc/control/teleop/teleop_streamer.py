@@ -236,6 +236,13 @@ class TeleopStreamer:
         if self.hand_streamer is not None:
             self.hand_streamer.reset_status()
 
+    def set_lower_body_policy_active(self, active: bool) -> None:
+        """Synchronize controller state with the control loop's confirmed state."""
+        if self.body_streamer is not None and hasattr(
+            self.body_streamer, "set_lower_body_policy_active"
+        ):
+            self.body_streamer.set_lower_body_policy_active(active)
+
     def stop_streaming(self):
         if self.body_streamer:
             self.body_streamer.stop_streaming()

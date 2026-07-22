@@ -59,6 +59,7 @@ class TeleopPolicy(Policy):
         self.activation_hold_duration = activation_hold_duration
         self.resume_max_joint_delta = resume_max_joint_delta
         self._teleop_state = "paused"
+        self._lower_body_policy_active = False
         self._activation_deadline: Optional[float] = None
         self._resume_ramp_deadline: Optional[float] = None
         self._latest_robot_q: Optional[np.ndarray] = None
@@ -84,6 +85,20 @@ class TeleopPolicy(Policy):
         if q.shape != self.robot_model.default_body_pose.shape:
             return
         self._latest_robot_q = q.copy()
+
+    def set_lower_body_policy_active(self, active: bool) -> None:
+        """Synchronize the confirmed lower-body state and enforce activation ordering."""
+        active = bool(active)
+        was_active = self._lower_body_policy_active
+        self._lower_body_policy_active = active
+        self.teleop_streamer.set_lower_body_policy_active(active)
+
+        if was_active and not active and self._teleop_state in {"active", "arming"}:
+            self.is_active = False
+            self._teleop_state = "emergency_paused"
+            self._activation_deadline = None
+            self._resume_ramp_deadline = None
+            print("Upper-body teleop stopped because the lower-body policy is inactive")
 
     def get_action(self) -> dict[str, any]:
         # Get structured data
@@ -237,6 +252,11 @@ class TeleopPolicy(Policy):
             return
 
         if requested_active:
+            if not self._lower_body_policy_active:
+                print(
+                    "Ignoring A+X activation: lower-body policy has not confirmed startup"
+                )
+                return
             self._arm_teleop(now)
         elif self._teleop_state == "active":
             self._enter_clutch_pause()
