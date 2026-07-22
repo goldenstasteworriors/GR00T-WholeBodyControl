@@ -3,7 +3,11 @@ import time
 import rclpy
 import tyro
 
-from decoupled_wbc.control.main.constants import CONTROL_GOAL_TOPIC, STATE_TOPIC_NAME
+from decoupled_wbc.control.main.constants import (
+    CONTROL_GOAL_TOPIC,
+    LOWER_BODY_POLICY_STATUS_TOPIC,
+    STATE_TOPIC_NAME,
+)
 from decoupled_wbc.control.main.teleop.configs.configs import TeleopConfig
 from decoupled_wbc.control.policy.lerobot_replay_policy import LerobotReplayPolicy
 from decoupled_wbc.control.policy.teleop_policy import TeleopPolicy
@@ -66,6 +70,7 @@ def main(config: TeleopConfig):
     # Create a publisher for the navigation commands
     control_publisher = ROSMsgPublisher(CONTROL_GOAL_TOPIC)
     robot_state_subscriber = ROSMsgSubscriber(STATE_TOPIC_NAME)
+    lower_body_policy_status_subscriber = ROSMsgSubscriber(LOWER_BODY_POLICY_STATUS_TOPIC)
 
     # Create rate controller
     rate = node.create_rate(config.teleop_frequency)
@@ -73,6 +78,7 @@ def main(config: TeleopConfig):
     time_to_get_to_initial_pose = 2  # seconds
 
     telemetry = Telemetry(window_size=100)
+    pending_policy_action = None
 
     try:
         while rclpy.ok():
@@ -84,6 +90,20 @@ def main(config: TeleopConfig):
                 # Get the current teleop action
                 with telemetry.timer("get_action"):
                     data = teleop_policy.get_action()
+
+                requested_policy_action = data.get("set_policy_action")
+                if requested_policy_action is not None:
+                    pending_policy_action = bool(requested_policy_action)
+                    print(
+                        "Lower-body policy request queued: "
+                        f"{'enable' if pending_policy_action else 'disable'}"
+                    )
+                if pending_policy_action is not None:
+                    # This is a state transition, not a best-effort one-frame event.
+                    # Repeat it until the control loop reports the requested state.
+                    data["set_policy_action"] = pending_policy_action
+                    if not pending_policy_action:
+                        data["emergency_stop"] = True
 
                 # Add timing information to the message
                 t_now = time.monotonic()

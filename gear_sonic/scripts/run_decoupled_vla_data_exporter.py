@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 import io
 import json
+import os
 import queue
 import shutil
 import subprocess
@@ -52,6 +53,7 @@ from gear_sonic.data.features_sonic_vla import (
     get_wrist_camera_modality_config,
 )
 from gear_sonic.utils.data_collection.episode_state import EpisodeState
+from gear_sonic.utils.data_collection.inspire_hand_tasks import DEFAULT_HAND_TASK
 from gear_sonic.utils.data_collection.telemetry import Telemetry
 from gear_sonic.utils.data_collection.text_to_speech import TextToSpeech
 from gear_sonic.utils.data_collection.transforms import compute_projected_gravity, quat_to_rot6d
@@ -762,6 +764,7 @@ class DecoupledVLADataCollector:
         ).astype(np.float64, copy=False)
 
     def _get_action_wbc(self, proprio: dict, observation_state: np.ndarray) -> np.ndarray:
+        hand_task = os.environ.get("SONIC_HAND_TASK", DEFAULT_HAND_TASK)
         for key in ("action", "last_action", "q_des", "target_q"):
             if key in proprio:
                 legacy_action = self._normalise_full_q(proprio[key])
@@ -771,19 +774,23 @@ class DecoupledVLADataCollector:
                 return np.concatenate(
                     [
                         legacy_action[body_indices],
-                        self._legacy_hand_action_to_inspire(legacy_action[left_indices]),
-                        self._legacy_hand_action_to_inspire(legacy_action[right_indices]),
+                        self._legacy_hand_action_to_inspire(legacy_action[left_indices], hand_task),
+                        self._legacy_hand_action_to_inspire(legacy_action[right_indices], hand_task),
                     ]
                 ).astype(np.float64, copy=False)
         return observation_state.copy()
 
     @staticmethod
-    def _legacy_hand_action_to_inspire(legacy_action: np.ndarray) -> np.ndarray:
+    def _legacy_hand_action_to_inspire(
+        legacy_action: np.ndarray,
+        hand_task: str,
+    ) -> np.ndarray:
         """Match the production 7-DOF-to-Inspire command conversion."""
         from decoupled_wbc.control.envs.g1.utils.command_sender import InspireHandCommandSender
 
         return InspireHandCommandSender.legacy_dex3_to_inspire(
             np.asarray(legacy_action, dtype=np.float64),
+            hand_task=hand_task,
         )
 
     def _get_eef_state(self, proprio: dict, q: np.ndarray) -> np.ndarray:
