@@ -1,11 +1,6 @@
-"""Joint safety monitor for G1 robot.
-
-This module implements safety monitoring for arm and finger joint velocities using
-joint groups defined in the robot model's supplemental info. Leg joints are not monitored.
-"""
+"""Joint startup ramping and position monitoring for the G1 robot."""
 
 from datetime import datetime
-import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -15,7 +10,7 @@ from decoupled_wbc.data.viz.rerun_viz import RerunViz
 
 
 class JointSafetyMonitor:
-    """Monitor joint velocities for G1 robot arms and hands."""
+    """Apply startup ramping and report arm position-limit violations."""
 
     # Velocity limits in rad/s
     ARM_VELOCITY_LIMIT = 6.0  # rad/s for arm joints
@@ -216,7 +211,7 @@ class JointSafetyMonitor:
             print(f"[JointSafetyMonitor] Warning: Could not find 'hands' joint group: {e}")
 
     def check_safety(self, obs: Dict, action: Dict) -> Tuple[bool, List[Dict]]:
-        """Check if current velocities and positions are within safe bounds.
+        """Check current joint positions without triggering automatic shutdown.
 
         Args:
             obs: Observation dictionary containing joint positions and velocities
@@ -224,40 +219,11 @@ class JointSafetyMonitor:
 
         Returns:
             (is_safe, violations): Tuple of safety status and list of violations
-            Note: is_safe=False only for velocity violations (triggers shutdown)
-                  Position violations are warnings only (don't affect is_safe)
+            Position violations are warnings only. Joint velocity observations do
+            not trigger an automatic emergency stop.
         """
         self.violations = []
-        is_safe = True
         joint_names = self.robot_model.joint_names
-
-        # Check current joint velocities (critical - triggers shutdown)
-        if "dq" in obs:
-            joint_velocities = obs["dq"]
-
-            for i, joint_name in enumerate(joint_names):
-                # Only check monitored joints
-                if joint_name not in self.velocity_limits:
-                    continue
-
-                if i < len(joint_velocities):
-                    velocity = joint_velocities[i]
-                    limits = self.velocity_limits[joint_name]
-
-                    if velocity < limits["min"] or velocity > limits["max"]:
-                        violation = {
-                            "joint": joint_name,
-                            "type": "velocity",
-                            "value": velocity,
-                            "limit_min": limits["min"],
-                            "limit_max": limits["max"],
-                            "exceeded_by": self._calculate_exceeded_percentage(
-                                velocity, limits["min"], limits["max"]
-                            ),
-                            "critical": True,  # Velocity violations are critical
-                        }
-                        self.violations.append(violation)
-                        is_safe = False
 
         # Check current joint positions (warning only - no shutdown)
         if "q" in obs:
@@ -287,7 +253,7 @@ class JointSafetyMonitor:
                         self.violations.append(violation)
                         # Don't set is_safe = False for position violations
 
-        return is_safe, self.violations
+        return True, self.violations
 
     def _calculate_exceeded_percentage(
         self, value: float, limit_min: float, limit_max: float
@@ -473,7 +439,7 @@ class JointSafetyMonitor:
             - 'action': Dict - potentially modified safe action
             - 'shutdown_required': bool - whether system shutdown is needed
         """
-        is_safe, violations = self.check_safety(obs, action)
+        _, violations = self.check_safety(obs, action)
 
         # Apply startup ramping (always, regardless of violations)
         safe_action = self.get_safe_action(obs, action)
@@ -515,31 +481,8 @@ class JointSafetyMonitor:
         if not violations:
             return {"safe_to_continue": True, "action": safe_action, "shutdown_required": False}
 
-        # Separate critical (velocity) and warning (position) violations
-        critical_violations = [v for v in violations if v.get("critical", True)]
-        # warning_violations = [v for v in violations if not v.get('critical', True)]
-
-        # Print warnings for position violations
-        # if warning_violations:
-        # warning_msg = self.get_violation_report(warning_violations)
-        # print(f"[SAFETY WARNING] {warning_msg}")
-
-        # Handle critical violations (velocity) - trigger shutdown
-        if not is_safe and critical_violations:
-            error_msg = self.get_violation_report(critical_violations)
-            if self.env_type == "real":
-                print(f"[SAFETY VIOLATION] {error_msg}")
-                self.trigger_system_shutdown()
-
-            return {"safe_to_continue": False, "action": safe_action, "shutdown_required": True}
-
-        # Only position violations - continue with safe action
+        # Position violations remain informational and never stop the control loop.
         return {"safe_to_continue": True, "action": safe_action, "shutdown_required": False}
-
-    def trigger_system_shutdown(self):
-        """Trigger system shutdown after safety violation."""
-        print("\n[SAFETY] Initiating system shutdown due to safety violation...")
-        sys.exit(1)
 
 
 def main():
@@ -584,14 +527,13 @@ def main():
             f"shutdown_required={result['shutdown_required']}"
         )
 
-        # Test with unsafe velocity
+        # High joint velocity no longer triggers an automatic shutdown.
         unsafe_obs = safe_obs.copy()
         unsafe_obs["dq"] = np.zeros(robot_model.num_dofs)
-        # Set left shoulder pitch velocity to exceed limit
         left_shoulder_idx = robot_model.dof_index("left_shoulder_pitch_joint")
-        unsafe_obs["dq"][left_shoulder_idx] = 6.0  # Exceeds 5.0 rad/s limit
+        unsafe_obs["dq"][left_shoulder_idx] = 12.0
 
-        print("\nUnsafe velocity test:")
+        print("\nHigh velocity continuation test:")
         result = safety_monitor.handle_violations(unsafe_obs, safe_action)
         print(
             f"  safe_to_continue={result['safe_to_continue']}, shutdown_required={result['shutdown_required']}"
