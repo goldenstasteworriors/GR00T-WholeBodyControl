@@ -85,6 +85,22 @@ def main(config: TeleopConfig):
             with telemetry.timer("total_loop"):
                 t_start = time.monotonic()
                 robot_state = robot_state_subscriber.get_msg()
+                lower_body_policy_status = lower_body_policy_status_subscriber.get_msg()
+                if lower_body_policy_status is not None:
+                    lower_body_policy_active = bool(
+                        lower_body_policy_status.get("use_policy_action", False)
+                    )
+                    if hasattr(teleop_policy, "set_lower_body_policy_active"):
+                        teleop_policy.set_lower_body_policy_active(lower_body_policy_active)
+                    if (
+                        pending_policy_action is not None
+                        and lower_body_policy_active == pending_policy_action
+                    ):
+                        print(
+                            "Lower-body policy request acknowledged: "
+                            f"{'enabled' if lower_body_policy_active else 'disabled'}"
+                        )
+                        pending_policy_action = None
                 if robot_state is not None and hasattr(teleop_policy, "set_robot_state"):
                     teleop_policy.set_robot_state(robot_state)
                 # Get the current teleop action

@@ -64,6 +64,10 @@ class PicoStreamer(BaseStreamer):
         if reset_control_enabled or not hasattr(self, "control_enabled"):
             self.control_enabled = False
 
+    def set_lower_body_policy_active(self, active: bool) -> None:
+        """Mirror the control loop's confirmed state for start/stop button semantics."""
+        self.control_enabled = bool(active)
+
     def start_streaming(self):
         print("Waiting for PICO/XRoboToolkit headset and controller data...")
         last_report_time = 0.0
