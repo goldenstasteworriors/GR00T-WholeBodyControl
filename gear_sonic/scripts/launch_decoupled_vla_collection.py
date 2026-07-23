@@ -261,7 +261,7 @@ class DecoupledVLACollectionLaunchConfig:
     camera_port: int = 5555
     """Camera server port."""
 
-    camera_viewer: bool = True
+    camera_viewer: bool = False
     """Start camera viewer pane."""
 
     # Optional PICO metadata streamer
