@@ -182,10 +182,7 @@ def main() -> int:
         return 0
 
     if not args.yes:
-        answer = input("确认机器人已吊装、周围清空且急停可用？输入 REPLAY 继续：")
-        if answer.strip() != "REPLAY":
-            print("已取消，未发送指令。")
-            return 1
+        input("确认机器人已吊装、周围清空且急停可用，按 Enter 开始预定位：")
 
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
@@ -242,10 +239,7 @@ def main() -> int:
             return 130
         print("\n已到达 episode 首帧并保持。")
         if not args.yes:
-            answer = input("确认姿态正常？输入 PLAY 开始正式回放（Ctrl+C 停止）：")
-            if answer.strip() != "PLAY":
-                print("已取消正式回放，将停止控制。")
-                return 1
+            input("确认姿态正常，按 Enter 开始正式回放（Ctrl+C 停止）：")
 
         period = 1.0 / (fps * args.speed)
         next_deadline = time.monotonic()
