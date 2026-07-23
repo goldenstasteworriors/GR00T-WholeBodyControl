@@ -174,6 +174,7 @@ class AudioCue:
         self.patterns = {
             "start": [(880, 0.08), (1175, 0.10)],
             "stop": [(1175, 0.08), (880, 0.12)],
+            "discard": [(260, 0.18), (0, 0.04), (180, 0.24), (0, 0.04), (140, 0.28)],
         }
         self._playback_queue: queue.Queue[tuple[list[tuple[int, float]], float]] = queue.Queue()
         self._playback_worker = threading.Thread(target=self._run_playback_worker, daemon=True)
@@ -385,7 +386,6 @@ def poll_robot_config_ros(service_name: str, timeout_sec: float) -> dict:
     deadline = time.monotonic() + timeout_sec if timeout_sec > 0 else None
 
     try:
-        print(f"[Config] Waiting for ROS service {service_name!r} ...")
         while not client.wait_for_service(timeout_sec=1.0):
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(
@@ -408,7 +408,6 @@ def poll_robot_config_ros(service_name: str, timeout_sec: float) -> dict:
 
         decoded = base64.b64decode(result.message.encode("ascii"))
         config = msgpack.unpackb(decoded, object_hook=mnp.decode, raw=False)
-        print(f"[Config] Received robot config ({len(config)} fields)")
         return config
     finally:
         node.destroy_node()
@@ -716,6 +715,7 @@ class DecoupledVLADataCollector:
                 self._episode_state.reset_state()
                 self._initial_yaw = None
                 self._episode_init_base_quat = None
+                self._play_audio_cue("discard")
 
     def _normalise_full_q(
         self,
@@ -1071,14 +1071,6 @@ class DecoupledVLADataCollector:
                     )
                 frame_data[feature_name] = images[image_key]
 
-    def _log_latency_periodic(self, pico_latency_ms: float | None) -> None:
-        now = time.time()
-        if now - self._last_latency_log_time < 1.0:
-            return
-        self._last_latency_log_time = now
-        if pico_latency_ms is not None:
-            print(f"[Latency] PICO pose: {pico_latency_ms:.1f}ms")
-
     def _finalize_frame(self, t_start: float) -> bool:
         if self._episode_state.get_state() == self._episode_state.NEED_TO_SAVE:
             buffer_size = self.data_exporter.episode_buffer.get("size", 0)
@@ -1118,9 +1110,8 @@ class DecoupledVLADataCollector:
         }
 
         self._add_robot_state_features(frame_data, proprio, base_quat)
-        pico_latency_ms = self._add_teleop_features(frame_data, observation_state)
+        self._add_teleop_features(frame_data, observation_state)
         self._add_images_to_frame_data(frame_data)
-        self._log_latency_periodic(pico_latency_ms)
 
         self.data_exporter.add_frame(frame_data)
         return self._finalize_frame(t_start)
@@ -1161,25 +1152,9 @@ class DecoupledVLADataCollector:
                     with self.telemetry.timer("add_frame"):
                         self._add_data_frame()
 
-                    end_time = time.monotonic()
-
                 sleep_time = self.loop_period - (time.monotonic() - t_start)
                 if sleep_time > 0:
                     time.sleep(sleep_time)
-
-                if end_time - t_start > self.loop_period:
-                    self.telemetry.log_timing_info(
-                        context="Decoupled VLA Data Exporter Missed",
-                        threshold=0.001,
-                    )
-                elif self.config.profile_timing:
-                    now = time.monotonic()
-                    if now - self._last_profile_log_time >= self.config.profile_interval:
-                        self.telemetry.log_timing_info(
-                            context="Decoupled VLA Data Exporter Profile",
-                            threshold=0.0,
-                        )
-                        self._last_profile_log_time = now
 
         except KeyboardInterrupt:
             buffer_size = self.data_exporter.episode_buffer.get("size", 0)
