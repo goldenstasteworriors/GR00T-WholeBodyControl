@@ -30,6 +30,28 @@ HAND_COLUMNS = (
     "teleop.left_hand_joints",
     "teleop.right_hand_joints",
 )
+DEFAULT_UPPER_BODY_POSITION = np.asarray(
+    [
+        0.0,
+        0.0,
+        0.0,
+        0.2,
+        0.2,
+        0.0,
+        0.6,
+        0.0,
+        0.0,
+        0.0,
+        0.2,
+        -0.2,
+        0.0,
+        0.6,
+        0.0,
+        0.0,
+        0.0,
+    ],
+    dtype=np.float32,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -39,6 +61,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", type=Path, required=True, help="LeRobot 数据集目录")
     parser.add_argument("--episode", type=int, default=0, help="episode 编号（默认：0）")
     parser.add_argument("--speed", type=float, default=0.25, help="播放倍速（默认：0.25）")
+    parser.add_argument(
+        "--init-duration",
+        type=float,
+        default=5.0,
+        help="从部署默认站姿平滑移动到 episode 首帧的秒数（默认：5.0）",
+    )
     parser.add_argument("--host", default="*", help="ZMQ PUB bind 地址（默认：*）")
     parser.add_argument("--port", type=int, default=5556, help="ZMQ PUB 端口（默认：5556）")
     parser.add_argument(
@@ -96,12 +124,31 @@ def _validate_frame(row: pd.Series, replay_hands: bool) -> None:
             _array(row[column], 6, column)
 
 
+def _planner_message(
+    upper_body_position: np.ndarray,
+    left_hand: np.ndarray | None = None,
+    right_hand: np.ndarray | None = None,
+) -> bytes:
+    return build_planner_message(
+        mode=0,
+        movement=[0.0, 0.0, 0.0],
+        facing=[1.0, 0.0, 0.0],
+        speed=0.0,
+        height=-1.0,
+        upper_body_position=upper_body_position,
+        left_hand_position=left_hand,
+        right_hand_position=right_hand,
+    )
+
+
 def main() -> int:
     args = _parse_args()
     if args.episode < 0:
         raise ValueError("--episode 不能小于 0")
     if args.speed <= 0:
         raise ValueError("--speed 必须大于 0")
+    if args.init_duration <= 0:
+        raise ValueError("--init-duration 必须大于 0")
 
     dataset = args.dataset.expanduser().resolve()
     info = _load_info(dataset)
@@ -127,6 +174,7 @@ def main() -> int:
     print(f"数据集：{dataset}")
     print(f"Episode：{args.episode}，{len(frame)} 帧，采样率 {fps:g} Hz")
     print(f"原时长：{duration:.2f} s，{args.speed:g}x 回放约 {wall_duration:.2f} s")
+    print(f"预定位：从部署默认上半身姿态平滑插值 {args.init_duration:g} s 到首帧")
     print(f"手部回放：{'开/合二态' if args.replay_hands else '关闭'}")
     print("下半身：planner IDLE，movement=[0, 0, 0]")
     if args.dry_run:
@@ -148,6 +196,7 @@ def main() -> int:
     def request_stop(_signum: int, _frame: object) -> None:
         nonlocal stopped
         stopped = True
+        raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
@@ -155,9 +204,48 @@ def main() -> int:
     try:
         print(f"ZMQ publisher 已绑定 {endpoint}，等待订阅端连接……")
         time.sleep(1.0)
+
+        first_row = frame.iloc[0]
+        first_upper_body = _array(first_row["action.wbc"], 41, "action.wbc")[12:29]
+        open_hand = np.zeros(7, dtype=np.float32) if args.replay_hands else None
+
+        # Publish the deployer's default pose before start so a late-joining
+        # subscriber has a valid, non-jumping upper-body reference available.
+        for _ in range(5):
+            socket.send(_planner_message(DEFAULT_UPPER_BODY_POSITION, open_hand, open_hand))
+            time.sleep(0.02)
         if not args.no_start_command:
             socket.send(build_command_message(start=True, stop=False, planner=True))
             time.sleep(0.1)
+
+        init_frames = max(2, int(round(args.init_duration * fps)))
+        print(f"开始预定位，共 {init_frames} 帧；按 Ctrl+C 可随时停止。")
+        init_deadline = time.monotonic()
+        for init_index in range(init_frames):
+            if stopped:
+                break
+            progress = init_index / (init_frames - 1)
+            blend = progress * progress * (3.0 - 2.0 * progress)
+            target = DEFAULT_UPPER_BODY_POSITION + blend * (
+                first_upper_body - DEFAULT_UPPER_BODY_POSITION
+            )
+            socket.send(_planner_message(target, open_hand, open_hand))
+            if init_index % max(1, int(fps)) == 0 or init_index == init_frames - 1:
+                print(f"\r预定位进度：{init_index + 1}/{init_frames}", end="", flush=True)
+            init_deadline += 1.0 / fps
+            sleep_time = init_deadline - time.monotonic()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        if stopped:
+            print("\n预定位已中断。")
+            return 130
+        print("\n已到达 episode 首帧并保持。")
+        if not args.yes:
+            answer = input("确认姿态正常？输入 PLAY 开始正式回放（Ctrl+C 停止）：")
+            if answer.strip() != "PLAY":
+                print("已取消正式回放，将停止控制。")
+                return 1
 
         period = 1.0 / (fps * args.speed)
         next_deadline = time.monotonic()
@@ -173,18 +261,7 @@ def main() -> int:
                 left_hand = _legacy_hand_command(row[HAND_COLUMNS[0]])
                 right_hand = _legacy_hand_command(row[HAND_COLUMNS[1]])
 
-            socket.send(
-                build_planner_message(
-                    mode=0,
-                    movement=[0.0, 0.0, 0.0],
-                    facing=[1.0, 0.0, 0.0],
-                    speed=0.0,
-                    height=-1.0,
-                    upper_body_position=upper_body_position,
-                    left_hand_position=left_hand,
-                    right_hand_position=right_hand,
-                )
-            )
+            socket.send(_planner_message(upper_body_position, left_hand, right_hand))
             if index % max(1, int(fps)) == 0 or index == total - 1:
                 print(f"\r回放进度：{index + 1}/{total}", end="", flush=True)
             next_deadline += period
@@ -206,6 +283,9 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except KeyboardInterrupt:
+        print("\n收到中断信号，已发送 stop。", file=sys.stderr)
+        sys.exit(130)
     except (FileNotFoundError, KeyError, ValueError, OSError) as error:
         print(f"错误：{error}", file=sys.stderr)
         sys.exit(2)
