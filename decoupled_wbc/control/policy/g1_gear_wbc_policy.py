@@ -54,7 +54,13 @@ class G1GearWbcPolicy(Policy):
 
     def load_onnx_policy(self, model_path: str):
         print(f"Loading ONNX policy from {model_path}")
-        model = ort.InferenceSession(model_path)
+        session_options = ort.SessionOptions()
+        # The two WBC sessions otherwise keep their worker pools spinning while
+        # idle, consuming multiple CPU cores and delaying the 50 Hz teleop loop.
+        # Disabling wait-time spinning does not change model execution or output.
+        session_options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        session_options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+        model = ort.InferenceSession(model_path, sess_options=session_options)
 
         def run_inference(input_tensor):
             ort_inputs = {model.get_inputs()[0].name: input_tensor.cpu().numpy()}
