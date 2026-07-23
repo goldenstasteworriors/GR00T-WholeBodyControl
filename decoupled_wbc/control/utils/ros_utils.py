@@ -13,6 +13,7 @@ from std_msgs.msg import ByteMultiArray
 from std_srvs.srv import Trigger
 
 _signal_registered = False
+_BYTE_VALUES = tuple(bytes([value]) for value in range(256))
 
 
 def register_keyboard_interrupt_handler():
@@ -92,9 +93,11 @@ class ROSMsgPublisher:
 
     def publish(self, msg: dict):
         payload = msgpack.packb(msg, default=mnp.encode)
-        payload = tuple(bytes([a]) for a in payload)
         msg = ByteMultiArray()
-        msg.data = payload
+        # This ROS binding represents uint8[] as a sequence of one-byte
+        # ``bytes`` objects. Reuse the 256 possible values instead of allocating
+        # thousands of tiny objects for every control message.
+        msg.data = tuple(_BYTE_VALUES[value] for value in payload)
         self.publisher.publish(msg)
 
 
@@ -119,7 +122,7 @@ class ROSMsgSubscriber:
         if msg is None:
             return None
         self._msg = None
-        return msgpack.unpackb(bytes([ab for a in msg.data for ab in a]), object_hook=mnp.decode)
+        return msgpack.unpackb(b"".join(msg.data), object_hook=mnp.decode)
 
 
 class ROSImgMsgSubscriber:
