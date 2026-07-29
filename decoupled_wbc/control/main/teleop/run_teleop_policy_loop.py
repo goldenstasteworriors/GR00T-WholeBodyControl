@@ -65,6 +65,7 @@ def main(config: TeleopConfig):
             body_streamer_keyword=config.body_streamer_keyword,
             enable_real_device=config.enable_real_device,
             replay_data_path=config.teleop_replay_path,
+            pico_vis_smpl=config.pico_vis_smpl,
         )
 
     # Create a publisher for the navigation commands
@@ -101,6 +102,12 @@ def main(config: TeleopConfig):
                             f"{'enabled' if lower_body_policy_active else 'disabled'}"
                         )
                         pending_policy_action = None
+                if iteration == 0 and robot_state is None:
+                    # Do not publish the nominal low-elbow pose while the
+                    # control loop is still moving to its startup pose.  The
+                    # first feedback sample becomes the teleop hold/IK reference.
+                    rate.sleep()
+                    continue
                 if robot_state is not None and hasattr(teleop_policy, "set_robot_state"):
                     teleop_policy.set_robot_state(robot_state)
                 # Get the current teleop action
@@ -150,6 +157,7 @@ def main(config: TeleopConfig):
 
     finally:
         print("Cleaning up...")
+        teleop_policy.close()
         ros_manager.shutdown()
 
 

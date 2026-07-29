@@ -1,3 +1,8 @@
+import multiprocessing as mp
+import os
+from pathlib import Path
+import queue
+import signal
 import subprocess
 import time
 
@@ -16,16 +21,64 @@ R_HEADSET_TO_WORLD = np.array(
 )
 
 
+_SMPL_PARENT_INDICES = [
+    -1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8,
+    9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 22,
+]
+
+
+def _run_main_smpl_visualizer(frame_queue, stop_event):
+    """Run Main collection's full-body visualizer in an isolated process."""
+    import torch
+
+    from gear_sonic.scripts.pico_manager_thread_server import (
+        ThreePointPose,
+        compute_from_body_poses,
+    )
+
+    three_point = ThreePointPose(
+        enable_vis_vr3pt=True,
+        with_g1_robot=True,
+        enable_smpl_vis=True,
+        log_prefix="DecoupledPoseVis",
+    )
+    device = torch.device("cpu")
+    print("[PicoStreamer] Main full-body PICO visualization enabled", flush=True)
+    try:
+        while not stop_event.is_set():
+            try:
+                body_poses = frame_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            latest_data = compute_from_body_poses(
+                _SMPL_PARENT_INDICES,
+                device,
+                np.asarray(body_poses),
+            )
+            smpl_joints = latest_data["smpl_joints_local"].detach().cpu().numpy()[0]
+            three_point.process_smpl_pose(
+                np.asarray(body_poses),
+                smpl_joints_local=smpl_joints,
+            )
+    finally:
+        three_point.close()
+
+
 class PicoStreamer(BaseStreamer):
-    def __init__(self):
+    def __init__(self, enable_smpl_visualization: bool = False):
         self.run_pico_service()
         self.xr_client = XrClient()
+        self.enable_smpl_visualization = enable_smpl_visualization
+        self._smpl_context = mp.get_context("spawn")
+        self._smpl_queue = None
+        self._smpl_stop = None
+        self._smpl_process = None
 
         self.reset_status(reset_control_enabled=True)
 
     def run_pico_service(self):
         existing_service = subprocess.run(
-            ["pgrep", "-f", "[rR]obotics[Ss]ervice"],
+            ["pgrep", "-f", "[rR]obotics[Ss]ervice[Pp]rocess"],
             capture_output=True,
             text=True,
             check=False,
@@ -38,19 +91,76 @@ class PicoStreamer(BaseStreamer):
             )
             return
 
-        # Run the pico service when this is the first PICO consumer.
-        self.pico_service_pid = subprocess.Popen(
-            ["bash", "/opt/apps/roboticsservice/runService.sh"]
+        # Start the real service process directly.  runService.sh backgrounds
+        # it, so the returned PID belongs to a short-lived shell and cannot be
+        # cleaned up when the collection session exits.
+        service_dir = Path("/opt/apps/roboticsservice")
+        service_env = os.environ.copy()
+        service_env["LD_LIBRARY_PATH"] = ":".join(
+            filter(
+                None,
+                [
+                    service_env.get("LD_LIBRARY_PATH", ""),
+                    str(service_dir),
+                    str(service_dir / "lib"),
+                    str(service_dir / "SDK/x64"),
+                ],
+            )
         )
-        print(f"Pico service running with pid {self.pico_service_pid.pid}")
+        service_env["QT_PLUGIN_PATH"] = ":".join(
+            filter(None, [str(service_dir / "plugins"), service_env.get("QT_PLUGIN_PATH", "")])
+        )
+        service_env["QT_QML_PATH"] = ":".join(
+            filter(None, [str(service_dir / "qml"), service_env.get("QT_QML_PATH", "")])
+        )
+        launcher_process = subprocess.Popen(
+            [str(service_dir / "RoboticsServiceProcess")],
+            cwd=service_dir,
+            env=service_env,
+        )
+        try:
+            launcher_process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            service_pid = launcher_process.pid
+        else:
+            service_pid = None
+        for _ in range(50):
+            if service_pid is not None:
+                break
+            detected = subprocess.run(
+                ["pgrep", "-f", "[rR]obotics[Ss]ervice[Pp]rocess"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if detected.returncode == 0:
+                service_pid = int(detected.stdout.splitlines()[-1])
+                break
+            time.sleep(0.1)
+        if service_pid is None:
+            raise RuntimeError("RoboticsServiceProcess did not start within 5 seconds")
+        self.pico_service_pid = service_pid
+        print(f"Pico service running with pid {service_pid}")
 
     def stop_pico_service(self):
-        # find pid and kill it
-        if self.pico_service_pid:
-            subprocess.Popen(["kill", "-9", str(self.pico_service_pid.pid)])
-            print(f"Pico service killed with pid {self.pico_service_pid.pid}")
-        else:
+        if self.pico_service_pid is None:
             print("Pico service is shared with another process; leaving it running")
+            return
+        service_pid = self.pico_service_pid
+        try:
+            os.kill(service_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        for _ in range(30):
+            try:
+                os.kill(service_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(service_pid, signal.SIGKILL)
+        print(f"Pico service stopped with pid {service_pid}")
+        self.pico_service_pid = None
 
     def reset_status(self, reset_control_enabled: bool = False):
         self.current_base_height = 0.74  # Initial base height, 0.74m (standing height)
@@ -88,6 +198,7 @@ class PicoStreamer(BaseStreamer):
                         first_timestamp = timestamp
                     elif timestamp != first_timestamp:
                         print("PICO headset and controller data received.")
+                        self._start_smpl_visualizer()
                         return
             except Exception as exc:
                 if time.monotonic() - last_report_time >= 1.0:
@@ -109,7 +220,44 @@ class PicoStreamer(BaseStreamer):
         return np.linalg.norm(pose[3:7]) > 1e-6
 
     def stop_streaming(self):
+        if self._smpl_stop is not None:
+            self._smpl_stop.set()
+        if self._smpl_process is not None:
+            self._smpl_process.join(timeout=2.0)
         self.xr_client.close()
+        self.stop_pico_service()
+
+    def _start_smpl_visualizer(self):
+        if not self.enable_smpl_visualization or self._smpl_process is not None:
+            return
+        self._smpl_queue = self._smpl_context.Queue(maxsize=1)
+        self._smpl_stop = self._smpl_context.Event()
+        self._smpl_process = self._smpl_context.Process(
+            target=_run_main_smpl_visualizer,
+            args=(self._smpl_queue, self._smpl_stop),
+            name="pico-main-smpl-visualizer",
+            daemon=True,
+        )
+        self._smpl_process.start()
+
+    def _publish_smpl_visualization_frame(self, pico_data):
+        if self._smpl_queue is None:
+            return
+        body_data = pico_data.get("body_tracking_data")
+        if not body_data or "poses" not in body_data:
+            return
+        body_poses = np.asarray(body_data["poses"]).copy()
+        try:
+            self._smpl_queue.put_nowait(body_poses)
+        except queue.Full:
+            try:
+                self._smpl_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._smpl_queue.put_nowait(body_poses)
+            except queue.Full:
+                pass
 
     def get(self) -> StreamerOutput:
         pico_data = self._get_pico_data()
@@ -166,6 +314,8 @@ class PicoStreamer(BaseStreamer):
         return pico_data
 
     def _generate_unified_raw_data(self, pico_data):
+        self._publish_smpl_visualization_frame(pico_data)
+
         # Get controller position and orientation in z up world frame
         left_controller_T = self._process_xr_pose(pico_data["left_pose"], pico_data["head_pose"])
         right_controller_T = self._process_xr_pose(pico_data["right_pose"], pico_data["head_pose"])
@@ -224,7 +374,11 @@ class PicoStreamer(BaseStreamer):
         height_increment = 0.01  # Small step per call when button is pressed
         if not self.combo_suppression_active and pico_data["Y"]:
             self.current_base_height += height_increment
-        elif not self.combo_suppression_active and pico_data["X"]:
+        elif (
+            not self.combo_suppression_active
+            and pico_data["B"]
+            and pico_data["left_grip"] <= 0.5
+        ):
             self.current_base_height -= height_increment
         self.current_base_height = np.clip(self.current_base_height, 0.2, 0.74)
 

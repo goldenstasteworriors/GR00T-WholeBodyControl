@@ -265,7 +265,7 @@ class DecoupledVLACollectionLaunchConfig:
     """Start camera viewer pane."""
 
     # Optional PICO metadata streamer
-    pico_data_streamer: bool = False
+    pico_data_streamer: bool = True
     """Start gear_sonic PICO pose streamer for SMPL/VR3PT dataset fields."""
 
     pico_data_manager: bool = False
@@ -453,6 +453,7 @@ def _build_teleop_args(config: DecoupledVLACollectionLaunchConfig, interface: st
         *_bool_arg("with-hands", config.with_hands),
         *_bool_arg("high-elbow-pose", config.high_elbow_pose),
         *_bool_arg("enable-visualization", config.enable_visualization),
+        *_bool_arg("pico-vis-smpl", config.pico_vis_vr3pt or config.pico_vis_smpl),
         *_bool_arg("enable-real-device", config.enable_real_device),
     ]
     return args
@@ -538,10 +539,8 @@ def _build_pico_data_args(config: DecoupledVLACollectionLaunchConfig) -> list[st
         args += ["--hand-task-config", config.hand_task_config]
     if config.pico_data_manager:
         args.append("--manager")
-    if config.pico_vis_vr3pt:
-        args.append("--vis_vr3pt")
-    if config.pico_vis_smpl:
-        args.append("--vis_smpl")
+    # Visualization consumes the teleop process's PICO frames, so this second
+    # XR client remains headless and cannot compete for the display input.
     if config.pico_waist_tracking:
         args.append("--waist_tracking")
     return args
@@ -597,14 +596,6 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         _send_to_target(f"{SESSION_NAME}:sim", sim_cmd, wait=3.0)
         subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
 
-    if config.pico_data_streamer:
-        subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "pico_data"])
-        pico_cmd = prefix + runtime_env + _shell_join(_build_pico_data_args(config))
-        _send_to_target(f"{SESSION_NAME}:pico_data", pico_cmd, wait=2.0)
-        subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
-        if profile_log_dir is not None:
-            _pipe_pane_to_log(f"{SESSION_NAME}:pico_data.0", profile_log_dir / "pico_data.log")
-
     control_cmd = prefix + runtime_env + _shell_join(_build_control_args(config, interface))
     teleop_cmd = prefix + runtime_env + _shell_join(_build_teleop_args(config, interface))
     exporter_cmd = prefix + runtime_env + _shell_join(_build_exporter_args(config))
@@ -628,6 +619,13 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
 
     _send_to_target(f"{SESSION_NAME}:collection.0", control_cmd, wait=3.0)
     _send_to_target(f"{SESSION_NAME}:collection.2", teleop_cmd, wait=2.0)
+    if config.pico_data_streamer:
+        subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "pico_data"])
+        pico_cmd = prefix + runtime_env + _shell_join(_build_pico_data_args(config))
+        _send_to_target(f"{SESSION_NAME}:pico_data", pico_cmd, wait=2.0)
+        subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
+        if profile_log_dir is not None:
+            _pipe_pane_to_log(f"{SESSION_NAME}:pico_data.0", profile_log_dir / "pico_data.log")
     if config.camera_viewer:
         _send_to_target(f"{SESSION_NAME}:collection.3", viewer_cmd, wait=1.0)
     _send_to_target(f"{SESSION_NAME}:collection.1", exporter_cmd, wait=1.0)
