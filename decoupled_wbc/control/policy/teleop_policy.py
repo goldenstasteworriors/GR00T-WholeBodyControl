@@ -29,6 +29,7 @@ class TeleopPolicy(Policy):
         enable_real_device: bool = True,
         replay_data_path: Optional[str] = None,
         replay_speed: float = 1.0,
+        pico_vis_smpl: bool = False,
         wait_for_activation: int = 5,
         activate_keyboard_listener: bool = True,
         activation_hold_duration: float = 0.5,
@@ -52,6 +53,7 @@ class TeleopPolicy(Policy):
             body_streamer_keyword=body_streamer_keyword,
             replay_data_path=replay_data_path,
             replay_speed=replay_speed,
+            pico_vis_smpl=pico_vis_smpl,
         )
         self.robot_model = robot_model
         self.retargeting_ik = retargeting_ik
@@ -63,6 +65,7 @@ class TeleopPolicy(Policy):
         self._activation_deadline: Optional[float] = None
         self._resume_ramp_deadline: Optional[float] = None
         self._latest_robot_q: Optional[np.ndarray] = None
+        self._startup_reference_synced = False
         self._held_body_q = robot_model.default_body_pose.copy()
         self._held_upper_body_pose = robot_model.get_initial_upper_body_pose().copy()
         self._last_safe_upper_target = self._held_upper_body_pose.copy()
@@ -85,6 +88,14 @@ class TeleopPolicy(Policy):
         if q.shape != self.robot_model.default_body_pose.shape:
             return
         self._latest_robot_q = q.copy()
+        if not self._startup_reference_synced:
+            upper_indices = self.robot_model.get_joint_group_indices("upper_body")
+            self._held_body_q = q.copy()
+            self._held_upper_body_pose = q[upper_indices].copy()
+            self._last_safe_upper_target = self._held_upper_body_pose.copy()
+            self.retargeting_ik.reset(reference_full_q=self._held_body_q)
+            self._startup_reference_synced = True
+            print("Teleop startup reference synchronized from robot state")
 
     def set_lower_body_policy_active(self, active: bool) -> None:
         """Synchronize the confirmed lower-body state and enforce activation ordering."""
@@ -326,6 +337,7 @@ class TeleopPolicy(Policy):
         self.is_active = False
         self._teleop_state = "paused"
         self._latest_robot_q = None
+        self._startup_reference_synced = False
         self._held_body_q = self.robot_model.default_body_pose.copy()
         self._held_upper_body_pose = self.robot_model.get_initial_upper_body_pose().copy()
         self._last_safe_upper_target = self._held_upper_body_pose.copy()

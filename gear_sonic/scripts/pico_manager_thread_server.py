@@ -25,6 +25,8 @@
 from collections import defaultdict, deque
 from enum import Enum, IntEnum
 import os
+from pathlib import Path
+import signal
 import subprocess
 import threading
 import time
@@ -83,10 +85,14 @@ except ImportError:
     xrt = None
 
 
+_robotics_service_pid: int | None = None
+
+
 def _start_robotics_service_if_needed() -> None:
     """Start the shared XRoboToolkit service only when it is not already running."""
+    global _robotics_service_pid
     existing_service = subprocess.run(
-        ["pgrep", "-f", "[rR]obotics[Ss]ervice"],
+        ["pgrep", "-f", "[rR]obotics[Ss]ervice[Pp]rocess"],
         capture_output=True,
         text=True,
         check=False,
@@ -97,7 +103,79 @@ def _start_robotics_service_if_needed() -> None:
             f"(pid {existing_service.stdout.splitlines()[0]})"
         )
         return
-    subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
+    service_dir = Path("/opt/apps/roboticsservice")
+    service_env = os.environ.copy()
+    service_env["LD_LIBRARY_PATH"] = ":".join(
+        filter(
+            None,
+            [
+                service_env.get("LD_LIBRARY_PATH", ""),
+                str(service_dir),
+                str(service_dir / "lib"),
+                str(service_dir / "SDK/x64"),
+            ],
+        )
+    )
+    service_env["QT_PLUGIN_PATH"] = ":".join(
+        filter(None, [str(service_dir / "plugins"), service_env.get("QT_PLUGIN_PATH", "")])
+    )
+    service_env["QT_QML_PATH"] = ":".join(
+        filter(None, [str(service_dir / "qml"), service_env.get("QT_QML_PATH", "")])
+    )
+    launcher_process = subprocess.Popen(
+        [str(service_dir / "RoboticsServiceProcess")],
+        cwd=service_dir,
+        env=service_env,
+    )
+    try:
+        launcher_process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        service_pid = launcher_process.pid
+    else:
+        service_pid = None
+    for _ in range(50):
+        if service_pid is not None:
+            break
+        detected = subprocess.run(
+            ["pgrep", "-f", "[rR]obotics[Ss]ervice[Pp]rocess"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if detected.returncode == 0:
+            service_pid = int(detected.stdout.splitlines()[-1])
+            break
+        time.sleep(0.1)
+    if service_pid is None:
+        raise RuntimeError("RoboticsServiceProcess did not start within 5 seconds")
+    _robotics_service_pid = service_pid
+    print(f"Started RoboticsServiceProcess (pid {service_pid})")
+
+
+def _stop_owned_robotics_service() -> None:
+    """Stop only the RoboticsServiceProcess started by this Python process."""
+    global _robotics_service_pid
+    service_pid = _robotics_service_pid
+    if service_pid is None:
+        return
+    try:
+        os.kill(service_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    for _ in range(30):
+        try:
+            os.kill(service_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(service_pid, signal.SIGKILL)
+    print(f"Stopped RoboticsServiceProcess (pid {service_pid})")
+    _robotics_service_pid = None
+
+
+def _shutdown_signal_handler(signum, frame) -> None:
+    raise KeyboardInterrupt
 
 try:
     from gear_sonic.utils.teleop.solver.hand.g1_gripper_ik_solver import (
@@ -2406,6 +2484,8 @@ def run_pico_manager(
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _shutdown_signal_handler)
+    signal.signal(signal.SIGHUP, _shutdown_signal_handler)
 
     import argparse
 
@@ -2541,38 +2621,41 @@ if __name__ == "__main__":
     # G1 robot visualization is enabled by default when vis_vr3pt is used
     with_g1_robot = not args.no_g1
 
-    if args.manager:
-        run_pico_manager(
-            port=args.port,
-            buffer_size=args.buffer_size,
-            num_frames_to_send=args.num_frames_to_send,
-            target_fps=args.target_fps,
-            use_cuda=args.cuda,
-            record_dir=args.record_dir,
-            record_format=args.record_format,
-            zmq_feedback_host=args.zmq_feedback_host,
-            zmq_feedback_port=args.zmq_feedback_port,
-            enable_vis_vr3pt=args.vis_vr3pt,
-            with_g1_robot=with_g1_robot,
-            enable_waist_tracking=args.waist_tracking,
-            enable_smpl_vis=args.vis_smpl,
-            input_source=args.input_source,
-            hand_task=args.hand_task,
-        )
-    else:
-        # Run legacy single-thread pose streaming
-        run_pico(
-            buffer_size=args.buffer_size,
-            port=args.port,
-            num_frames_to_send=args.num_frames_to_send,
-            target_fps=args.target_fps,
-            use_cuda=args.cuda,
-            record_dir=args.record_dir,
-            record_format=args.record_format,
-            enable_vis_vr3pt=args.vis_vr3pt,
-            with_g1_robot=with_g1_robot,
-            enable_waist_tracking=args.waist_tracking,
-            enable_smpl_vis=args.vis_smpl,
-            input_source=args.input_source,
-            hand_task=args.hand_task,
-        )
+    try:
+        if args.manager:
+            run_pico_manager(
+                port=args.port,
+                buffer_size=args.buffer_size,
+                num_frames_to_send=args.num_frames_to_send,
+                target_fps=args.target_fps,
+                use_cuda=args.cuda,
+                record_dir=args.record_dir,
+                record_format=args.record_format,
+                zmq_feedback_host=args.zmq_feedback_host,
+                zmq_feedback_port=args.zmq_feedback_port,
+                enable_vis_vr3pt=args.vis_vr3pt,
+                with_g1_robot=with_g1_robot,
+                enable_waist_tracking=args.waist_tracking,
+                enable_smpl_vis=args.vis_smpl,
+                input_source=args.input_source,
+                hand_task=args.hand_task,
+            )
+        else:
+            # Run legacy single-thread pose streaming
+            run_pico(
+                buffer_size=args.buffer_size,
+                port=args.port,
+                num_frames_to_send=args.num_frames_to_send,
+                target_fps=args.target_fps,
+                use_cuda=args.cuda,
+                record_dir=args.record_dir,
+                record_format=args.record_format,
+                enable_vis_vr3pt=args.vis_vr3pt,
+                with_g1_robot=with_g1_robot,
+                enable_waist_tracking=args.waist_tracking,
+                enable_smpl_vis=args.vis_smpl,
+                input_source=args.input_source,
+                hand_task=args.hand_task,
+            )
+    finally:
+        _stop_owned_robotics_service()

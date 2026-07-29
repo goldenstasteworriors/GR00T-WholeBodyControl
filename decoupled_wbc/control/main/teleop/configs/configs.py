@@ -191,6 +191,9 @@ class BaseConfig(ArgsConfigTemplate):
     enable_visualization: bool = False
     """Whether to enable visualization."""
 
+    pico_vis_smpl: bool = False
+    """Display PICO full-body tracking with the Main collection visualizer."""
+
     enable_real_device: bool = True
     """Whether to enable real device."""
 

@@ -19,6 +19,7 @@ class TeleopStreamer:
         body_streamer_keyword="",
         replay_data_path: Optional[str] = None,
         replay_speed: float = 1.0,
+        pico_vis_smpl: bool = False,
     ):
         # initialize the body
         self.body = robot_model
@@ -60,7 +61,7 @@ class TeleopStreamer:
             elif body_control_device == "pico":
                 from decoupled_wbc.control.teleop.streamers.pico_streamer import PicoStreamer
 
-                self.body_streamer = PicoStreamer()
+                self.body_streamer = PicoStreamer(enable_smpl_visualization=pico_vis_smpl)
                 self.body_streamer.start_streaming()
             elif body_control_device == "dummy":
                 from decoupled_wbc.control.teleop.streamers.dummy_streamer import DummyStreamer
