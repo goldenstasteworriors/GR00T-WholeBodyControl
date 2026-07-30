@@ -25,6 +25,8 @@
 from collections import defaultdict, deque
 from enum import Enum, IntEnum
 import os
+from pathlib import Path
+import signal
 import subprocess
 import threading
 import time
@@ -36,6 +38,11 @@ import torch
 import zmq
 
 from gear_sonic.utils.teleop import input_readers
+from gear_sonic.utils.data_collection.inspire_hand_tasks import (
+    DEFAULT_HAND_TASK,
+    HAND_TASK_CONFIG_ENV,
+    available_hand_tasks,
+)
 from gear_sonic.utils.teleop.zmq.zmq_poller import ZMQPoller
 from gear_sonic.trl.utils.rotation_conversion import decompose_rotation_aa
 from gear_sonic.trl.utils.torch_transform import (
@@ -78,13 +85,97 @@ except ImportError:
     xrt = None
 
 
-def _start_xrt_service_if_needed() -> None:
-    """Start XRoboToolkit service unless an external launcher already did it."""
-    if os.environ.get("SONIC_SKIP_XRT_SERVICE_START") == "1":
-        print("Skipping XRoboToolkit service start; using externally managed service.")
-        return
-    subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
+_robotics_service_pid: int | None = None
 
+
+def _start_robotics_service_if_needed() -> None:
+    """Start the shared XRoboToolkit service only when it is not already running."""
+    global _robotics_service_pid
+    existing_service = subprocess.run(
+        ["pgrep", "-f", "[rR]obotics[Ss]ervice[Pp]rocess"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if existing_service.returncode == 0:
+        print(
+            "Reusing existing RoboticsServiceProcess "
+            f"(pid {existing_service.stdout.splitlines()[0]})"
+        )
+        return
+    service_dir = Path("/opt/apps/roboticsservice")
+    service_env = os.environ.copy()
+    service_env["LD_LIBRARY_PATH"] = ":".join(
+        filter(
+            None,
+            [
+                service_env.get("LD_LIBRARY_PATH", ""),
+                str(service_dir),
+                str(service_dir / "lib"),
+                str(service_dir / "SDK/x64"),
+            ],
+        )
+    )
+    service_env["QT_PLUGIN_PATH"] = ":".join(
+        filter(None, [str(service_dir / "plugins"), service_env.get("QT_PLUGIN_PATH", "")])
+    )
+    service_env["QT_QML_PATH"] = ":".join(
+        filter(None, [str(service_dir / "qml"), service_env.get("QT_QML_PATH", "")])
+    )
+    launcher_process = subprocess.Popen(
+        [str(service_dir / "RoboticsServiceProcess")],
+        cwd=service_dir,
+        env=service_env,
+    )
+    try:
+        launcher_process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        service_pid = launcher_process.pid
+    else:
+        service_pid = None
+    for _ in range(50):
+        if service_pid is not None:
+            break
+        detected = subprocess.run(
+            ["pgrep", "-f", "[rR]obotics[Ss]ervice[Pp]rocess"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if detected.returncode == 0:
+            service_pid = int(detected.stdout.splitlines()[-1])
+            break
+        time.sleep(0.1)
+    if service_pid is None:
+        raise RuntimeError("RoboticsServiceProcess did not start within 5 seconds")
+    _robotics_service_pid = service_pid
+    print(f"Started RoboticsServiceProcess (pid {service_pid})")
+
+
+def _stop_owned_robotics_service() -> None:
+    """Stop only the RoboticsServiceProcess started by this Python process."""
+    global _robotics_service_pid
+    service_pid = _robotics_service_pid
+    if service_pid is None:
+        return
+    try:
+        os.kill(service_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    for _ in range(30):
+        try:
+            os.kill(service_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(service_pid, signal.SIGKILL)
+    print(f"Stopped RoboticsServiceProcess (pid {service_pid})")
+    _robotics_service_pid = None
+
+
+def _shutdown_signal_handler(signum, frame) -> None:
+    raise KeyboardInterrupt
 
 try:
     from gear_sonic.utils.teleop.solver.hand.g1_gripper_ik_solver import (
@@ -174,6 +265,68 @@ OFFSETS = [
     ),  # R-Wrist: roll -90° about fixed X, then yaw 180° about fixed Z
     sRot.from_euler("xyz", [0, 0, -90], degrees=True),  # Neck: yaw -90° about fixed Z
 ]
+
+# XRoboToolkit poses are [x, y, z, qx, qy, qz, qw] in a Y-up frame.  The
+# decoupled teleop path uses the same basis conversion for controller poses.
+_R_XR_TO_Z_UP = np.array(
+    [
+        [0.0, 0.0, -1.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ],
+    dtype=np.float64,
+)
+
+
+def _valid_xr_pose(pose) -> bool:
+    """Return whether an XRT device pose contains a finite, non-zero quaternion."""
+    arr = np.asarray(pose)
+    return (
+        arr.size >= 7
+        and np.isfinite(arr[:7]).all()
+        and np.linalg.norm(arr[3:7]) > 1e-6
+    )
+
+
+def _raw_xr_3pt_pose(
+    left_controller_pose,
+    right_controller_pose,
+    headset_pose,
+) -> np.ndarray | None:
+    """Convert controllers/headset into a headset-relative Z-up VR3PT pose.
+
+    The output order is left wrist, right wrist, neck. Quaternions use WXYZ,
+    matching ``ThreePointPose`` and the exported ``teleop.vr_3pt_*`` fields.
+    This path intentionally does not synthesize SMPL joints when body tracking
+    is unavailable.
+    """
+    raw_poses = (left_controller_pose, right_controller_pose, headset_pose)
+    if not all(_valid_xr_pose(pose) for pose in raw_poses):
+        return None
+
+    positions = []
+    rotations = []
+    for pose in raw_poses:
+        arr = np.asarray(pose, dtype=np.float64).reshape(-1)
+        positions.append(_R_XR_TO_Z_UP @ arr[:3])
+        rotation = sRot.from_quat(arr[3:7]).as_matrix()
+        rotations.append(_R_XR_TO_Z_UP @ rotation @ _R_XR_TO_Z_UP.T)
+
+    headset_yaw = sRot.from_matrix(rotations[2]).as_euler("xyz")[2]
+    remove_headset_yaw = sRot.from_euler("z", -headset_yaw)
+    head_position = positions[2]
+
+    result = np.zeros((3, 7), dtype=np.float32)
+    for index in (0, 1):
+        result[index, :3] = remove_headset_yaw.apply(positions[index] - head_position)
+        result[index, 3:] = sRot.from_matrix(
+            remove_headset_yaw.as_matrix() @ rotations[index]
+        ).as_quat(scalar_first=True)
+    result[2, :3] = 0.0
+    result[2, 3:] = sRot.from_matrix(
+        remove_headset_yaw.as_matrix() @ rotations[2]
+    ).as_quat(scalar_first=True)
+    return result
 
 
 def _compute_rel_transform(pose, world_frame, scalar_first=True):
@@ -372,7 +525,7 @@ def run_vr3pt_live_visualizer():
     print("=" * 60)
 
     # Initialize XRT
-    _start_xrt_service_if_needed()
+    _start_robotics_service_if_needed()
     xrt.init()
     print("Waiting for body tracking data...")
     while not xrt.is_body_data_available():
@@ -422,7 +575,7 @@ def run_vr3pt_realtime_visualizer(update_hz: int = 10):
     print("=" * 60)
 
     # Initialize XRT
-    _start_xrt_service_if_needed()
+    _start_robotics_service_if_needed()
     xrt.init()
     print("Waiting for body tracking data...")
     while not xrt.is_body_data_available():
@@ -846,11 +999,30 @@ class PicoReader:
 
     def _run(self):
         last_report = time.time()
+        last_error_report = 0.0
+        last_tracking_mode = None
         while not self._stop.is_set():
-            if not xrt.is_body_data_available():
+            stamp_ns = 0
+            vr_3pt_pose_raw = None
+            try:
+                stamp_ns = xrt.get_time_stamp_ns()
+                vr_3pt_pose_raw = _raw_xr_3pt_pose(
+                    xrt.get_left_controller_pose(),
+                    xrt.get_right_controller_pose(),
+                    xrt.get_headset_pose(),
+                )
+            except Exception as e:
+                if time.monotonic() - last_error_report >= 1.0:
+                    print(f"[PicoReader] controller/headset read error: {e}")
+                    last_error_report = time.monotonic()
+
+            try:
+                body_available = bool(xrt.is_body_data_available())
+            except Exception:
+                body_available = False
+            if (vr_3pt_pose_raw is None and not body_available) or stamp_ns <= 0:
                 time.sleep(0.001)
                 continue
-            stamp_ns = xrt.get_time_stamp_ns()
             prev_stamp_ns = self._last_stamp_ns
             if prev_stamp_ns is not None and stamp_ns == prev_stamp_ns:
                 time.sleep(0.000001)
@@ -864,22 +1036,37 @@ class PicoReader:
             t_realtime = time.time()
             t_monotonic = time.monotonic()
             try:
-                body_poses = xrt.get_body_joints_pose()
-
                 sample = {
-                    "body_poses_np": np.array(body_poses),
                     "timestamp_realtime": t_realtime,
                     "timestamp_monotonic": t_monotonic,
                     "timestamp_ns": stamp_ns,
                     "dt": device_dt,
                     "fps": self._fps_ema,
                 }
+                if vr_3pt_pose_raw is not None:
+                    sample["vr_3pt_pose_raw"] = vr_3pt_pose_raw
+                if body_available:
+                    sample["body_poses_np"] = np.asarray(xrt.get_body_joints_pose())
+
                 with self._lock:
                     self._latest = sample
+
+                tracking_mode = "full-body" if "body_poses_np" in sample else "VR3PT-only"
+                if tracking_mode != last_tracking_mode:
+                    print(
+                        f"[PicoReader] {tracking_mode} tracking active; "
+                        + (
+                            "publishing SMPL and VR3PT data"
+                            if tracking_mode == "full-body"
+                            else "publishing available headset/controller data without SMPL"
+                        )
+                    )
+                    last_tracking_mode = tracking_mode
                 now = time.time()
                 if now - last_report >= 5.0:
                     print(
-                        f"[PicoReader] dt_ts: {device_dt*1000.0:.2f} ms, fps: {self._fps_ema:.2f}"
+                        f"[PicoReader] mode: {tracking_mode}, "
+                        f"dt_ts: {device_dt*1000.0:.2f} ms, fps: {self._fps_ema:.2f}"
                     )
                     last_report = now
             except Exception as e:
@@ -1078,6 +1265,23 @@ class ThreePointPose:
                 self.vr3pt_visualizer.update_smpl_joints(smpl_joints_local)
             self.vr3pt_visualizer.render()
 
+        return vr_3pt_pose
+
+    def process_raw_vr_pose(self, vr_3pt_pose_raw: np.ndarray) -> np.ndarray:
+        """Calibrate and visualize headset/controller VR3PT without requiring SMPL."""
+        vr_3pt_pose_raw = np.asarray(vr_3pt_pose_raw, dtype=np.float32)
+        if vr_3pt_pose_raw.shape != (3, 7):
+            raise ValueError(
+                f"Expected raw VR3PT pose with shape (3, 7), got {vr_3pt_pose_raw.shape}"
+            )
+
+        if self._calibration_pending:
+            self._capture_calibration(vr_3pt_pose_raw)
+        vr_3pt_pose = self._apply_calibration(vr_3pt_pose_raw)
+
+        if self.vr3pt_visualizer is not None:
+            self.vr3pt_visualizer.update_from_vr_pose(vr_3pt_pose, waist_scale=1.0)
+            self.vr3pt_visualizer.render()
         return vr_3pt_pose
 
     def close(self) -> None:
@@ -1330,6 +1534,7 @@ class PoseStreamer:
             True  # Start with buffer cleared - wait for full buffer before first send
         )
         self.yaw_accumulator = YawAccumulator()
+        self._tracking_mode: str | None = None
 
     def reset_yaw(self):
         """Called when entering pose mode. Resets yaw only.
@@ -1346,6 +1551,19 @@ class PoseStreamer:
         self.buffer_cleared = True
         self.step = 0
 
+    def _set_tracking_mode(self, tracking_mode: str) -> None:
+        if tracking_mode == self._tracking_mode:
+            return
+        self.frame_buffer.clear()
+        self.prev_stamp_ns = None
+        self.prev_smpl_pose_np = None
+        self.prev_smpl_joints_np = None
+        self.prev_body_quat_np = None
+        self.next_target_ns = None
+        self.buffer_cleared = True
+        self._tracking_mode = tracking_mode
+        print(f"[{self.log_prefix}] Switched to {tracking_mode} tracking output")
+
     def run_once(self):
         """Execute one iteration of the pose streaming loop."""
         sample = self.reader.get_latest()
@@ -1354,9 +1572,6 @@ class PoseStreamer:
             time.sleep(0.005)
             return
 
-        latest_data = compute_from_body_poses(
-            self.parent_indices, self.device, sample["body_poses_np"]
-        )
         left_menu_button, left_trigger, right_trigger, left_grip, right_grip = get_controller_inputs(
             self.reader
         )
@@ -1382,6 +1597,25 @@ class PoseStreamer:
             left_grip,
             right_trigger,
             right_grip,
+        )
+        has_body_tracking = "body_poses_np" in sample
+        self._set_tracking_mode("full-body" if has_body_tracking else "VR3PT-only")
+        if not has_body_tracking:
+            self._run_vr3pt_only(
+                sample=sample,
+                left_trigger=left_trigger,
+                right_trigger=right_trigger,
+                left_grip=left_grip,
+                right_grip=right_grip,
+                left_hand_joints=left_hand_joints,
+                right_hand_joints=right_hand_joints,
+                toggle_data_collection=toggle_data_collection,
+                toggle_data_abort=toggle_data_abort,
+            )
+            return
+
+        latest_data = compute_from_body_poses(
+            self.parent_indices, self.device, sample["body_poses_np"]
         )
         smpl_pose_np = (
             latest_data["smpl_pose"].detach().cpu().numpy()[:, :63].reshape(-1, 21, 3)[0]
@@ -1573,6 +1807,84 @@ class PoseStreamer:
             time.sleep(self.frame_time - elapsed)
         self.frame_start = time.time()
 
+    def _run_vr3pt_only(
+        self,
+        *,
+        sample: dict,
+        left_trigger: float,
+        right_trigger: float,
+        left_grip: float,
+        right_grip: float,
+        left_hand_joints: np.ndarray,
+        right_hand_joints: np.ndarray,
+        toggle_data_collection: bool,
+        toggle_data_abort: bool,
+    ) -> None:
+        """Publish real headset/controller data while body tracking is unavailable."""
+        curr_stamp_ns = int(sample.get("timestamp_ns", 0))
+        if curr_stamp_ns <= 0 or curr_stamp_ns == self.prev_stamp_ns:
+            return
+
+        step_ns = int(1e9 / max(1, self.target_fps))
+        if self.next_target_ns is None:
+            self.next_target_ns = curr_stamp_ns
+        if curr_stamp_ns < self.next_target_ns:
+            self.prev_stamp_ns = curr_stamp_ns
+            return
+
+        vr_3pt_pose = self.three_point.process_raw_vr_pose(sample["vr_3pt_pose_raw"])
+        self.frame_buffer["frame_index"].append(int(self.step))
+        buffer_is_full = len(self.frame_buffer["frame_index"]) >= self.num_frames_to_send
+        if buffer_is_full:
+            self.buffer_cleared = False
+
+        _, _, rx, _ = get_controller_axes(self.reader)
+        self.yaw_accumulator.update(rx, self.frame_time)
+
+        if buffer_is_full and not self.buffer_cleared:
+            numpy_data = {
+                "vr_position": vr_3pt_pose[:, :3].flatten(),
+                "vr_orientation": vr_3pt_pose[:, 3:].flatten(),
+                "frame_index": np.array(self.frame_buffer["frame_index"], dtype=np.int64),
+                "left_trigger": np.array([left_trigger], dtype=np.float32),
+                "right_trigger": np.array([right_trigger], dtype=np.float32),
+                "left_grip": np.array([left_grip], dtype=np.float32),
+                "right_grip": np.array([right_grip], dtype=np.float32),
+                "pico_dt": np.array([sample.get("dt", 0.0)], dtype=np.float32),
+                "pico_fps": np.array([sample.get("fps", 0.0)], dtype=np.float32),
+                "timestamp_realtime": np.array(
+                    [sample.get("timestamp_realtime", 0.0)], dtype=np.float64
+                ),
+                "timestamp_monotonic": np.array(
+                    [sample.get("timestamp_monotonic", 0.0)], dtype=np.float64
+                ),
+                "left_hand_joints": left_hand_joints.reshape(-1).astype(np.float32),
+                "right_hand_joints": right_hand_joints.reshape(-1).astype(np.float32),
+                "toggle_data_collection": np.array([toggle_data_collection], dtype=bool),
+                "toggle_data_abort": np.array([toggle_data_abort], dtype=bool),
+                "heading_increment": np.array(
+                    [self.yaw_accumulator.yaw_angle_change()], dtype=np.float32
+                ),
+            }
+            self.socket.send(pack_pose_message(numpy_data, topic="pose"))
+
+            if self.record_dir:
+                out_path = os.path.join(self.record_dir, f"pose_{self.record_idx:06d}.npz")
+                np.savez_compressed(out_path, **numpy_data)
+                self.record_idx += 1
+
+        self.step += 1
+        self.prev_stamp_ns = curr_stamp_ns
+        while self.next_target_ns <= curr_stamp_ns:
+            self.next_target_ns += step_ns
+        self.fps_counter += 1
+        current_time = time.time()
+        if current_time - self.last_fps_report >= 5.0:
+            fps = self.fps_counter / (current_time - self.last_fps_report)
+            print(f"[{self.log_prefix}] VR3PT-only FPS: {fps:.2f}, Step: {self.step}")
+            self.fps_counter = 0
+            self.last_fps_report = current_time
+
 
 def _init_input_source(
     input_source: str,
@@ -1593,15 +1905,14 @@ def _init_input_source(
             "XRoboToolkit SDK not available. Install xrobotoolkit_sdk to run Pico streaming."
         )
 
-    _start_xrt_service_if_needed()
+    _start_robotics_service_if_needed()
     xrt.init()
-    print("Waiting for body tracking data...")
-    while not xrt.is_body_data_available():
-        print("waiting for body data...")
-        time.sleep(1)
-
     reader = PicoReader(max_queue_size=buffer_size)
     reader.start()
+    print("Waiting for PICO headset/controller data (full-body tracking is optional)...")
+    while reader.get_latest() is None:
+        print("waiting for headset/controller data...")
+        time.sleep(1)
     return reader
 
 
@@ -1618,14 +1929,17 @@ def run_pico(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     input_source: str = "xrt",
+    hand_task: str = DEFAULT_HAND_TASK,
 ):
     """Run body tracking with real-time visualization and ZMQ streaming."""
     reader = _init_input_source(input_source, buffer_size)
+    os.environ["SONIC_HAND_TASK"] = hand_task
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     socket.bind(f"tcp://*:{port}")
     time.sleep(0.1)
     print(f"ZMQ socket bound to port {port}")
+    print(f"Hand task: {hand_task}")
     if build_command_message is not None and build_planner_message is not None:
         try:
             socket.send(build_command_message(start=False, stop=False, planner=False))
@@ -1921,6 +2235,7 @@ def run_pico_manager(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     input_source: str = "xrt",
+    hand_task: str = DEFAULT_HAND_TASK,
 ):
     """
     Manager: creates shared PUB socket and runs pose/planner streamers based on current mode.
@@ -1929,12 +2244,14 @@ def run_pico_manager(
       A+B+X+Y: Toggle policy start/stop
     """
     reader = _init_input_source(input_source, buffer_size)
+    os.environ["SONIC_HAND_TASK"] = hand_task
 
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     socket.bind(f"tcp://*:{port}")
     time.sleep(0.1)
     print(f"[Manager] ZMQ socket bound to port {port}")
+    print(f"[Manager] Hand task: {hand_task}")
 
     # Print available locomotion modes
     try:
@@ -2167,6 +2484,8 @@ def run_pico_manager(
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _shutdown_signal_handler)
+    signal.signal(signal.SIGHUP, _shutdown_signal_handler)
 
     import argparse
 
@@ -2260,7 +2579,24 @@ if __name__ == "__main__":
             "'isaac-teleop' for in-process IsaacTeleop / CloudXR DeviceIO"
         ),
     )
+    parser.add_argument(
+        "--hand-task",
+        type=str,
+        default=DEFAULT_HAND_TASK,
+        help="Task-specific dexterous hand mapping name from inspire_hand_tasks.json.",
+    )
+    parser.add_argument(
+        "--hand-task-config",
+        type=str,
+        default="",
+        help="Optional path to inspire_hand_tasks.json. Defaults to the project config.",
+    )
     args = parser.parse_args()
+    if args.hand_task_config:
+        os.environ[HAND_TASK_CONFIG_ENV] = args.hand_task_config
+    known_tasks = available_hand_tasks()
+    if args.hand_task not in known_tasks:
+        raise ValueError(f"Unknown --hand-task {args.hand_task!r}. Known tasks: {', '.join(known_tasks)}")
 
     # Standalone VR3Pt test modes (exit after finishing)
     if args.vr3pt_test:
@@ -2285,36 +2621,41 @@ if __name__ == "__main__":
     # G1 robot visualization is enabled by default when vis_vr3pt is used
     with_g1_robot = not args.no_g1
 
-    if args.manager:
-        run_pico_manager(
-            port=args.port,
-            buffer_size=args.buffer_size,
-            num_frames_to_send=args.num_frames_to_send,
-            target_fps=args.target_fps,
-            use_cuda=args.cuda,
-            record_dir=args.record_dir,
-            record_format=args.record_format,
-            zmq_feedback_host=args.zmq_feedback_host,
-            zmq_feedback_port=args.zmq_feedback_port,
-            enable_vis_vr3pt=args.vis_vr3pt,
-            with_g1_robot=with_g1_robot,
-            enable_waist_tracking=args.waist_tracking,
-            enable_smpl_vis=args.vis_smpl,
-            input_source=args.input_source,
-        )
-    else:
-        # Run legacy single-thread pose streaming
-        run_pico(
-            buffer_size=args.buffer_size,
-            port=args.port,
-            num_frames_to_send=args.num_frames_to_send,
-            target_fps=args.target_fps,
-            use_cuda=args.cuda,
-            record_dir=args.record_dir,
-            record_format=args.record_format,
-            enable_vis_vr3pt=args.vis_vr3pt,
-            with_g1_robot=with_g1_robot,
-            enable_waist_tracking=args.waist_tracking,
-            enable_smpl_vis=args.vis_smpl,
-            input_source=args.input_source,
-        )
+    try:
+        if args.manager:
+            run_pico_manager(
+                port=args.port,
+                buffer_size=args.buffer_size,
+                num_frames_to_send=args.num_frames_to_send,
+                target_fps=args.target_fps,
+                use_cuda=args.cuda,
+                record_dir=args.record_dir,
+                record_format=args.record_format,
+                zmq_feedback_host=args.zmq_feedback_host,
+                zmq_feedback_port=args.zmq_feedback_port,
+                enable_vis_vr3pt=args.vis_vr3pt,
+                with_g1_robot=with_g1_robot,
+                enable_waist_tracking=args.waist_tracking,
+                enable_smpl_vis=args.vis_smpl,
+                input_source=args.input_source,
+                hand_task=args.hand_task,
+            )
+        else:
+            # Run legacy single-thread pose streaming
+            run_pico(
+                buffer_size=args.buffer_size,
+                port=args.port,
+                num_frames_to_send=args.num_frames_to_send,
+                target_fps=args.target_fps,
+                use_cuda=args.cuda,
+                record_dir=args.record_dir,
+                record_format=args.record_format,
+                enable_vis_vr3pt=args.vis_vr3pt,
+                with_g1_robot=with_g1_robot,
+                enable_waist_tracking=args.waist_tracking,
+                enable_smpl_vis=args.vis_smpl,
+                input_source=args.input_source,
+                hand_task=args.hand_task,
+            )
+    finally:
+        _stop_owned_robotics_service()

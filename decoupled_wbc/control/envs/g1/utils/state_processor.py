@@ -1,3 +1,5 @@
+import contextlib
+import io
 import time
 
 import numpy as np
@@ -155,13 +157,18 @@ class InspireHandStateProcessor:
         self.state = None
         self.num_dof = 6
         self.legacy_num_dof = 7
+        self._warned_missing_state = False
+        self._last_state_data = np.zeros((1, self.legacy_num_dof * 4), dtype=np.float64)
 
     def _prepare_low_state(self) -> np.ndarray:
-        self.state = self.state_sub.Read()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.state = self.state_sub.Read(0.001)
 
         if not self.state:
-            print("No inspire hand state received")
-            return np.zeros((1, self.legacy_num_dof * 4), dtype=np.float64)
+            if not self._warned_missing_state:
+                print("No inspire hand state received; using last hand state")
+                self._warned_missing_state = True
+            return self._last_state_data
 
         offset = 6 if self.is_left else 0
         state_size = len(self.state.states)
@@ -180,4 +187,5 @@ class InspireHandStateProcessor:
             tau_est[i] = motor_state.tau_est
             ddq[i] = motor_state.ddq
 
-        return np.concatenate([q, dq, tau_est, ddq], axis=0).reshape(1, -1)
+        self._last_state_data = np.concatenate([q, dq, tau_est, ddq], axis=0).reshape(1, -1)
+        return self._last_state_data

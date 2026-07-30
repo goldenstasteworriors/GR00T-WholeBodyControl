@@ -13,7 +13,6 @@ This starts the same three processes that are usually launched manually:
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 import shlex
 import shutil
@@ -90,76 +89,6 @@ def _send_to_pane(pane_index: int, command: str, wait: float = 1.0) -> None:
     target = f"{SESSION_NAME}:0.{pane_index}"
     subprocess.run(["tmux", "send-keys", "-t", target, command, "C-m"])
     time.sleep(wait)
-
-
-def _kill_exact_processes(patterns: list[str], force: bool = False) -> None:
-    signal_name = "-9" if force else "-TERM"
-    for pattern in patterns:
-        result = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
-        for pid in result.stdout.split():
-            subprocess.run(["kill", signal_name, pid], capture_output=True)
-
-
-def _kill_existing_xrobotoolkit_service() -> None:
-    """Stop stale XRoboToolkit PC service so PICO reconnects to a fresh process."""
-    patterns = [
-        r"^/bin/bash /opt/apps/roboticsservice/run3D\.sh$",
-        r"^\./RoboticsServiceProcess$",
-        r"^\./RobotLinuxDemo\.x86_64$",
-    ]
-    _kill_exact_processes(patterns)
-    exited = False
-    for _ in range(20):
-        still_running = False
-        for pattern in patterns:
-            result = subprocess.run(["pgrep", "-f", pattern], capture_output=True)
-            still_running = still_running or result.returncode == 0
-        if not still_running:
-            exited = True
-            break
-        time.sleep(0.1)
-    if not exited:
-        _kill_exact_processes(patterns, force=True)
-    for lockfile in (
-        "/tmp/RoboticsServiceProcess_Single_Name",
-        str(Path.home() / ".local/share/PICOBusinessSuitData/lockfile"),
-    ):
-        Path(lockfile).unlink(missing_ok=True)
-
-
-def _start_clean_xrobotoolkit_service(repo_root: Path) -> None:
-    run3d = Path("/opt/apps/roboticsservice/run3D.sh")
-    if not run3d.exists():
-        print(f"WARNING: {run3d} not found; PICO manager will need to start XRoboToolkit.")
-        return
-
-    log_path = Path("/tmp/roboticsservice_clean.log")
-    display = os.environ.get("DISPLAY", ":1")
-    xauthority = os.environ.get("XAUTHORITY", "/run/user/1000/gdm/Xauthority")
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    clean_env = {
-        "HOME": str(Path.home()),
-        "USER": os.environ.get("USER", ""),
-        "LOGNAME": os.environ.get("LOGNAME", os.environ.get("USER", "")),
-        "SHELL": "/bin/bash",
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "DISPLAY": display,
-        "XAUTHORITY": xauthority,
-        "XDG_SESSION_TYPE": os.environ.get("XDG_SESSION_TYPE", "x11"),
-        "XDG_RUNTIME_DIR": runtime_dir,
-    }
-    with log_path.open("ab") as log_file:
-        subprocess.Popen(
-            ["/bin/bash", str(run3d)],
-            cwd=repo_root,
-            env=clean_env,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-    time.sleep(7.0)
 
 
 def _build_deploy_args(args: argparse.Namespace) -> list[str]:
@@ -258,33 +187,6 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not pass --vis_smpl to pico_manager_thread_server.py.",
     )
-    parser.add_argument(
-        "--no-sim-onscreen",
-        action="store_true",
-        help="Run MuJoCo simulator without an onscreen GLFW window.",
-    )
-    parser.add_argument(
-        "--sim-args",
-        default="",
-        help="Additional raw arguments passed to run_sim_loop.py.",
-    )
-    parser.add_argument(
-        "--restart-xrt-service",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Kill existing XRoboToolkit PC service before starting PICO manager.",
-    )
-    parser.add_argument(
-        "--xrt-service-mode",
-        choices=("clean-run3d", "pico-manager", "none"),
-        default="clean-run3d",
-        help=(
-            "How to start XRoboToolkit for --pico-input-source xrt. "
-            "'clean-run3d' starts /opt/apps/roboticsservice/run3D.sh in a clean env; "
-            "'pico-manager' keeps the old behavior where pico_manager starts runService.sh; "
-            "'none' assumes the service is already running."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -304,7 +206,6 @@ def main() -> None:
     print(f"  deploy checkpoint: {args.deploy_checkpoint}")
     print(f"  deploy obs config: {args.deploy_obs_config}")
     print(f"  pico input:        {args.pico_input_source}")
-    print(f"  xrt service mode:  {args.xrt_service_mode}")
     print(f"  pico manager:      {'No' if args.no_pico_manager else 'Yes'}")
     print(
         "  pico vis:          "
@@ -321,10 +222,6 @@ def main() -> None:
         f"source {venv_activate} && "
         "python gear_sonic/scripts/run_sim_loop.py"
     )
-    if args.no_sim_onscreen:
-        sim_cmd += " --no-enable-onscreen"
-    if args.sim_args:
-        sim_cmd += f" {args.sim_args}"
     print("Starting MuJoCo simulator (pane 0)...")
     _send_to_pane(0, sim_cmd, wait=2.0)
 
@@ -352,24 +249,9 @@ def main() -> None:
     if not args.no_pico_vis_smpl:
         pico_args.append("--vis_smpl")
 
-    if args.restart_xrt_service and args.pico_input_source == "xrt":
-        print("Stopping existing XRoboToolkit PC service...")
-        _kill_existing_xrobotoolkit_service()
-        time.sleep(0.5)
-
-    skip_pico_service_start = False
-    if args.pico_input_source == "xrt":
-        if args.xrt_service_mode == "clean-run3d":
-            print("Starting XRoboToolkit PC service via clean run3D.sh...")
-            _start_clean_xrobotoolkit_service(repo_root)
-            skip_pico_service_start = True
-        elif args.xrt_service_mode == "none":
-            skip_pico_service_start = True
-
     pico_cmd = (
         f"cd {shlex.quote(str(repo_root))} && "
         f"source {venv_activate} && "
-        f"{'SONIC_SKIP_XRT_SERVICE_START=1 ' if skip_pico_service_start else ''}"
         f"{_shell_join(pico_args)}"
     )
     print("Starting PICO manager (pane 2)...")

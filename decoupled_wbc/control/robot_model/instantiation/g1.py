@@ -13,6 +13,7 @@ from decoupled_wbc.control.robot_model.supplemental_info.g1.g1_supplemental_info
 def instantiate_g1_robot_model(
     waist_location: Literal["lower_body", "upper_body", "lower_and_upper_body"] = "lower_body",
     high_elbow_pose: bool = False,
+    with_hands: bool = True,
 ):
     """
     Instantiate a G1 robot model with configurable waist location and pose.
@@ -28,11 +29,11 @@ def instantiate_g1_robot_model(
         RobotModel: Configured G1 robot model
     """
     project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
+    model_dir = os.path.join(project_root, "decoupled_wbc/control/robot_model/model_data/g1")
+    urdf_name = "g1_29dof_with_hand.urdf" if with_hands else "g1_29dof.urdf"
     robot_model_config = {
-        "asset_path": os.path.join(project_root, "decoupled_wbc/control/robot_model/model_data/g1"),
-        "urdf_path": os.path.join(
-            project_root, "decoupled_wbc/control/robot_model/model_data/g1/g1_29dof_with_hand.urdf"
-        ),
+        "asset_path": model_dir,
+        "urdf_path": os.path.join(model_dir, urdf_name),
     }
     assert waist_location in [
         "lower_body",
@@ -51,7 +52,9 @@ def instantiate_g1_robot_model(
 
     # Create single configurable supplemental info instance
     robot_model_supplemental_info = G1SupplementalInfo(
-        waist_location=waist_location_enum, elbow_pose=elbow_pose_enum
+        waist_location=waist_location_enum,
+        elbow_pose=elbow_pose_enum,
+        with_hands=with_hands,
     )
 
     robot_model = RobotModel(

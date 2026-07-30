@@ -105,5 +105,16 @@ class G1InspireHand(G1ThreeFingerHand):
         self.hand_command_sender = InspireHandCommandSender(is_left=self.is_left)
         self.hand_q_offset = np.zeros(7)
 
+    def observe(self) -> dict[str, any]:
+        """Return legacy kinematic state plus the native six-motor state.
+
+        The inherited ``hand_q`` remains seven-dimensional for the existing
+        decoupled WBC kinematics.  ``inspire_hand_q`` is the unmodified
+        RH56DFTP motor state in DDS order and is intended for data logging.
+        """
+        observation = super().observe()
+        observation["inspire_hand_q"] = observation["hand_q"][:6].copy()
+        return observation
+
     def calibrate_hand(self):
         print("Skipping Inspire hand calibration; using direct open/grasp DDS commands.")

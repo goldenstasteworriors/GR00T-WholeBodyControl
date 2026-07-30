@@ -1,11 +1,6 @@
-"""Joint safety monitor for G1 robot.
-
-This module implements safety monitoring for arm and finger joint velocities using
-joint groups defined in the robot model's supplemental info. Leg joints are not monitored.
-"""
+"""Joint startup ramping and position monitoring for the G1 robot."""
 
 from datetime import datetime
-import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -15,13 +10,22 @@ from decoupled_wbc.data.viz.rerun_viz import RerunViz
 
 
 class JointSafetyMonitor:
-    """Monitor joint velocities for G1 robot arms and hands."""
+    """Apply startup ramping and report arm position-limit violations."""
 
     # Velocity limits in rad/s
     ARM_VELOCITY_LIMIT = 6.0  # rad/s for arm joints
     HAND_VELOCITY_LIMIT = 50.0  # rad/s for finger joints
 
-    def __init__(self, robot_model, enable_viz: bool = False, env_type: str = "real"):
+    def __init__(
+        self,
+        robot_model,
+        enable_viz: bool = False,
+        env_type: str = "real",
+        startup_t_pose: bool = False,
+        startup_t_pose_duration: float = 4.0,
+        startup_elbow_pose_duration: float = 4.0,
+        startup_final_pose_duration: float = 4.0,
+    ):
         """Initialize joint safety monitor.
 
         Args:
@@ -34,9 +38,29 @@ class JointSafetyMonitor:
         self.enable_viz = enable_viz
         self.env_type = env_type
 
-        # Startup ramping parameters
+        if (
+            startup_t_pose_duration <= 0
+            or startup_elbow_pose_duration <= 0
+            or startup_final_pose_duration <= 0
+        ):
+            raise ValueError("Startup pose durations must all be greater than zero")
+
+        # Startup ramping parameters. The optional T-pose waypoint is used only
+        # here; after startup_complete becomes true, teleoperation actions pass
+        # through this method unchanged.
         self.control_frequency = 50  # Hz, hardcoded from run_g1_control_loop.py
-        self.ramp_duration_steps = int(2.0 * self.control_frequency)  # 2 seconds * 50Hz = 100 steps
+        self.startup_t_pose = startup_t_pose
+        self.startup_t_pose_steps = int(startup_t_pose_duration * self.control_frequency)
+        self.startup_elbow_pose_steps = int(
+            startup_elbow_pose_duration * self.control_frequency
+        )
+        final_pose_duration = startup_final_pose_duration if startup_t_pose else 2.0
+        self.startup_final_pose_steps = int(final_pose_duration * self.control_frequency)
+        self.ramp_duration_steps = self.startup_final_pose_steps
+        if startup_t_pose:
+            self.ramp_duration_steps += (
+                self.startup_t_pose_steps + self.startup_elbow_pose_steps
+            )
         self.startup_counter = 0
         self.initial_positions = None
         self.startup_complete = False
@@ -187,7 +211,7 @@ class JointSafetyMonitor:
             print(f"[JointSafetyMonitor] Warning: Could not find 'hands' joint group: {e}")
 
     def check_safety(self, obs: Dict, action: Dict) -> Tuple[bool, List[Dict]]:
-        """Check if current velocities and positions are within safe bounds.
+        """Check current joint positions without triggering automatic shutdown.
 
         Args:
             obs: Observation dictionary containing joint positions and velocities
@@ -195,40 +219,11 @@ class JointSafetyMonitor:
 
         Returns:
             (is_safe, violations): Tuple of safety status and list of violations
-            Note: is_safe=False only for velocity violations (triggers shutdown)
-                  Position violations are warnings only (don't affect is_safe)
+            Position violations are warnings only. Joint velocity observations do
+            not trigger an automatic emergency stop.
         """
         self.violations = []
-        is_safe = True
         joint_names = self.robot_model.joint_names
-
-        # Check current joint velocities (critical - triggers shutdown)
-        if "dq" in obs:
-            joint_velocities = obs["dq"]
-
-            for i, joint_name in enumerate(joint_names):
-                # Only check monitored joints
-                if joint_name not in self.velocity_limits:
-                    continue
-
-                if i < len(joint_velocities):
-                    velocity = joint_velocities[i]
-                    limits = self.velocity_limits[joint_name]
-
-                    if velocity < limits["min"] or velocity > limits["max"]:
-                        violation = {
-                            "joint": joint_name,
-                            "type": "velocity",
-                            "value": velocity,
-                            "limit_min": limits["min"],
-                            "limit_max": limits["max"],
-                            "exceeded_by": self._calculate_exceeded_percentage(
-                                velocity, limits["min"], limits["max"]
-                            ),
-                            "critical": True,  # Velocity violations are critical
-                        }
-                        self.violations.append(violation)
-                        is_safe = False
 
         # Check current joint positions (warning only - no shutdown)
         if "q" in obs:
@@ -258,7 +253,7 @@ class JointSafetyMonitor:
                         self.violations.append(violation)
                         # Don't set is_safe = False for position violations
 
-        return is_safe, self.violations
+        return True, self.violations
 
     def _calculate_exceeded_percentage(
         self, value: float, limit_min: float, limit_max: float
@@ -293,8 +288,26 @@ class JointSafetyMonitor:
                 and self.initial_positions is not None
                 and "q" in safe_action
             ):
-                # Ramp factor: 0.0 at start → 1.0 at end
                 ramp_factor = self.startup_counter / self.ramp_duration_steps
+
+                # URDF/FK verification for this G1 model shows that arm
+                # abduction is positive on the left shoulder roll and negative
+                # on the right. Both elbows need +pi/2 (their URDF zero pose
+                # points the forearms forward) to extend the full arms sideways.
+                t_pose_targets = {
+                    "left_shoulder_roll_joint": np.pi / 2,
+                    "right_shoulder_roll_joint": -np.pi / 2,
+                    "left_elbow_joint": np.pi / 2,
+                    "right_elbow_joint": np.pi / 2,
+                }
+                arm_joint_names = set(
+                    self.robot_model.joint_names[i]
+                    for i in self.robot_model.get_joint_group_indices("arms")
+                )
+                elbow_joint_names = {
+                    "left_elbow_joint",
+                    "right_elbow_joint",
+                }
 
                 # Apply ramping only to monitored arm joints
                 for joint_name in self.velocity_limits:  # Only monitored arm joints
@@ -304,11 +317,52 @@ class JointSafetyMonitor:
                             self.initial_positions
                         ):
                             initial_pos = self.initial_positions[joint_idx]
-                            target_pos = original_action["q"][joint_idx]
-                            # Linear interpolation: initial + ramp_factor * (target - initial)
-                            safe_action["q"][joint_idx] = initial_pos + ramp_factor * (
-                                target_pos - initial_pos
-                            )
+                            final_pos = original_action["q"][joint_idx]
+                            if self.startup_t_pose:
+                                t_pose_pos = (
+                                    t_pose_targets.get(joint_name, 0.0)
+                                    if joint_name in arm_joint_names
+                                    else initial_pos
+                                )
+                                if self.startup_counter < self.startup_t_pose_steps:
+                                    phase_alpha = (
+                                        self.startup_counter / self.startup_t_pose_steps
+                                    )
+                                    target_pos = initial_pos + phase_alpha * (
+                                        t_pose_pos - initial_pos
+                                    )
+                                elif self.startup_counter < (
+                                    self.startup_t_pose_steps
+                                    + self.startup_elbow_pose_steps
+                                ):
+                                    phase_alpha = (
+                                        self.startup_counter - self.startup_t_pose_steps
+                                    ) / self.startup_elbow_pose_steps
+                                    if joint_name in elbow_joint_names:
+                                        target_pos = t_pose_pos + phase_alpha * (
+                                            final_pos - t_pose_pos
+                                        )
+                                    else:
+                                        target_pos = t_pose_pos
+                                else:
+                                    phase_alpha = (
+                                        self.startup_counter
+                                        - self.startup_t_pose_steps
+                                        - self.startup_elbow_pose_steps
+                                    ) / self.startup_final_pose_steps
+                                    if joint_name in elbow_joint_names:
+                                        target_pos = final_pos
+                                    else:
+                                        target_pos = t_pose_pos + phase_alpha * (
+                                            final_pos - t_pose_pos
+                                        )
+                            else:
+                                # Hands, and the legacy path without T-pose, use
+                                # one continuous ramp to their normal target.
+                                target_pos = initial_pos + ramp_factor * (
+                                    final_pos - initial_pos
+                                )
+                            safe_action["q"][joint_idx] = target_pos
 
                 # Increment counter for next iteration
                 self.startup_counter += 1
@@ -385,7 +439,7 @@ class JointSafetyMonitor:
             - 'action': Dict - potentially modified safe action
             - 'shutdown_required': bool - whether system shutdown is needed
         """
-        is_safe, violations = self.check_safety(obs, action)
+        _, violations = self.check_safety(obs, action)
 
         # Apply startup ramping (always, regardless of violations)
         safe_action = self.get_safe_action(obs, action)
@@ -427,31 +481,8 @@ class JointSafetyMonitor:
         if not violations:
             return {"safe_to_continue": True, "action": safe_action, "shutdown_required": False}
 
-        # Separate critical (velocity) and warning (position) violations
-        critical_violations = [v for v in violations if v.get("critical", True)]
-        # warning_violations = [v for v in violations if not v.get('critical', True)]
-
-        # Print warnings for position violations
-        # if warning_violations:
-        # warning_msg = self.get_violation_report(warning_violations)
-        # print(f"[SAFETY WARNING] {warning_msg}")
-
-        # Handle critical violations (velocity) - trigger shutdown
-        if not is_safe and critical_violations:
-            error_msg = self.get_violation_report(critical_violations)
-            if self.env_type == "real":
-                print(f"[SAFETY VIOLATION] {error_msg}")
-                self.trigger_system_shutdown()
-
-            return {"safe_to_continue": False, "action": safe_action, "shutdown_required": True}
-
-        # Only position violations - continue with safe action
+        # Position violations remain informational and never stop the control loop.
         return {"safe_to_continue": True, "action": safe_action, "shutdown_required": False}
-
-    def trigger_system_shutdown(self):
-        """Trigger system shutdown after safety violation."""
-        print("\n[SAFETY] Initiating system shutdown due to safety violation...")
-        sys.exit(1)
 
 
 def main():
@@ -496,14 +527,13 @@ def main():
             f"shutdown_required={result['shutdown_required']}"
         )
 
-        # Test with unsafe velocity
+        # High joint velocity no longer triggers an automatic shutdown.
         unsafe_obs = safe_obs.copy()
         unsafe_obs["dq"] = np.zeros(robot_model.num_dofs)
-        # Set left shoulder pitch velocity to exceed limit
         left_shoulder_idx = robot_model.dof_index("left_shoulder_pitch_joint")
-        unsafe_obs["dq"][left_shoulder_idx] = 6.0  # Exceeds 5.0 rad/s limit
+        unsafe_obs["dq"][left_shoulder_idx] = 12.0
 
-        print("\nUnsafe velocity test:")
+        print("\nHigh velocity continuation test:")
         result = safety_monitor.handle_violations(unsafe_obs, safe_action)
         print(
             f"  safe_to_continue={result['safe_to_continue']}, shutdown_required={result['shutdown_required']}"

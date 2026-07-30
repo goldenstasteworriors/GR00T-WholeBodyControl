@@ -3,7 +3,11 @@ import time
 import rclpy
 import tyro
 
-from decoupled_wbc.control.main.constants import CONTROL_GOAL_TOPIC
+from decoupled_wbc.control.main.constants import (
+    CONTROL_GOAL_TOPIC,
+    LOWER_BODY_POLICY_STATUS_TOPIC,
+    STATE_TOPIC_NAME,
+)
 from decoupled_wbc.control.main.teleop.configs.configs import TeleopConfig
 from decoupled_wbc.control.policy.lerobot_replay_policy import LerobotReplayPolicy
 from decoupled_wbc.control.policy.teleop_policy import TeleopPolicy
@@ -12,7 +16,7 @@ from decoupled_wbc.control.teleop.solver.hand.instantiation.g1_hand_ik_instantia
     instantiate_g1_hand_ik_solver,
 )
 from decoupled_wbc.control.teleop.teleop_retargeting_ik import TeleopRetargetingIK
-from decoupled_wbc.control.utils.ros_utils import ROSManager, ROSMsgPublisher
+from decoupled_wbc.control.utils.ros_utils import ROSManager, ROSMsgPublisher, ROSMsgSubscriber
 from decoupled_wbc.control.utils.telemetry import Telemetry
 
 TELEOP_NODE_NAME = "TeleopPolicy"
@@ -25,9 +29,17 @@ def main(config: TeleopConfig):
     if config.robot == "g1":
         waist_location = "lower_and_upper_body" if config.enable_waist else "lower_body"
         robot_model = instantiate_g1_robot_model(
-            waist_location=waist_location, high_elbow_pose=config.high_elbow_pose
+            waist_location=waist_location,
+            high_elbow_pose=config.high_elbow_pose,
+            with_hands=config.with_hands,
         )
-        left_hand_ik_solver, right_hand_ik_solver = instantiate_g1_hand_ik_solver()
+        if config.with_hands:
+            left_hand_ik_solver, right_hand_ik_solver = instantiate_g1_hand_ik_solver()
+            hand_control_device = config.hand_control_device
+        else:
+            left_hand_ik_solver = None
+            right_hand_ik_solver = None
+            hand_control_device = None
     else:
         raise ValueError(f"Unsupported robot name: {config.robot}")
 
@@ -48,15 +60,18 @@ def main(config: TeleopConfig):
             robot_model=robot_model,
             retargeting_ik=retargeting_ik,
             body_control_device=config.body_control_device,
-            hand_control_device=config.hand_control_device,
+            hand_control_device=hand_control_device,
             body_streamer_ip=config.body_streamer_ip,  # vive tracker, leap motion does not require
             body_streamer_keyword=config.body_streamer_keyword,
             enable_real_device=config.enable_real_device,
             replay_data_path=config.teleop_replay_path,
+            pico_vis_smpl=config.pico_vis_smpl,
         )
 
     # Create a publisher for the navigation commands
     control_publisher = ROSMsgPublisher(CONTROL_GOAL_TOPIC)
+    robot_state_subscriber = ROSMsgSubscriber(STATE_TOPIC_NAME)
+    lower_body_policy_status_subscriber = ROSMsgSubscriber(LOWER_BODY_POLICY_STATUS_TOPIC)
 
     # Create rate controller
     rate = node.create_rate(config.teleop_frequency)
@@ -64,20 +79,60 @@ def main(config: TeleopConfig):
     time_to_get_to_initial_pose = 2  # seconds
 
     telemetry = Telemetry(window_size=100)
+    pending_policy_action = None
 
     try:
         while rclpy.ok():
             with telemetry.timer("total_loop"):
                 t_start = time.monotonic()
+                robot_state = robot_state_subscriber.get_msg()
+                lower_body_policy_status = lower_body_policy_status_subscriber.get_msg()
+                if lower_body_policy_status is not None:
+                    lower_body_policy_active = bool(
+                        lower_body_policy_status.get("use_policy_action", False)
+                    )
+                    if hasattr(teleop_policy, "set_lower_body_policy_active"):
+                        teleop_policy.set_lower_body_policy_active(lower_body_policy_active)
+                    if (
+                        pending_policy_action is not None
+                        and lower_body_policy_active == pending_policy_action
+                    ):
+                        print(
+                            "Lower-body policy request acknowledged: "
+                            f"{'enabled' if lower_body_policy_active else 'disabled'}"
+                        )
+                        pending_policy_action = None
+                if iteration == 0 and robot_state is None:
+                    # Do not publish the nominal low-elbow pose while the
+                    # control loop is still moving to its startup pose.  The
+                    # first feedback sample becomes the teleop hold/IK reference.
+                    rate.sleep()
+                    continue
+                if robot_state is not None and hasattr(teleop_policy, "set_robot_state"):
+                    teleop_policy.set_robot_state(robot_state)
                 # Get the current teleop action
                 with telemetry.timer("get_action"):
                     data = teleop_policy.get_action()
+
+                requested_policy_action = data.get("set_policy_action")
+                if requested_policy_action is not None:
+                    pending_policy_action = bool(requested_policy_action)
+                    print(
+                        "Lower-body policy request queued: "
+                        f"{'enable' if pending_policy_action else 'disable'}"
+                    )
+                if pending_policy_action is not None:
+                    # This is a state transition, not a best-effort one-frame event.
+                    # Repeat it until the control loop reports the requested state.
+                    data["set_policy_action"] = pending_policy_action
+                    if not pending_policy_action:
+                        data["emergency_stop"] = True
 
                 # Add timing information to the message
                 t_now = time.monotonic()
                 data["timestamp"] = t_now
 
-                # Set target completion time - longer for initial pose, then match control frequency
+                # Set target completion time - longer for initial pose, then match control frequency.
                 if iteration == 0:
                     data["target_time"] = t_now + time_to_get_to_initial_pose
                 else:
@@ -93,7 +148,7 @@ def main(config: TeleopConfig):
                     time.sleep(time_to_get_to_initial_pose)
                 iteration += 1
             end_time = time.monotonic()
-            if (end_time - t_start) > (1 / config.teleop_frequency):
+            if config.verbose_timing and (end_time - t_start) > (1 / config.teleop_frequency):
                 telemetry.log_timing_info(context="Teleop Policy Loop Missed", threshold=0.001)
             rate.sleep()
 
@@ -102,6 +157,7 @@ def main(config: TeleopConfig):
 
     finally:
         print("Cleaning up...")
+        teleop_policy.close()
         ros_manager.shutdown()
 
 

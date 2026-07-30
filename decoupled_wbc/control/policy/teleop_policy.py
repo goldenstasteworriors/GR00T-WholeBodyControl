@@ -29,8 +29,11 @@ class TeleopPolicy(Policy):
         enable_real_device: bool = True,
         replay_data_path: Optional[str] = None,
         replay_speed: float = 1.0,
+        pico_vis_smpl: bool = False,
         wait_for_activation: int = 5,
         activate_keyboard_listener: bool = True,
+        activation_hold_duration: float = 0.5,
+        resume_max_joint_delta: float = 0.005,
     ):
         if activate_keyboard_listener:
             from decoupled_wbc.control.utils.keyboard_dispatcher import KeyboardListenerSubscriber
@@ -50,10 +53,22 @@ class TeleopPolicy(Policy):
             body_streamer_keyword=body_streamer_keyword,
             replay_data_path=replay_data_path,
             replay_speed=replay_speed,
+            pico_vis_smpl=pico_vis_smpl,
         )
         self.robot_model = robot_model
         self.retargeting_ik = retargeting_ik
         self.is_active = False
+        self.activation_hold_duration = activation_hold_duration
+        self.resume_max_joint_delta = resume_max_joint_delta
+        self._teleop_state = "paused"
+        self._lower_body_policy_active = False
+        self._activation_deadline: Optional[float] = None
+        self._resume_ramp_deadline: Optional[float] = None
+        self._latest_robot_q: Optional[np.ndarray] = None
+        self._startup_reference_synced = False
+        self._held_body_q = robot_model.default_body_pose.copy()
+        self._held_upper_body_pose = robot_model.get_initial_upper_body_pose().copy()
+        self._last_safe_upper_target = self._held_upper_body_pose.copy()
 
         self.latest_left_wrist_data = np.eye(4)
         self.latest_right_wrist_data = np.eye(4)
@@ -63,6 +78,38 @@ class TeleopPolicy(Policy):
     def set_goal(self, goal: dict[str, any]):
         # The current teleop policy doesn't take higher level commands yet.
         pass
+
+    def set_robot_state(self, robot_state: dict) -> None:
+        """Store the newest control-loop observation for clutch hold/rebase."""
+        q = robot_state.get("q")
+        if q is None:
+            return
+        q = np.asarray(q, dtype=np.float64)
+        if q.shape != self.robot_model.default_body_pose.shape:
+            return
+        self._latest_robot_q = q.copy()
+        if not self._startup_reference_synced:
+            upper_indices = self.robot_model.get_joint_group_indices("upper_body")
+            self._held_body_q = q.copy()
+            self._held_upper_body_pose = q[upper_indices].copy()
+            self._last_safe_upper_target = self._held_upper_body_pose.copy()
+            self.retargeting_ik.reset(reference_full_q=self._held_body_q)
+            self._startup_reference_synced = True
+            print("Teleop startup reference synchronized from robot state")
+
+    def set_lower_body_policy_active(self, active: bool) -> None:
+        """Synchronize the confirmed lower-body state and enforce activation ordering."""
+        active = bool(active)
+        was_active = self._lower_body_policy_active
+        self._lower_body_policy_active = active
+        self.teleop_streamer.set_lower_body_policy_active(active)
+
+        if was_active and not active and self._teleop_state in {"active", "arming"}:
+            self.is_active = False
+            self._teleop_state = "emergency_paused"
+            self._activation_deadline = None
+            self._resume_ramp_deadline = None
+            print("Upper-body teleop stopped because the lower-body policy is inactive")
 
     def get_action(self) -> dict[str, any]:
         # Get structured data
@@ -75,7 +122,9 @@ class TeleopPolicy(Policy):
 
         action = {}
 
-        # Process streamer data if active
+        # Process streamer data only after the arming hold has completed. During
+        # clutch pause the upper-body target is the last command sent to the
+        # controller, so the pause itself never changes the commanded target.
         if self.is_active and streamer_output.ik_data:
             body_data = streamer_output.ik_data["body_data"]
             left_hand_data = streamer_output.ik_data["left_hand_data"]
@@ -126,10 +175,42 @@ class TeleopPolicy(Policy):
             }
         )
 
-        # Run retargeting IK
-        if "ik_data" in action:
-            self.retargeting_ik.set_goal(action["ik_data"])
-        action["target_upper_body_pose"] = self.retargeting_ik.get_action()
+        # A pause freezes the measured upper-body pose. On resume, controller
+        # coordinates were rebased against this same pose before IK is enabled.
+        if self._teleop_state in {"paused", "arming"}:
+            action["target_upper_body_pose"] = self._held_upper_body_pose.copy()
+        else:
+            if "ik_data" in action:
+                self.retargeting_ik.set_goal(action["ik_data"])
+            raw_target = self.retargeting_ik.get_action()
+            target = raw_target
+            if self._resume_ramp_deadline is not None:
+                target = np.clip(
+                    target,
+                    self._last_safe_upper_target - self.resume_max_joint_delta,
+                    self._last_safe_upper_target + self.resume_max_joint_delta,
+                )
+                # Do not remove the limiter merely because the initial hold
+                # elapsed: doing so could release a large latent IK delta in a
+                # single control cycle.  Keep rate-limiting until the IK result
+                # has caught up with the commanded target.
+                if (
+                    time.monotonic() >= self._resume_ramp_deadline
+                    and np.allclose(
+                        raw_target,
+                        target,
+                        atol=self.resume_max_joint_delta,
+                        rtol=0.0,
+                    )
+                ):
+                    self._resume_ramp_deadline = None
+            action["target_upper_body_pose"] = target
+            self._last_safe_upper_target = target.copy()
+
+        if self._teleop_state in {"paused", "arming"}:
+            # A clutch operation must not preserve a joystick command that was
+            # held when A+X was pressed.
+            action["navigate_cmd"] = np.zeros(3)
 
         return action
 
@@ -143,27 +224,87 @@ class TeleopPolicy(Policy):
         toggle_activation_by_keyboard = key == "l"
         reset_teleop_policy_by_keyboard = key == "k"
         toggle_activation_by_teleop = teleop_data.get("toggle_activation", False)
+        set_active = teleop_data.get("set_active", None)
 
         if reset_teleop_policy_by_keyboard:
             print("Resetting teleop policy")
             self.reset()
 
-        if toggle_activation_by_keyboard or toggle_activation_by_teleop:
-            self.is_active = not self.is_active
-            if self.is_active:
-                print("Starting teleop policy")
+        now = time.monotonic()
 
-                if wait_for_activation > 0 and toggle_activation_by_keyboard:
-                    print(f"Sleeping for {wait_for_activation} seconds before starting teleop...")
-                    for i in range(wait_for_activation, 0, -1):
-                        print(f"Starting in {i}...")
-                        time.sleep(1)
+        if self._teleop_state == "arming":
+            if now >= self._activation_deadline:
+                self._teleop_state = "active"
+                self.is_active = True
+                self._activation_deadline = None
+                self._resume_ramp_deadline = now + self.activation_hold_duration
+                print("Teleop policy active")
+            return
 
-                # dda: calibration logic should use current IK data
-                self.teleop_streamer.calibrate()
-                print("Teleop policy calibrated")
-            else:
-                print("Stopping teleop policy")
+        # A+B+X+Y sends an explicit set_active=False together with the
+        # lower-body emergency-stop request.  Preserve the existing last upper
+        # body target for that separate emergency path; the A+X clutch path
+        # below is the only path that performs a controlled return-to-initial.
+        if set_active is False:
+            self.is_active = False
+            self._teleop_state = "emergency_paused"
+            self._activation_deadline = None
+            self._resume_ramp_deadline = None
+            print("Teleop stopped by emergency request")
+            return
+
+        requested_active = None
+        if set_active is not None:
+            requested_active = bool(set_active)
+        elif toggle_activation_by_keyboard or toggle_activation_by_teleop:
+            requested_active = self._teleop_state in {"paused", "emergency_paused"}
+
+        if requested_active is None:
+            return
+
+        if requested_active:
+            if not self._lower_body_policy_active:
+                print(
+                    "Ignoring A+X activation: lower-body policy has not confirmed startup"
+                )
+                return
+            self._arm_teleop(now)
+        elif self._teleop_state == "active":
+            self._enter_clutch_pause()
+
+    def _enter_clutch_pause(self) -> None:
+        """Hold the last controller target and use it as the next IK reference."""
+        self.is_active = False
+        self._teleop_state = "paused"
+        upper_indices = self.robot_model.get_joint_group_indices("upper_body")
+        if self._latest_robot_q is not None:
+            self._held_body_q = self._latest_robot_q.copy()
+        else:
+            self._held_body_q = self.robot_model.default_body_pose.copy()
+            print("WARNING: no fresh robot state while pausing; using nominal lower-body reference")
+
+        # Feedback q can lag the interpolated command slightly, especially at
+        # the wrists under gravity.  Replacing the command with feedback here
+        # creates the visible downward step reported at pause.  Retain feedback
+        # for the non-upper-body reference, but always hold the last published
+        # upper-body command exactly.
+        self._held_body_q[upper_indices] = self._last_safe_upper_target
+        self._held_upper_body_pose = self._last_safe_upper_target.copy()
+        self._resume_ramp_deadline = None
+        self.retargeting_ik.reset(reference_full_q=self._held_body_q)
+        print("Teleop paused: holding the last commanded upper-body pose")
+
+    def _arm_teleop(self, now: float) -> None:
+        """Rebase PICO at the held robot pose before accepting IK motion."""
+        self.is_active = False
+        self.retargeting_ik.reset(reference_full_q=self._held_body_q)
+        self.teleop_streamer.calibrate(reference_body_q=self._held_body_q)
+        self._teleop_state = "arming"
+        self._activation_deadline = now + self.activation_hold_duration
+        print(
+            "Teleop calibrated at the held pose; holding for "
+            f"{self.activation_hold_duration:.1f}s before activation"
+        )
 
     @contextmanager
     def activate(self):
@@ -177,11 +318,7 @@ class TeleopPolicy(Policy):
         Handle keyboard input with proper state toggle.
         """
         if keycode == "l":
-            # Toggle start state
-            self.is_active = not self.is_active
-            # Reset initialization when stopping
-            if not self.is_active:
-                self._initialized = False
+            self.check_activation({"toggle_activation": True})
         if keycode == "k":
             print("Resetting teleop policy")
             self.reset()
@@ -198,6 +335,14 @@ class TeleopPolicy(Policy):
         self.teleop_streamer.reset()
         self.retargeting_ik.reset()
         self.is_active = False
+        self._teleop_state = "paused"
+        self._latest_robot_q = None
+        self._startup_reference_synced = False
+        self._held_body_q = self.robot_model.default_body_pose.copy()
+        self._held_upper_body_pose = self.robot_model.get_initial_upper_body_pose().copy()
+        self._last_safe_upper_target = self._held_upper_body_pose.copy()
+        self._activation_deadline = None
+        self._resume_ramp_deadline = None
         self.latest_left_wrist_data = np.eye(4)
         self.latest_right_wrist_data = np.eye(4)
         self.latest_left_fingers_data = {"position": np.zeros((25, 4, 4))}

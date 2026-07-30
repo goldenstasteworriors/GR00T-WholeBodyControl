@@ -44,6 +44,11 @@ def override_wbc_config(
         "verbose": config.verbose,
         "verbose_timing": config.verbose_timing,
         "upper_body_max_joint_speed": config.upper_body_joint_speed,
+        "startup_t_pose": config.startup_t_pose,
+        "startup_t_pose_duration": config.startup_t_pose_duration,
+        "startup_elbow_pose_duration": config.startup_elbow_pose_duration,
+        "startup_final_pose_duration": config.startup_final_pose_duration,
+        "startup_final_elbow_angle": config.startup_final_elbow_angle,
         "keyboard_dispatcher_type": config.keyboard_dispatcher_type,
         "enable_gravity_compensation": config.enable_gravity_compensation,
         "gravity_compensation_joints": config.gravity_compensation_joints,
@@ -64,6 +69,19 @@ def override_wbc_config(
     if config.env_type == "real":
         # update waist pitch damping, index 14
         wbc_config["MOTOR_KD"][14] = wbc_config["MOTOR_KD"][14] - 10
+
+    if config.env_type == "sim" and config.with_hands:
+        wbc_config["ROBOT_SCENE"] = (
+            "decoupled_wbc/control/robot_model/model_data/g1/scene_29dof_activated3dex.xml"
+        )
+        wbc_config["NUM_HAND_MOTORS"] = 7
+        wbc_config["NUM_HAND_JOINTS"] = 7
+        wbc_config["HAND_TYPE"] = "dex3"
+    elif not config.with_hands:
+        wbc_config["ROBOT_SCENE"] = "decoupled_wbc/control/robot_model/model_data/g1/scene_29dof.xml"
+        wbc_config["NUM_HAND_MOTORS"] = 0
+        wbc_config["NUM_HAND_JOINTS"] = 0
+        wbc_config["HAND_TYPE"] = "none"
 
     return wbc_config
 
@@ -124,6 +142,21 @@ class BaseConfig(ArgsConfigTemplate):
     upper_body_joint_speed: float = 1000
     """Upper body joint speed."""
 
+    startup_t_pose: bool = False
+    """Route only the startup safety ramp through a G1 T-pose waypoint."""
+
+    startup_t_pose_duration: float = 4.0
+    """Seconds from the measured startup pose to the T-pose waypoint."""
+
+    startup_elbow_pose_duration: float = 4.0
+    """Seconds to move only the elbows from T-pose to their final startup angles."""
+
+    startup_final_pose_duration: float = 4.0
+    """Seconds to move all remaining joints to the normal initial pose."""
+
+    startup_final_elbow_angle: float = 0.0
+    """Elbow angle used only for the upper-body startup target."""
+
     env_name: str = "default"
     """Environment name."""
 
@@ -157,6 +190,9 @@ class BaseConfig(ArgsConfigTemplate):
 
     enable_visualization: bool = False
     """Whether to enable visualization."""
+
+    pico_vis_smpl: bool = False
+    """Display PICO full-body tracking with the Main collection visualizer."""
 
     enable_real_device: bool = True
     """Whether to enable real device."""

@@ -19,6 +19,7 @@ class TeleopStreamer:
         body_streamer_keyword="",
         replay_data_path: Optional[str] = None,
         replay_speed: float = 1.0,
+        pico_vis_smpl: bool = False,
     ):
         # initialize the body
         self.body = robot_model
@@ -60,7 +61,7 @@ class TeleopStreamer:
             elif body_control_device == "pico":
                 from decoupled_wbc.control.teleop.streamers.pico_streamer import PicoStreamer
 
-                self.body_streamer = PicoStreamer()
+                self.body_streamer = PicoStreamer(enable_smpl_visualization=pico_vis_smpl)
                 self.body_streamer.start_streaming()
             elif body_control_device == "dummy":
                 from decoupled_wbc.control.teleop.streamers.dummy_streamer import DummyStreamer
@@ -182,7 +183,7 @@ class TeleopStreamer:
 
         return streamer_data
 
-    def calibrate(self):
+    def calibrate(self, reference_body_q=None):
         """Calibrate the pre-processors using only IK data."""
         if self.replay_mode:
             ik_data = self.replay_calibration_data
@@ -191,7 +192,11 @@ class TeleopStreamer:
             ik_data = streamer_data.ik_data
 
         if self.body_pre_processor:
-            self.body_pre_processor.calibrate(ik_data, self.body_control_device)
+            self.body_pre_processor.calibrate(
+                ik_data,
+                self.body_control_device,
+                reference_body_q=reference_body_q,
+            )
         if self.left_hand_pre_processor:
             self.left_hand_pre_processor.calibrate(ik_data, self.hand_control_device)
         if self.right_hand_pre_processor:
@@ -231,6 +236,13 @@ class TeleopStreamer:
             self.body_streamer.reset_status()
         if self.hand_streamer is not None:
             self.hand_streamer.reset_status()
+
+    def set_lower_body_policy_active(self, active: bool) -> None:
+        """Synchronize controller state with the control loop's confirmed state."""
+        if self.body_streamer is not None and hasattr(
+            self.body_streamer, "set_lower_body_policy_active"
+        ):
+            self.body_streamer.set_lower_body_policy_active(active)
 
     def stop_streaming(self):
         if self.body_streamer:

@@ -12,12 +12,28 @@ import rclpy
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 import yaml
 
+from decoupled_wbc.control.main.constants import SIM_RESET_TOPIC
 from decoupled_wbc.control.envs.g1.sim.image_publish_utils import ImagePublishProcess
 from decoupled_wbc.control.envs.g1.sim.metric_utils import check_contact, check_height
 from decoupled_wbc.control.envs.g1.sim.sim_utilts import get_subtree_body_names
 from decoupled_wbc.control.envs.g1.sim.unitree_sdk2py_bridge import ElasticBand, UnitreeSdk2Bridge
+from decoupled_wbc.control.utils.ros_utils import ROSMsgSubscriber
 
 DECOUPLED_WBC_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent.parent
+
+
+def _default_ego_view_camera_config() -> Dict[str, any]:
+    camera = mujoco.MjvCamera()
+    camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+    camera.azimuth = 120
+    camera.elevation = -30
+    camera.distance = 2.0
+    camera.lookat[:] = np.array([0.0, 0.0, 0.8])
+    return {
+        "height": 400,
+        "width": 400,
+        "params": camera,
+    }
 
 
 class DefaultEnv:
@@ -32,12 +48,9 @@ class DefaultEnv:
         offscreen: bool = False,
         enable_image_publish: bool = False,
     ):
-        # global_view is only set up for this specifc scene for now.
-        if config["ROBOT_SCENE"] == "decoupled_wbc/control/robot_model/model_data/g1/scene_29dof.xml":
-            camera_configs["global_view"] = {
-                "height": 400,
-                "width": 400,
-            }
+        camera_configs = dict(camera_configs or {})
+        if not camera_configs and (offscreen or enable_image_publish):
+            camera_configs["ego_view"] = _default_ego_view_camera_config()
         self.config = config
         self.env_name = env_name
         self.num_body_dof = self.config["NUM_JOINTS"]
@@ -45,7 +58,9 @@ class DefaultEnv:
         self.sim_dt = self.config["SIMULATE_DT"]
         self.obs = None
         self.torques = np.zeros(self.num_body_dof + self.num_hand_dof * 2)
-        self.torque_limit = np.array(self.config["motor_effort_limit_list"])
+        self.torque_limit = np.array(self.config["motor_effort_limit_list"])[
+            : self.num_body_dof + self.num_hand_dof * 2
+        ]
         self.camera_configs = camera_configs
 
         # Thread safety lock
@@ -371,8 +386,9 @@ class DefaultEnv:
         hand_qpos = self.compute_hand_qpos()  # (num_hand_dof * 2,)
 
         self.mj_data.qpos[self.body_joint_index + 7 - 1] = body_qpos
-        self.mj_data.qpos[self.left_hand_index + 7 - 1] = hand_qpos[: self.num_hand_dof]
-        self.mj_data.qpos[self.right_hand_index + 7 - 1] = hand_qpos[self.num_hand_dof :]
+        if self.num_hand_dof > 0:
+            self.mj_data.qpos[self.left_hand_index + 7 - 1] = hand_qpos[: self.num_hand_dof]
+            self.mj_data.qpos[self.right_hand_index + 7 - 1] = hand_qpos[self.num_hand_dof :]
 
         mujoco.mj_kinematics(self.mj_model, self.mj_data)
         mujoco.mj_comPos(self.mj_model, self.mj_data)
@@ -678,7 +694,7 @@ class BaseSimulator:
 
     def init_subscriber(self):
         """Initialize subscribers. Can be overridden by subclasses."""
-        pass
+        self.reset_subscriber = ROSMsgSubscriber(SIM_RESET_TOPIC)
 
     def init_publisher(self):
         """Initialize publishers. Can be overridden by subclasses."""
@@ -701,6 +717,12 @@ class BaseSimulator:
                 self.sim_env.viewer and self.sim_env.viewer.is_running()
             ) or self.sim_env.viewer is None:
                 # Run simulation step
+                reset_msg = self.reset_subscriber.get_msg()
+                if reset_msg is not None:
+                    reason = reset_msg.get("reason", "manual")
+                    print(f"Resetting MuJoCo simulation: {reason}")
+                    self.reset()
+
                 self.sim_env.sim_step()
 
                 # Update viewer at viewer rate
@@ -710,6 +732,7 @@ class BaseSimulator:
                 # Calculate reward at reward rate
                 if sim_cnt % int(self.reward_dt / self.sim_dt) == 0:
                     self.sim_env.update_reward()
+                    self.sim_env.check_fall()
 
                 # Update render caches at image rate
                 if sim_cnt % int(self.image_dt / self.sim_dt) == 0:
@@ -722,7 +745,11 @@ class BaseSimulator:
         except rclpy.exceptions.ROSInterruptException:
             # This is expected when ROS shuts down - exit cleanly
             pass
-        except Exception:
+        except Exception as exc:
+            import traceback
+
+            print(f"++++error in simulator loop: {exc} ++++")
+            traceback.print_exc()
             self.close()
 
     def __del__(self):
@@ -743,6 +770,9 @@ class BaseSimulator:
             # Close viewer
             if hasattr(self.sim_env, "viewer") and self.sim_env.viewer is not None:
                 self.sim_env.viewer.close()
+            if hasattr(self.sim_env, "renderers"):
+                for renderer in self.sim_env.renderers.values():
+                    renderer.close()
 
             # Shutdown ROS
             if rclpy.ok():

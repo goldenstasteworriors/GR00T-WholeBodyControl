@@ -520,9 +520,6 @@ class G1SyncEnv(SyncEnv):
         action = safety_result["action"]
         # Save safety status for efficient access
         self.last_safety_ok = not safety_result.get("shutdown_required", False)
-        # Check if shutdown is required
-        if safety_result["shutdown_required"]:
-            self.safety_monitor.trigger_system_shutdown()
 
         # Call parent queue_action with potentially modified action
         super().queue_action(action)

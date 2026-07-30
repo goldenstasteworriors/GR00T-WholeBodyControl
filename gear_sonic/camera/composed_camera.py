@@ -600,11 +600,6 @@ class ComposedCameraClientSensor(Sensor, SensorClient):
             self._latest_message = ImageMessageSchema.deserialize(message).asdict()
             self._last_new_message_time = current_time
 
-            if self.idx % 10 == 0:
-                for image_key, image_time in self._latest_message["timestamps"].items():
-                    image_latency = (time.time() - image_time) * 1000
-                    print(f"Image latency for {image_key}: {image_latency:.2f} ms")
-
             self._msg_received_time = time.time()
             self._avg_time_per_frame.append(self._msg_received_time - self._start_time)
         elif not blocking and self._latest_message is not None:
