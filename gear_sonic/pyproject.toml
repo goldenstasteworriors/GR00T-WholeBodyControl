@@ -46,6 +46,8 @@ sim = [
     "tyro",
     "pin",
     "pyyaml",
+    "pandas",
+    "pyarrow",
     "pyzmq",
     "msgpack",
     "msgpack-numpy",

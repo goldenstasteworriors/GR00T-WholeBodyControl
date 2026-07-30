@@ -35,6 +35,51 @@ This creates `.venv_data_collection` using Python 3.10 via `uv`. It installs `ge
 This environment is separate from `.venv_teleop` and `.venv_sim` — the data exporter has heavier ML dependencies that are not needed for teleop or simulation.
 ```
 
+## Replay a Collected Episode in MuJoCo
+
+Use `replay_lerobot_mujoco.py` to inspect a recorded episode without involving
+the physical robot. The script has two modes:
+
+- `joint`: kinematically writes recorded joint angles to MuJoCo by joint name.
+- `token`: publishes recorded 64D latent actions to the local C++ SONIC decoder;
+  the decoder uses live MuJoCo observations and sends its generated joint
+  targets through the normal simulation control path.
+
+Install the simulation environment once (the replay dependencies are included):
+
+```sh
+bash install_scripts/install_mujoco_sim.sh
+```
+
+Replay measured joint angles:
+
+```sh
+python gear_sonic/scripts/replay_lerobot_mujoco.py \
+    --dataset-path outputs/my_dataset \
+    --episode-index 0 \
+    --mode joint
+```
+
+Use `--joint-column action.wbc` to visualize the recorded WBC joint targets
+instead. Joint playback is kinematic: it does not simulate contacts or run the
+SONIC policy.
+
+Replay latent tokens through the local SONIC decoder and MuJoCo:
+
+```sh
+python gear_sonic/scripts/replay_lerobot_mujoco.py \
+    --dataset-path outputs/my_dataset \
+    --episode-index 0 \
+    --mode token
+```
+
+Token mode uses the checkpoint, observation config, and planner paths saved in
+`meta/info.json` under `script_config`. Override them with
+`--deploy-checkpoint`, `--deploy-obs-config`, and `--deploy-planner` when the
+local paths differ. It creates the `sonic_dataset_replay` tmux session; press
+`Ctrl+b`, then `n`/`p` to switch between the replay and MuJoCo windows, and
+`Ctrl+\\` to stop the session.
+
 ---
 
 ## Camera Server Setup (On-Robot)
