@@ -216,6 +216,22 @@ set_target_properties(
              CXX_STANDARD_REQUIRED ON
              CXX_EXTENSIONS OFF)
 
+# Planner-only smoke test. This executable loads and runs the TensorRT planner
+# without initializing Unitree DDS or any robot control interface.
+add_executable(planner_smoke_test
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/planner_smoke_test.cpp)
+target_include_directories(planner_smoke_test PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/
+  ${PROJECT_SOURCE_DIR}/src)
+target_link_directories(planner_smoke_test PRIVATE ${CUDA_LINK_DIRS})
+target_link_libraries(planner_smoke_test PRIVATE ${PROJECT_NAME} ${EXE_LIBS})
+set_target_properties(
+  planner_smoke_test
+  PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/target/release/"
+             CXX_STANDARD 20
+             CXX_STANDARD_REQUIRED ON
+             CXX_EXTENSIONS OFF)
+
 # Optional ROS2 support for main executable and tests
 if(rclcpp_FOUND AND std_msgs_FOUND)
   # Load ROS2 configuration (handles both main executable and tests)
