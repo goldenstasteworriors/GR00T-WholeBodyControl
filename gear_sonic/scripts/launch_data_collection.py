@@ -107,30 +107,41 @@ class DataCollectionLaunchConfig:
     deploy_zmq_host: str = "localhost"
     """ZMQ host for the C++ deploy to listen on."""
 
-    deploy_onboard: bool = False
+    deploy_onboard: bool = True
     """Run C++ deploy over SSH on the G1 onboard computer instead of on this PC."""
 
-    deploy_onboard_host: str = ""
+    deploy_onboard_host: str = "192.168.123.164"
     """G1 onboard host/IP for SSH and robot-state ZMQ. Defaults to camera_host."""
 
     deploy_onboard_user: str = "unitree"
     """SSH user for onboard deployment."""
 
-    deploy_onboard_repo_root: str = "/home/unitree/data_collection/GR00T-WholeBodyControl"
+    deploy_onboard_repo_root: str = "/home/unitree/VLA/GR00T-WholeBodyControl"
     """Repository root on the G1 onboard computer."""
 
-    offboard_zmq_host: str = ""
+    deploy_onboard_prebuilt: bool = True
+    """Run the existing G1 aarch64 binary instead of rebuilding via deploy.sh."""
+
+    deploy_onboard_interface: str = "eth0"
+    """Robot network interface passed to the onboard prebuilt deploy binary."""
+
+    deploy_onboard_binary: str = "target/release/g1_deploy_onnx_ref"
+    """Binary path relative to gear_sonic_deploy on the G1 onboard computer."""
+
+    offboard_zmq_host: str = "192.168.123.222"
     """PC host/IP that onboard deploy should use to reach the PICO ZMQ server.
     Defaults to this PC's detected LAN IP when --deploy-onboard is set."""
 
-    deploy_checkpoint: str = ""
+    deploy_checkpoint: str = "policy/release/model"
     """Checkpoint path for deploy.sh (e.g., 'policy/checkpoints/my_model/model_step_100000').
     Leave empty to use the deploy.sh default."""
 
-    deploy_obs_config: str = ""
+    deploy_obs_config: str = "policy/release/observation_config.yaml"
     """Observation config file for deploy.sh. Leave empty for default."""
 
-    deploy_planner: str = ""
+    deploy_planner: str = (
+        "planner/target_vel/V2/planner_sonic_trt85_static_einsum5d.onnx"
+    )
     """Planner model path for deploy.sh. Leave empty for default."""
 
     deploy_motion_data: str = ""
@@ -146,10 +157,10 @@ class DataCollectionLaunchConfig:
     pico_input_source: str = "xrt"
     """Teleop input source for pico_manager_thread_server.py (xrt or isaac-teleop)."""
 
-    pico_vis_vr3pt: bool = False
+    pico_vis_vr3pt: bool = True
     """Enable VR 3-point visualization on the teleop streamer."""
 
-    pico_vis_smpl: bool = False
+    pico_vis_smpl: bool = True
     """Enable SMPL visualization on the teleop streamer."""
 
     pico_waist_tracking: bool = False
@@ -162,7 +173,7 @@ class DataCollectionLaunchConfig:
     """Port for PICO frozen-target feedback (g1_debug)."""
 
     # Inspire hand bridge options
-    inspire_hand_bridge: bool = True
+    inspire_hand_bridge: bool = False
     """Start decoupled_wbc/scripts/inspire_modbus_hand.py DDS->Modbus bridge."""
 
     restart_inspire_hand_bridge: bool = True
@@ -199,7 +210,7 @@ class DataCollectionLaunchConfig:
     sonic_zmq_port: int = 5556
     """Port for SMPL/pose ZMQ from pico_manager_thread_server."""
 
-    state_zmq_host: str = ""
+    state_zmq_host: str = "192.168.123.164"
     """Host for robot state/config ZMQ from C++ deploy. Defaults to localhost, or onboard host."""
 
     state_zmq_port: int = 5557
@@ -215,7 +226,7 @@ class DataCollectionLaunchConfig:
     camera_viewer: bool = True
     """Start the camera viewer pane."""
 
-    camera_host: str = "localhost"
+    camera_host: str = "192.168.123.164"
     """Camera server host (shared by data exporter and viewer)."""
 
     camera_port: int = 5555
@@ -395,6 +406,56 @@ def _shell_join(args: list[str]) -> str:
     return " ".join(shlex.quote(arg) for arg in args)
 
 
+def _build_onboard_prebuilt_command(
+    config: DataCollectionLaunchConfig, zmq_host: str
+) -> str:
+    """Build the G1-side command for an existing aarch64 deploy binary."""
+    if not config.deploy_checkpoint:
+        raise ValueError("--deploy-checkpoint is required for onboard prebuilt deploy")
+    if not config.deploy_obs_config:
+        raise ValueError("--deploy-obs-config is required for onboard prebuilt deploy")
+    if not config.deploy_planner:
+        raise ValueError("--deploy-planner is required for onboard prebuilt deploy")
+
+    motion_data = config.deploy_motion_data or "reference/example/"
+    output_type = config.deploy_output_type or "all"
+    binary = config.deploy_onboard_binary
+    deploy_args = [
+        f"./{binary}",
+        config.deploy_onboard_interface,
+        f"{config.deploy_checkpoint}_decoder.onnx",
+        motion_data,
+        "--obs-config",
+        config.deploy_obs_config,
+        "--encoder-file",
+        f"{config.deploy_checkpoint}_encoder.onnx",
+        "--planner-file",
+        config.deploy_planner,
+        "--input-type",
+        config.deploy_input_type,
+        "--output-type",
+        output_type,
+        "--zmq-host",
+        zmq_host,
+    ]
+    deploy_dir = config.deploy_onboard_repo_root + "/gear_sonic_deploy"
+    return (
+        f"cd {shlex.quote(deploy_dir)} && "
+        f"test -x {shlex.quote(binary)} || "
+        f"{{ echo 'ERROR: onboard deploy binary is missing: {binary}'; exit 1; }}; "
+        "echo ONBOARD_RELEASED_READY; "
+        f"echo CHECKPOINT={shlex.quote(config.deploy_checkpoint)}; "
+        f"echo OBS_CONFIG={shlex.quote(config.deploy_obs_config)}; "
+        f"echo PLANNER={shlex.quote(config.deploy_planner)}; "
+        f"echo ZMQ_HOST={shlex.quote(zmq_host)}; "
+        "read -r -p 'Proceed with REAL robot deployment? [Y/n]: ' confirm; "
+        "case \"$confirm\" in "
+        f"''|[Yy]) exec {_shell_join(deploy_args)} ;; "
+        "*) echo 'Deployment cancelled.' ;; "
+        "esac"
+    )
+
+
 def main(config: DataCollectionLaunchConfig):
     repo_root = Path(__file__).resolve().parent.parent.parent
     local_ip = _get_local_ip()
@@ -425,6 +486,10 @@ def main(config: DataCollectionLaunchConfig):
     if config.deploy_onboard:
         print(f"  Onboard host:    {onboard_host}")
         print(f"  Onboard repo:    {config.deploy_onboard_repo_root}")
+        print(
+            "  Onboard launch:  "
+            + ("prebuilt binary" if config.deploy_onboard_prebuilt else "deploy.sh")
+        )
     print(f"  Teleop input:    {config.pico_input_source}")
     if config.deploy_checkpoint:
         print(f"  Checkpoint:      {config.deploy_checkpoint}")
@@ -507,10 +572,13 @@ def main(config: DataCollectionLaunchConfig):
     deploy_args = _build_deploy_args(config, deploy_zmq_host, deploy_mode)
     if config.deploy_onboard:
         ssh_target = f"{config.deploy_onboard_user}@{onboard_host}"
-        remote_cmd = (
-            f"cd {shlex.quote(config.deploy_onboard_repo_root + '/gear_sonic_deploy')} && "
-            f"{_shell_join(deploy_args)}"
-        )
+        if config.deploy_onboard_prebuilt:
+            remote_cmd = _build_onboard_prebuilt_command(config, deploy_zmq_host)
+        else:
+            remote_cmd = (
+                f"cd {shlex.quote(config.deploy_onboard_repo_root + '/gear_sonic_deploy')} && "
+                f"{_shell_join(deploy_args)}"
+            )
         deploy_cmd = f"ssh -t {shlex.quote(ssh_target)} {shlex.quote(remote_cmd)}"
     else:
         deploy_cmd = (
