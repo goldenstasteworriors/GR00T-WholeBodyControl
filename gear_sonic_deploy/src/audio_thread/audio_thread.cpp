@@ -38,24 +38,30 @@ void AudioThread::loop(std::stop_token st) {
       // Clear one-shot TTS so it's only spoken once
       command_.tts_message.clear();
     }
-    if (command.streaming_data_absent && !command_last_.streaming_data_absent) {
+    auto now = std::chrono::steady_clock::now();
+    if (command.streaming_data_absent && !command_last_.streaming_data_absent &&
+        now - last_streaming_data_absent_tts_ >= TRANSIENT_WARNING_TTS_INTERVAL) {
       client_.TtsMaker(WARNING_STREAMING_DATA_ABSENT, 1);
+      last_streaming_data_absent_tts_ = now;
     }
-    if (command.motor_error && !command_last_.motor_error) {
+    if (command.motor_error && !command_last_.motor_error &&
+        now - last_motor_error_tts_ >= TRANSIENT_WARNING_TTS_INTERVAL) {
       client_.TtsMaker(WARNING_MOTOR_ERROR, 1);
+      last_motor_error_tts_ = now;
     }
     if (!command.tts_message.empty()) {
       client_.TtsMaker(command.tts_message, 1);
     }
     if (command.high_temperature && !command.high_temperature_message.empty()) {
-      auto now = std::chrono::steady_clock::now();
       if (now - last_high_temp_tts_ >= HIGH_TEMP_TTS_INTERVAL) {
         client_.TtsMaker(command.high_temperature_message, 1);
         last_high_temp_tts_ = now;
       }
     }
-    if (command.low_state_late && !command_last_.low_state_late) {
+    if (command.low_state_late && !command_last_.low_state_late &&
+        now - last_low_state_late_tts_ >= TRANSIENT_WARNING_TTS_INTERVAL) {
       client_.TtsMaker(WARNING_LOW_STATE_LATE, 1);
+      last_low_state_late_tts_ = now;
     }
 
     command_last_ = command;
