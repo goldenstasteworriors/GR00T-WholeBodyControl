@@ -24,6 +24,8 @@ G1_PATTERNS: dict[str, tuple[str, float]] = {
     "g1.low_state_age_ms": (r"LowState age:\s*([-+\d.]+)ms", 1.0),
     "g1.streaming_mean_delay_ms": (r"Streaming data mean delay:\s*([-+\d.]+)ms", 1.0),
     "g1.streaming_std_delay_ms": (r"Streaming data std delay:\s*([-+\d.]+)ms", 1.0),
+    "g1.streaming_current_delay_ms": (r"Streaming data current delay:\s*([-+\d.]+)ms", 1.0),
+    "g1.streaming_max_delay_ms": (r"Streaming data max delay:\s*([-+\d.]+)ms", 1.0),
     "g1.imu_age_ms": (r"IMU age:\s*([-+\d.]+)ms", 1.0),
     "g1.obs_ms": (r", Obs:\s*([-+\d.]+)us", 0.001),
     "g1.policy_ms": (r", Policy:\s*([-+\d.]+)us", 0.001),
@@ -40,6 +42,8 @@ DISPLAY_GROUPS = (
         "G1 控制与推理",
         (
             "g1.streaming_mean_delay_ms",
+            "g1.streaming_current_delay_ms",
+            "g1.streaming_max_delay_ms",
             "g1.low_state_age_ms",
             "g1.imu_age_ms",
             "g1.obs_ms",
@@ -68,6 +72,8 @@ DISPLAY_GROUPS = (
 
 DISPLAY_NAMES = {
     "g1.streaming_mean_delay_ms": "G1 输入流延迟",
+    "g1.streaming_current_delay_ms": "G1 输入流当前延迟",
+    "g1.streaming_max_delay_ms": "G1 输入流窗口最大延迟",
     "g1.low_state_age_ms": "LowState 数据年龄",
     "g1.imu_age_ms": "IMU 数据年龄",
     "g1.obs_ms": "观测构建",
@@ -205,12 +211,15 @@ def render(
 def self_test() -> None:
     sample = (
         "Loop timing - LowState age: 2.5ms, Streaming data mean delay: 8ms, "
-        "Streaming data std delay: 1ms, IMU age: 3ms, Obs: 1200us, "
+        "Streaming data std delay: 1ms, Streaming data current delay: 9ms, "
+        "Streaming data max delay: 180ms, IMU age: 3ms, Obs: 1200us, "
         "Policy: 2400us, Obs 2 Motor Command: 3600us, Post processing: 400us, "
         "Planner - Gather Input: 100us, Model: 31000us, Convert50Hz: 200us, Total: 31300us"
     )
     parsed = parse_g1_timing(sample)
     assert parsed["g1.low_state_age_ms"] == 2.5
+    assert parsed["g1.streaming_current_delay_ms"] == 9.0
+    assert parsed["g1.streaming_max_delay_ms"] == 180.0
     assert parsed["g1.policy_ms"] == 2.4
     assert parsed["g1.planner_model_ms"] == 31.0
     assert len(sparkline([1.0, 2.0, 3.0], 5)) == 5

@@ -15,6 +15,7 @@
 #define UTILS_HPP
 
 #include <memory>
+#include <algorithm>
 #include <chrono>
 #include <shared_mutex>
 #include <cstdint>
@@ -262,6 +263,15 @@ class RollingStats {
      */
     double stddev() const {
         return std::sqrt(variance());
+    }
+
+    /**
+     * @brief Get the maximum value currently retained in the rolling window.
+     * @return The maximum, or 0.0 if the buffer is empty.
+     */
+    double max() const {
+        if (size_ == 0) return 0.0;
+        return *std::max_element(buffer_.begin(), buffer_.begin() + size_);
     }
 
     /**
