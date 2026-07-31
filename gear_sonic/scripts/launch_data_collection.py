@@ -655,6 +655,7 @@ def main(config: DataCollectionLaunchConfig):
     exporter_cmd = (
         f"cd {repo_root} && "
         f"source .venv_data_collection/bin/activate && "
+        f"clear && "
         f"python gear_sonic/scripts/run_data_exporter.py "
         f"--task-prompt {shlex.quote(config.task_prompt)} "
         f"--data-collection-frequency {config.data_exporter_frequency} "
