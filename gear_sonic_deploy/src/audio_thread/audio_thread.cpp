@@ -39,10 +39,8 @@ void AudioThread::loop(std::stop_token st) {
       command_.tts_message.clear();
     }
     auto now = std::chrono::steady_clock::now();
-    if (command.streaming_data_absent && !command_last_.streaming_data_absent &&
-        now - last_streaming_data_absent_tts_ >= TRANSIENT_WARNING_TTS_INTERVAL) {
+    if (command.streaming_data_absent && !command_last_.streaming_data_absent) {
       client_.TtsMaker(WARNING_STREAMING_DATA_ABSENT, 1);
-      last_streaming_data_absent_tts_ = now;
     }
     if (command.motor_error && !command_last_.motor_error &&
         now - last_motor_error_tts_ >= TRANSIENT_WARNING_TTS_INTERVAL) {
