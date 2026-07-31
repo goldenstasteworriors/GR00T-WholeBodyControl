@@ -37,6 +37,7 @@ Usage (from repo root — no venv activation needed):
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -221,6 +222,21 @@ class DataCollectionLaunchConfig:
 
     text_to_speech: bool = True
     """Enable voice feedback via espeak (data exporter)."""
+
+    audio_cue_volume: float = 0.6
+    """Volume for distinct start/stop/discard recording cues."""
+
+    quiet_data_exporter: bool = True
+    """Only show recording start/stop status in the data exporter pane."""
+
+    latency_dashboard: bool = True
+    """Create a separate tmux window with live per-stage latency curves."""
+
+    latency_sample_interval: float = 0.1
+    """Seconds between recorded latency samples."""
+
+    latency_history_size: int = 180
+    """Number of recent samples shown in each latency curve."""
 
     # Camera viewer
     camera_viewer: bool = True
@@ -459,6 +475,12 @@ def _build_onboard_prebuilt_command(
 def main(config: DataCollectionLaunchConfig):
     repo_root = Path(__file__).resolve().parent.parent.parent
     local_ip = _get_local_ip()
+    log_tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", config.dataset_name).strip("._")
+    if not log_tag:
+        log_tag = time.strftime("%Y-%m-%d-%H-%M-%S")
+    runtime_log_file = repo_root / "logs" / f"data_exporter_{log_tag}.log"
+    latency_raw_file = repo_root / "logs" / f"latency_exporter_{log_tag}.jsonl"
+    latency_combined_file = repo_root / "logs" / f"latency_combined_{log_tag}.jsonl"
 
     _check_prerequisites(config)
     _kill_existing_session()
@@ -506,6 +528,8 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Profile timing:  {'Yes' if config.profile_timing else 'No'}")
     print(f"  Overwrite data:  {'Yes' if config.overwrite_existing_dataset else 'No'}")
     print(f"  Text-to-speech:  {'Yes' if config.text_to_speech else 'No'}")
+    print(f"  Quiet exporter:  {'Yes' if config.quiet_data_exporter else 'No'}")
+    print(f"  Latency curves:  {'Yes' if config.latency_dashboard else 'No'}")
     print(f"  PC IP (for PICO): {local_ip}")
     print(f"  Teleop vis:      vr3pt={config.pico_vis_vr3pt} smpl={config.pico_vis_smpl}")
     print("=" * 60)
@@ -632,15 +656,21 @@ def main(config: DataCollectionLaunchConfig):
         f"cd {repo_root} && "
         f"source .venv_data_collection/bin/activate && "
         f"python gear_sonic/scripts/run_data_exporter.py "
-        f"--task-prompt '{config.task_prompt}' "
+        f"--task-prompt {shlex.quote(config.task_prompt)} "
         f"--data-collection-frequency {config.data_exporter_frequency} "
         f"--camera-host {config.camera_host} "
         f"--camera-port {config.camera_port} "
         f"--sonic-zmq-host {config.sonic_zmq_host} "
         f"--sonic-zmq-port {config.sonic_zmq_port} "
         f"--state-zmq-host {state_zmq_host} "
-        f"--state-zmq-port {config.state_zmq_port}"
+        f"--state-zmq-port {config.state_zmq_port} "
+        f"--audio-cue-volume {config.audio_cue_volume} "
+        f"--runtime-log-file {shlex.quote(str(runtime_log_file))} "
+        f"--latency-log-file {shlex.quote(str(latency_raw_file))} "
+        f"--latency-log-interval {config.latency_sample_interval}"
     )
+    if config.quiet_data_exporter:
+        exporter_cmd += " --quiet-console"
     if config.profile_timing:
         exporter_cmd += f" --profile-timing --profile-interval {config.profile_interval}"
     if config.dataset_name:
@@ -654,6 +684,27 @@ def main(config: DataCollectionLaunchConfig):
 
     print("Starting data exporter (pane 1)...")
     _send_to_pane(2, exporter_cmd, wait=1.0)
+
+    # --- Separate tmux window: live latency curves ---
+    if config.latency_dashboard:
+        subprocess.run(
+            ["tmux", "new-window", "-d", "-t", SESSION_NAME, "-n", "latency"],
+            check=True,
+        )
+        latency_cmd = (
+            f"cd {repo_root} && "
+            f"source .venv_data_collection/bin/activate && "
+            f"python gear_sonic/scripts/run_latency_dashboard.py "
+            f"--latency-log-file {shlex.quote(str(latency_raw_file))} "
+            f"--combined-log-file {shlex.quote(str(latency_combined_file))} "
+            f"--g1-pane-target {shlex.quote(SESSION_NAME + ':data_collection.0')} "
+            f"--history-size {config.latency_history_size}"
+        )
+        subprocess.run(
+            ["tmux", "send-keys", "-t", f"{SESSION_NAME}:latency", latency_cmd, "C-m"],
+            check=True,
+        )
+        print("Starting latency dashboard (window: latency)...")
 
     # Select the data exporter pane so the user lands there for interactive input
     subprocess.run(
@@ -683,6 +734,9 @@ def main(config: DataCollectionLaunchConfig):
     print("    Pane 2 (top-right):    Data Exporter  <-- you are here")
     if config.camera_viewer:
         print("    Pane 3 (bottom-right): Camera Viewer")
+    if config.latency_dashboard:
+        print("  Window 'latency':")
+        print("    Live G1 / ThinkPad latency curves (Ctrl+b, n / p to switch)")
     print()
     print("  ** deploy.sh (pane 0) is waiting for confirmation --")
     print("     click on pane 0 and press Enter to proceed **")

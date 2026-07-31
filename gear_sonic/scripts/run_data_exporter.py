@@ -28,7 +28,7 @@ import math
 import shutil
 import struct
 import subprocess
-import tempfile
+import sys
 import threading
 import time
 import wave
@@ -117,8 +117,23 @@ class SonicDataExporterConfig:
     audio_cues: bool = True
     """Play short local audio cues for record start, stop/save, and discard."""
 
-    audio_cue_volume: float = 0.35
+    audio_cue_volume: float = 0.6
     """Audio cue volume in [0, 1]."""
+
+    audio_cue_cache_dir: str = "logs/audio_cues"
+    """Project-local directory for generated cue WAV files."""
+
+    quiet_console: bool = False
+    """Show only recording start/stop status in the interactive pane."""
+
+    runtime_log_file: str = ""
+    """Full runtime log used when quiet_console is enabled."""
+
+    latency_log_file: str = ""
+    """Optional JSONL file for per-stage latency samples."""
+
+    latency_log_interval: float = 0.1
+    """Minimum seconds between latency JSONL samples."""
 
     profile_timing: bool = False
     """Print periodic data exporter timing breakdown even when the loop does not miss."""
@@ -132,6 +147,59 @@ class SonicDataExporterConfig:
 # ---------------------------------------------------------------------------
 
 
+class RuntimeOutput:
+    """Route verbose output to a log while preserving a minimal pane status."""
+
+    def __init__(self, quiet: bool, log_file: str):
+        self.quiet = quiet
+        self._pane_stream = sys.stdout
+        self._log_stream = None
+
+        if quiet:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_stream = log_path.open("a", encoding="utf-8", buffering=1)
+            sys.stdout = self._log_stream
+            sys.stderr = self._log_stream
+            print(f"\n[{datetime.now().isoformat()}] Data exporter started")
+            print(f"[RuntimeOutput] Full log: {log_path.resolve()}")
+
+    def status(self, message: str) -> None:
+        print(message, flush=True)
+        if self.quiet:
+            self._pane_stream.write(message + "\n")
+            self._pane_stream.flush()
+
+
+class LatencyRecorder:
+    """Append rate-limited latency samples as JSONL for live plotting."""
+
+    def __init__(self, path: str, interval: float):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._stream = self.path.open("a", encoding="utf-8", buffering=1)
+        self._interval = max(0.02, float(interval))
+        self._last_write = 0.0
+
+    def write(self, metrics: dict[str, float | int | bool]) -> None:
+        now_monotonic = time.monotonic()
+        if now_monotonic - self._last_write < self._interval:
+            return
+        self._last_write = now_monotonic
+
+        payload: dict[str, float | int | bool] = {"timestamp": time.time()}
+        for key, value in metrics.items():
+            if isinstance(value, (bool, int)):
+                payload[key] = value
+            elif isinstance(value, (float, np.floating)) and math.isfinite(float(value)):
+                payload[key] = round(float(value), 4)
+        self._stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+
+    def close(self) -> None:
+        if not self._stream.closed:
+            self._stream.close()
+
+
 class TimeDeltaException(Exception):
     def __init__(self, failure_count: int, reset_timeout_sec: float):
         self.failure_count = failure_count
@@ -143,9 +211,11 @@ class TimeDeltaException(Exception):
 class AudioCue:
     """Short best-effort local sound cues for data collection state changes."""
 
-    def __init__(self, volume: float = 0.35):
+    def __init__(self, volume: float = 0.6, cache_dir: str = "logs/audio_cues"):
         self.volume = max(0.0, min(1.0, float(volume)))
         self._player = self._find_player()
+        self._cache_dir = Path(cache_dir)
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _find_player() -> str | None:
@@ -159,11 +229,14 @@ class AudioCue:
         thread = threading.Thread(target=self._play_blocking, args=(cue,), daemon=True)
         thread.start()
 
+    def play_blocking(self, cue: str) -> None:
+        self._play_blocking(cue)
+
     def _play_blocking(self, cue: str) -> None:
         patterns = {
-            "start": [(880, 0.08), (1175, 0.10)],
-            "stop": [(1175, 0.08), (880, 0.12)],
-            "discard": [(220, 0.12), (0, 0.05), (180, 0.18)],
+            "start": [(660, 0.12), (880, 0.12), (1175, 0.18)],
+            "stop": [(1175, 0.12), (880, 0.12), (660, 0.20)],
+            "discard": [(220, 0.18), (0, 0.08), (180, 0.18), (0, 0.08), (140, 0.28)],
         }
         pattern = patterns.get(cue)
         if pattern is None:
@@ -173,23 +246,15 @@ class AudioCue:
             print("\a", end="", flush=True)
             return
 
-        wav_path = None
+        wav_path = self._cache_dir / f"{cue}.wav"
         try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                wav_path = tmp.name
-            self._write_wav(wav_path, pattern)
-            cmd = [self._player, wav_path]
+            self._write_wav(str(wav_path), pattern)
+            cmd = [self._player, str(wav_path)]
             if Path(self._player).name == "play":
-                cmd = [self._player, "-q", wav_path]
+                cmd = [self._player, "-q", str(wav_path)]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         except Exception:
             print("\a", end="", flush=True)
-        finally:
-            if wav_path is not None:
-                try:
-                    Path(wav_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
 
     def _write_wav(self, path: str, pattern: list[tuple[int, float]]) -> None:
         sample_rate = 44100
@@ -329,9 +394,13 @@ class GrootDataCollector:
         profile_timing: bool = False,
         profile_interval: float = 1.0,
         audio_cue: AudioCue | None = None,
+        status_callback=None,
+        latency_recorder: LatencyRecorder | None = None,
     ):
         self.text_to_speech = text_to_speech
         self.audio_cue = audio_cue
+        self.status_callback = status_callback
+        self.latency_recorder = latency_recorder
         self.frequency = frequency
         self.loop_period = 1.0 / frequency
         self.profile_timing = profile_timing
@@ -354,6 +423,9 @@ class GrootDataCollector:
 
         self._manager_toggle_dc = False
         self._manager_toggle_da = False
+        self._active_episode_index: int | None = None
+        self._last_state_receive_monotonic: float | None = None
+        self._last_image_receive_monotonic: float | None = None
 
         self._state_subscriber = ZMQStateSubscriber(
             host=state_zmq_host,
@@ -394,15 +466,42 @@ class GrootDataCollector:
     def current_episode_index(self):
         return self.data_exporter.episode_buffer["episode_index"]
 
-    def _print_and_say(self, message: str, say: bool = True, blocking: bool = False):
+    def _print_and_say(self, message: str, say: bool = False, blocking: bool = False):
         if self.text_to_speech is not None:
             self.text_to_speech.print_and_say(message, say, blocking=blocking)
         else:
             print(message)
 
-    def _play_audio_cue(self, cue: str) -> None:
-        if self.audio_cue is not None:
-            self.audio_cue.play(cue)
+    def _play_recording_prompt(self, event: str, spoken_message: str) -> None:
+        def worker() -> None:
+            if self.audio_cue is not None:
+                self.audio_cue.play_blocking(event)
+            if self.text_to_speech is not None:
+                self.text_to_speech.say(spoken_message, blocking=True)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _announce_recording_event(self, event: str, episode_index: int) -> None:
+        spoken = {
+            "start": "Start",
+            "stop": "End",
+            "discard": "Discard",
+        }[event]
+        log_message = {
+            "start": "开始记录",
+            "stop": "结束记录",
+            "discard": "丢弃数据",
+        }[event]
+        pane_message = (
+            f"开始记录 episode {episode_index}"
+            if event == "start"
+            else f"停止记录 episode {episode_index}"
+        )
+
+        self._play_recording_prompt(event, f"{spoken}. Episode {episode_index}")
+        print(f"[Recording] {log_message} episode {episode_index}", flush=True)
+        if self.status_callback is not None:
+            self.status_callback(pane_message)
 
     def _poll_state_zmq(self):
         """Poll the ``g1_debug`` ZMQ topic for robot state (non-blocking)."""
@@ -414,6 +513,7 @@ class GrootDataCollector:
             msg["ros_timestamp"] = time.time()
 
         self.latest_proprio_msg = msg
+        self._last_state_receive_monotonic = time.monotonic()
 
     def _check_recording_commands(self):
         """Check keyboard + ZMQ toggle flags for recording commands."""
@@ -430,22 +530,29 @@ class GrootDataCollector:
             self._episode_state.change_state()
             if self._episode_state.get_state() == self._episode_state.RECORDING:
                 self._initial_yaw = None
-                self._play_audio_cue("start")
-                self._print_and_say(
-                    f"Started recording {self.current_episode_index}", blocking=False
-                )
+                self._active_episode_index = int(self.current_episode_index)
+                self._announce_recording_event("start", self._active_episode_index)
             elif self._episode_state.get_state() == self._episode_state.NEED_TO_SAVE:
-                self._play_audio_cue("stop")
-                self._print_and_say("Stopping recording, preparing to save", blocking=False)
+                episode_index = (
+                    self._active_episode_index
+                    if self._active_episode_index is not None
+                    else int(self.current_episode_index)
+                )
+                self._announce_recording_event("stop", episode_index)
             elif self._episode_state.get_state() == self._episode_state.IDLE:
-                self._print_and_say("Saved episode and back to idle state", blocking=False)
+                print("[Recording] Saved episode and returned to idle", flush=True)
         elif key == "x":
             if self._episode_state.get_state() == self._episode_state.RECORDING:
+                episode_index = (
+                    self._active_episode_index
+                    if self._active_episode_index is not None
+                    else int(self.current_episode_index)
+                )
                 self.data_exporter.save_episode_as_discarded()
                 self._episode_state.reset_state()
                 self._initial_yaw = None
-                self._play_audio_cue("discard")
-                self._print_and_say("Discarded episode", blocking=False)
+                self._announce_recording_event("discard", episode_index)
+                self._active_episode_index = None
 
     def _poll_sonic_zmq_messages(self):
         """Poll ZMQ for pose, planner, and manager_state messages (non-blocking)."""
@@ -518,6 +625,7 @@ class GrootDataCollector:
             "left_hand_joints": self._extract_hand_joints(data, "left_hand_joints"),
             "right_hand_joints": self._extract_hand_joints(data, "right_hand_joints"),
             "receive_timestamp": time.time(),
+            "receive_monotonic": time.monotonic(),
         }
 
     def _handle_pose_message(self, raw: bytes) -> None:
@@ -597,6 +705,7 @@ class GrootDataCollector:
                 "vr_3pt_orientation": vr_3pt_orientation,
                 "frame_index": frame_index,
                 "receive_timestamp": time.time(),
+                "receive_monotonic": time.monotonic(),
             }
         except Exception as e:
             if not hasattr(self, "_sonic_error_count"):
@@ -661,11 +770,49 @@ class GrootDataCollector:
                 self.data_exporter.save_episode()
                 self.sonic_timing_monitor.reset()
                 self._initial_yaw = None
-                self._print_and_say("Finished saving episode")
+                print("[Recording] Finished saving episode", flush=True)
             else:
                 self._print_and_say("Skipping save: no frames collected", say=False)
             self._episode_state.change_state()
+            self._active_episode_index = None
         return True
+
+    def _record_latency_snapshot(self) -> None:
+        if self.latency_recorder is None:
+            return
+
+        now_monotonic = time.monotonic()
+        metrics: dict[str, float | int | bool] = {
+            "recording": self._episode_state.get_state() == self._episode_state.RECORDING,
+            "episode_index": int(self.current_episode_index),
+        }
+
+        for name, duration_sec in self.telemetry.get_last_timing().items():
+            metrics[f"exporter.{name}_ms"] = float(duration_sec) * 1000.0
+
+        age_sources = {
+            "source.state_update_age_ms": self._last_state_receive_monotonic,
+            "source.camera_update_age_ms": self._last_image_receive_monotonic,
+            "source.sonic_pose_age_ms": (
+                self.latest_sonic_msg.get("receive_monotonic")
+                if self.latest_sonic_msg is not None
+                else None
+            ),
+            "source.planner_command_age_ms": (
+                self.latest_planner_msg.get("receive_monotonic")
+                if self.latest_planner_msg is not None
+                else None
+            ),
+        }
+        for name, received_at in age_sources.items():
+            if received_at is not None:
+                metrics[name] = (now_monotonic - float(received_at)) * 1000.0
+
+        image_age_sec = self.telemetry.get_last_timing().get("image_age")
+        if image_age_sec is not None:
+            metrics["source.camera_timestamp_age_ms"] = float(image_age_sec) * 1000.0
+
+        self.latency_recorder.write(metrics)
 
     def _add_data_frame(self):
         t_start = time.monotonic()
@@ -970,6 +1117,9 @@ class GrootDataCollector:
                 except Exception:
                     pass
 
+        if self.latency_recorder is not None:
+            self.latency_recorder.close()
+
         self._print_and_say("Shutting down data exporter...", say=False)
 
     def run(self):
@@ -987,6 +1137,7 @@ class GrootDataCollector:
                         img_msg = self._image_subscriber.read()
                         if img_msg is not None:
                             self.latest_image_msg = img_msg
+                            self._last_image_receive_monotonic = time.monotonic()
                             timestamps = img_msg.get("timestamps", {})
                             if timestamps:
                                 image_age = max(
@@ -1001,6 +1152,8 @@ class GrootDataCollector:
                         self._check_recording_commands()
 
                     end_time = time.monotonic()
+
+                self._record_latency_snapshot()
 
                 elapsed = time.monotonic() - t_start
                 sleep_time = self.loop_period - elapsed
@@ -1035,7 +1188,7 @@ class GrootDataCollector:
 # ---------------------------------------------------------------------------
 
 
-def main(config: SonicDataExporterConfig):
+def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
     g1_rm = get_g1_robot_model()
 
     dataset_features = get_features_sonic_vla(g1_rm)
@@ -1052,7 +1205,16 @@ def main(config: SonicDataExporterConfig):
                 modality_config[key] = value
 
     text_to_speech = TextToSpeech() if config.text_to_speech else None
-    audio_cue = AudioCue(volume=config.audio_cue_volume) if config.audio_cues else None
+    audio_cue = (
+        AudioCue(volume=config.audio_cue_volume, cache_dir=config.audio_cue_cache_dir)
+        if config.audio_cues
+        else None
+    )
+    latency_recorder = (
+        LatencyRecorder(config.latency_log_file, config.latency_log_interval)
+        if config.latency_log_file
+        else None
+    )
 
     robot_config = poll_robot_config_zmq(
         config.state_zmq_host, config.state_zmq_port, config.robot_config_timeout
@@ -1082,6 +1244,8 @@ def main(config: SonicDataExporterConfig):
         profile_timing=config.profile_timing,
         profile_interval=config.profile_interval,
         audio_cue=audio_cue,
+        status_callback=runtime_output.status,
+        latency_recorder=latency_recorder,
     )
     data_collector.run()
 
@@ -1092,4 +1256,8 @@ if __name__ == "__main__":
     if config.dataset_name is None:
         config.dataset_name = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
-    main(config)
+    runtime_log_file = config.runtime_log_file or (
+        f"logs/data_exporter_{config.dataset_name}.log"
+    )
+    runtime_output = RuntimeOutput(config.quiet_console, runtime_log_file)
+    main(config, runtime_output)
