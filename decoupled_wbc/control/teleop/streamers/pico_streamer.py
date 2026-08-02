@@ -4,6 +4,7 @@ from pathlib import Path
 import queue
 import signal
 import subprocess
+import threading
 import time
 
 import numpy as np
@@ -11,6 +12,7 @@ from scipy.spatial.transform import Rotation as R
 
 from decoupled_wbc.control.teleop.device.pico.xr_client import XrClient
 from decoupled_wbc.control.teleop.streamers.base_streamer import BaseStreamer, StreamerOutput
+from gear_sonic.utils.teleop.pico_buttons import PicoButtonEventSampler, PicoButtonState
 
 R_HEADSET_TO_WORLD = np.array(
     [
@@ -68,6 +70,12 @@ class PicoStreamer(BaseStreamer):
     def __init__(self, enable_smpl_visualization: bool = False):
         self.run_pico_service()
         self.xr_client = XrClient()
+        self._xr_lock = threading.Lock()
+        self._button_sampler = PicoButtonEventSampler(
+            self._read_official_button_state,
+            poll_hz=200.0,
+        )
+        self._button_sampler.start()
         self.enable_smpl_visualization = enable_smpl_visualization
         self._smpl_context = mp.get_context("spawn")
         self._smpl_queue = None
@@ -164,13 +172,8 @@ class PicoStreamer(BaseStreamer):
 
     def reset_status(self, reset_control_enabled: bool = False):
         self.current_base_height = 0.74  # Initial base height, 0.74m (standing height)
-        self.toggle_policy_action_last = False
-        self.toggle_activation_last = False
-        self.toggle_data_collection_last = False
-        self.toggle_data_abort_last = False
-        self.start_stop_combo_last = False
-        self.upper_body_combo_last = False
         self.combo_suppression_active = False
+        self._button_sampler.clear_events()
         if reset_control_enabled or not hasattr(self, "control_enabled"):
             self.control_enabled = False
 
@@ -184,10 +187,11 @@ class PicoStreamer(BaseStreamer):
         first_timestamp = None
         while True:
             try:
-                left_pose = self.xr_client.get_pose_by_name("left_controller")
-                right_pose = self.xr_client.get_pose_by_name("right_controller")
-                head_pose = self.xr_client.get_pose_by_name("headset")
-                timestamp = self.xr_client.get_timestamp_ns()
+                with self._xr_lock:
+                    left_pose = self.xr_client.get_pose_by_name("left_controller")
+                    right_pose = self.xr_client.get_pose_by_name("right_controller")
+                    head_pose = self.xr_client.get_pose_by_name("headset")
+                    timestamp = self.xr_client.get_timestamp_ns()
                 poses_ready = (
                     self._is_valid_xr_pose(left_pose)
                     and self._is_valid_xr_pose(right_pose)
@@ -224,6 +228,7 @@ class PicoStreamer(BaseStreamer):
             self._smpl_stop.set()
         if self._smpl_process is not None:
             self._smpl_process.join(timeout=2.0)
+        self._button_sampler.stop()
         self.xr_client.close()
         self.stop_pico_service()
 
@@ -269,6 +274,10 @@ class PicoStreamer(BaseStreamer):
         pass
 
     def _get_pico_data(self):
+        with self._xr_lock:
+            return self._get_pico_data_locked()
+
+    def _get_pico_data_locked(self):
         pico_data = {}
 
         # Get the pose of the left and right controllers and the headset
@@ -279,19 +288,22 @@ class PicoStreamer(BaseStreamer):
         # Get key value of the left and right controllers
         pico_data["left_trigger"] = self.xr_client.get_key_value_by_name("left_trigger")
         pico_data["right_trigger"] = self.xr_client.get_key_value_by_name("right_trigger")
-        pico_data["left_grip"] = self.xr_client.get_key_value_by_name("left_grip")
         pico_data["right_grip"] = self.xr_client.get_key_value_by_name("right_grip")
 
-        # Get button state of the left and right controllers
-        pico_data["A"] = self.xr_client.get_button_state_by_name("A")
-        pico_data["B"] = self.xr_client.get_button_state_by_name("B")
-        pico_data["X"] = self.xr_client.get_button_state_by_name("X")
-        pico_data["Y"] = self.xr_client.get_button_state_by_name("Y")
+        # The official combinations are sampled and edge-latched at 200 Hz.
+        button_state = self._button_sampler.latest_state()
+        pico_data["A"] = button_state.a
+        pico_data["B"] = button_state.b
+        pico_data["X"] = button_state.x
+        pico_data["Y"] = button_state.y
+        pico_data["left_grip"] = button_state.left_grip
+        pico_data["left_axis_click"] = button_state.left_axis_click
+
+        # Get the remaining button state of the left and right controllers
         pico_data["left_menu_button"] = self.xr_client.get_button_state_by_name("left_menu_button")
         pico_data["right_menu_button"] = self.xr_client.get_button_state_by_name(
             "right_menu_button"
         )
-        pico_data["left_axis_click"] = self.xr_client.get_button_state_by_name("left_axis_click")
         pico_data["right_axis_click"] = self.xr_client.get_button_state_by_name("right_axis_click")
 
         # Get the timestamp of the left and right controllers
@@ -313,6 +325,19 @@ class PicoStreamer(BaseStreamer):
 
         return pico_data
 
+    def _read_official_button_state(self) -> PicoButtonState:
+        with self._xr_lock:
+            return PicoButtonState(
+                a=bool(self.xr_client.get_button_state_by_name("A")),
+                b=bool(self.xr_client.get_button_state_by_name("B")),
+                x=bool(self.xr_client.get_button_state_by_name("X")),
+                y=bool(self.xr_client.get_button_state_by_name("Y")),
+                left_grip=float(self.xr_client.get_key_value_by_name("left_grip")),
+                left_axis_click=bool(
+                    self.xr_client.get_button_state_by_name("left_axis_click")
+                ),
+            )
+
     def _generate_unified_raw_data(self, pico_data):
         self._publish_smpl_visualization_frame(pico_data)
 
@@ -333,15 +358,21 @@ class PicoStreamer(BaseStreamer):
         lin_vel_y = self._apply_dead_zone(strafe_input, DEAD_ZONE) * MAX_LINEAR_VEL
         ang_vel_z = self._apply_dead_zone(yaw_input, DEAD_ZONE) * MAX_ANGULAR_VEL
 
+        button_events = self._button_sampler.consume_events()
+        start_stop_event = any(event.start_stop_pressed for event in button_events)
+        upper_body_event = not start_stop_event and any(
+            event.ax_pressed for event in button_events
+        )
+        toggle_data_collection = any(
+            event.toggle_data_collection for event in button_events
+        )
+        toggle_data_abort = any(event.toggle_data_abort for event in button_events)
+
         face_combo_pressed = pico_data["A"] and pico_data["B"] and pico_data["X"] and pico_data["Y"]
         upper_body_combo_pressed = pico_data["A"] and pico_data["X"] and not (
             pico_data["B"] or pico_data["Y"]
         )
         face_button_pressed = pico_data["A"] or pico_data["B"] or pico_data["X"] or pico_data["Y"]
-        start_stop_event = face_combo_pressed and not self.start_stop_combo_last
-        upper_body_event = upper_body_combo_pressed and not self.upper_body_combo_last
-        self.start_stop_combo_last = face_combo_pressed
-        self.upper_body_combo_last = upper_body_combo_pressed
 
         if face_combo_pressed or upper_body_combo_pressed:
             self.combo_suppression_active = True
@@ -386,46 +417,10 @@ class PicoStreamer(BaseStreamer):
         left_fingers = self._generate_finger_data(pico_data, "left")
         right_fingers = self._generate_finger_data(pico_data, "right")
 
-        # Get activation commands
-        toggle_policy_action_tmp = pico_data["left_menu_button"] and (
-            pico_data["left_trigger"] > 0.5
-        )
-        toggle_activation_tmp = pico_data["left_menu_button"] and (pico_data["right_trigger"] > 0.5)
-
-        if self.toggle_policy_action_last != toggle_policy_action_tmp:
-            toggle_policy_action = toggle_policy_action_tmp
-        else:
-            toggle_policy_action = False
-        self.toggle_policy_action_last = toggle_policy_action_tmp
-
-        if self.toggle_activation_last != toggle_activation_tmp:
-            toggle_activation = toggle_activation or toggle_activation_tmp
-        else:
-            toggle_activation = bool(toggle_activation)
-        self.toggle_activation_last = toggle_activation_tmp
-
-        # Match Sonic VLA collection controls: left grip + A toggles recording,
-        # left grip + B discards. Suppress A/B during face-button combos.
-        data_collection_modifier = pico_data["left_grip"] > 0.5
-        toggle_data_collection_tmp = (
-            pico_data["A"] and data_collection_modifier and not self.combo_suppression_active
-        )
-        toggle_data_abort_tmp = (
-            pico_data["B"] and data_collection_modifier and not self.combo_suppression_active
-        )
-
-        toggle_data_collection = (
-            toggle_data_collection_tmp and not self.toggle_data_collection_last
-        )
-        self.toggle_data_collection_last = toggle_data_collection_tmp
-
-        toggle_data_abort = toggle_data_abort_tmp and not self.toggle_data_abort_last
-        self.toggle_data_abort_last = toggle_data_abort_tmp
-
         control_data = {
             "base_height_command": self.current_base_height,
             "navigate_cmd": [lin_vel_x, lin_vel_y, ang_vel_z],
-            "toggle_policy_action": toggle_policy_action,
+            "toggle_policy_action": False,
         }
         if set_policy_action is not None:
             control_data["set_policy_action"] = set_policy_action
