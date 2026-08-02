@@ -46,6 +46,21 @@ class PicoButtonEvents:
         )
 
 
+@dataclass(frozen=True)
+class PicoButtonDiagnostics:
+    """Read-only counters for locating failures without changing button behavior."""
+
+    state: PicoButtonState
+    samples: int
+    read_errors: int
+    last_error: str
+    ax_latched: int
+    by_latched: int
+    start_stop_latched: int
+    data_collection_latched: int
+    data_abort_latched: int
+
+
 class PicoButtonEdgeDetector:
     """Apply the official manager's combinations and rising-edge semantics."""
 
@@ -100,6 +115,14 @@ class PicoButtonEventSampler:
         self._detector = PicoButtonEdgeDetector()
         self._events: deque[PicoButtonEvents] = deque(maxlen=max_pending_events)
         self._latest_state = PicoButtonState()
+        self._samples = 0
+        self._read_errors = 0
+        self._last_error = ""
+        self._ax_latched = 0
+        self._by_latched = 0
+        self._start_stop_latched = 0
+        self._data_collection_latched = 0
+        self._data_abort_latched = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(
@@ -129,17 +152,40 @@ class PicoButtonEventSampler:
         with self._lock:
             self._events.clear()
 
+    def diagnostics(self) -> PicoButtonDiagnostics:
+        with self._lock:
+            return PicoButtonDiagnostics(
+                state=self._latest_state,
+                samples=self._samples,
+                read_errors=self._read_errors,
+                last_error=self._last_error,
+                ax_latched=self._ax_latched,
+                by_latched=self._by_latched,
+                start_stop_latched=self._start_stop_latched,
+                data_collection_latched=self._data_collection_latched,
+                data_abort_latched=self._data_abort_latched,
+            )
+
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
                 state = self._read_state()
-            except Exception:
+            except Exception as exc:
+                with self._lock:
+                    self._read_errors += 1
+                    self._last_error = f"{type(exc).__name__}: {exc}"
                 self._stop.wait(0.05)
                 continue
 
             events = self._detector.update(state)
             with self._lock:
                 self._latest_state = state
+                self._samples += 1
                 if events.any_pressed:
                     self._events.append(events)
+                self._ax_latched += int(events.ax_pressed)
+                self._by_latched += int(events.by_pressed)
+                self._start_stop_latched += int(events.start_stop_pressed)
+                self._data_collection_latched += int(events.toggle_data_collection)
+                self._data_abort_latched += int(events.toggle_data_abort)
             self._stop.wait(self._period)
