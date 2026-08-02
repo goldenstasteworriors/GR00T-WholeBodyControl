@@ -97,6 +97,16 @@ CSV_FIELDS = (
     "loop_ms",
     "period_overrun_ms",
     "max_upper_joint_delta",
+    "pico_raw_a",
+    "pico_raw_b",
+    "pico_raw_x",
+    "pico_raw_y",
+    "pico_button_samples",
+    "pico_button_read_errors",
+    "pico_ax_latched",
+    "pico_start_stop_latched",
+    "pico_ax_consumed",
+    "pico_start_stop_consumed",
 )
 
 
@@ -259,6 +269,7 @@ def main(config: PicoIKLatencySimConfig) -> None:
                 action = teleop_policy.get_action()
                 get_action_end = time.monotonic()
 
+                button_diagnostics = None
                 if config.debug_pico_buttons:
                     button_diagnostics = (
                         teleop_policy.teleop_streamer.body_streamer.get_button_diagnostics()
@@ -338,6 +349,44 @@ def main(config: PicoIKLatencySimConfig) -> None:
                         "loop_ms": loop_ms,
                         "period_overrun_ms": period_overrun_ms,
                         "max_upper_joint_delta": max_upper_joint_delta,
+                        "pico_raw_a": (
+                            "" if button_diagnostics is None else int(button_diagnostics["state"].a)
+                        ),
+                        "pico_raw_b": (
+                            "" if button_diagnostics is None else int(button_diagnostics["state"].b)
+                        ),
+                        "pico_raw_x": (
+                            "" if button_diagnostics is None else int(button_diagnostics["state"].x)
+                        ),
+                        "pico_raw_y": (
+                            "" if button_diagnostics is None else int(button_diagnostics["state"].y)
+                        ),
+                        "pico_button_samples": (
+                            "" if button_diagnostics is None else button_diagnostics["samples"]
+                        ),
+                        "pico_button_read_errors": (
+                            "" if button_diagnostics is None else button_diagnostics["read_errors"]
+                        ),
+                        "pico_ax_latched": (
+                            ""
+                            if button_diagnostics is None
+                            else button_diagnostics["latched"]["ax"]
+                        ),
+                        "pico_start_stop_latched": (
+                            ""
+                            if button_diagnostics is None
+                            else button_diagnostics["latched"]["start_stop"]
+                        ),
+                        "pico_ax_consumed": (
+                            ""
+                            if button_diagnostics is None
+                            else button_diagnostics["consumed"]["ax"]
+                        ),
+                        "pico_start_stop_consumed": (
+                            ""
+                            if button_diagnostics is None
+                            else button_diagnostics["consumed"]["start_stop"]
+                        ),
                     }
                 )
                 stats.add(
