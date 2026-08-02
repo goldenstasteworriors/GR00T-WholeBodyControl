@@ -75,6 +75,13 @@ class PicoStreamer(BaseStreamer):
             self._read_official_button_state,
             poll_hz=200.0,
         )
+        self._button_events_consumed = {
+            "ax": 0,
+            "by": 0,
+            "start_stop": 0,
+            "data_collection": 0,
+            "data_abort": 0,
+        }
         self._button_sampler.start()
         self.enable_smpl_visualization = enable_smpl_visualization
         self._smpl_context = mp.get_context("spawn")
@@ -180,6 +187,24 @@ class PicoStreamer(BaseStreamer):
     def set_lower_body_policy_active(self, active: bool) -> None:
         """Mirror the control loop's confirmed state for start/stop button semantics."""
         self.control_enabled = bool(active)
+
+    def get_button_diagnostics(self) -> dict:
+        """Expose raw, latched, and consumed counters without changing controls."""
+        sampler = self._button_sampler.diagnostics()
+        return {
+            "state": sampler.state,
+            "samples": sampler.samples,
+            "read_errors": sampler.read_errors,
+            "last_error": sampler.last_error,
+            "latched": {
+                "ax": sampler.ax_latched,
+                "by": sampler.by_latched,
+                "start_stop": sampler.start_stop_latched,
+                "data_collection": sampler.data_collection_latched,
+                "data_abort": sampler.data_abort_latched,
+            },
+            "consumed": self._button_events_consumed.copy(),
+        }
 
     def start_streaming(self):
         print("Waiting for PICO/XRoboToolkit headset and controller data...")
@@ -359,6 +384,14 @@ class PicoStreamer(BaseStreamer):
         ang_vel_z = self._apply_dead_zone(yaw_input, DEAD_ZONE) * MAX_ANGULAR_VEL
 
         button_events = self._button_sampler.consume_events()
+        for event in button_events:
+            self._button_events_consumed["ax"] += int(event.ax_pressed)
+            self._button_events_consumed["by"] += int(event.by_pressed)
+            self._button_events_consumed["start_stop"] += int(event.start_stop_pressed)
+            self._button_events_consumed["data_collection"] += int(
+                event.toggle_data_collection
+            )
+            self._button_events_consumed["data_abort"] += int(event.toggle_data_abort)
         start_stop_event = any(event.start_stop_pressed for event in button_events)
         upper_body_event = not start_stop_event and any(
             event.ax_pressed for event in button_events
