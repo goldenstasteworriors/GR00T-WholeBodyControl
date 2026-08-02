@@ -58,6 +58,9 @@ class PicoIKLatencySimConfig:
     stats_interval: float = 1.0
     """Console latency statistics interval."""
 
+    debug_pico_buttons: bool = False
+    """Print raw, latched, and consumed PICO button layers once per second or on change."""
+
     csv_path: str = ""
     """CSV path; empty creates logs/pico_ik_latency/<timestamp>.csv."""
 
@@ -226,6 +229,8 @@ def main(config: PicoIKLatencySimConfig) -> None:
     pending_policy_action: bool | None = None
     pending_ack_time: float | None = None
     previous_upper_q = sim_q[upper_indices].copy()
+    last_button_report = started
+    last_button_signature = None
 
     try:
         with csv_path.open("w", newline="") as csv_file:
@@ -253,6 +258,37 @@ def main(config: PicoIKLatencySimConfig) -> None:
                 get_action_start = time.monotonic()
                 action = teleop_policy.get_action()
                 get_action_end = time.monotonic()
+
+                if config.debug_pico_buttons:
+                    button_diagnostics = (
+                        teleop_policy.teleop_streamer.body_streamer.get_button_diagnostics()
+                    )
+                    button_state = button_diagnostics["state"]
+                    button_signature = (
+                        button_state,
+                        tuple(button_diagnostics["latched"].items()),
+                        tuple(button_diagnostics["consumed"].items()),
+                        button_diagnostics["read_errors"],
+                    )
+                    now = time.monotonic()
+                    if (
+                        button_signature != last_button_signature
+                        or now - last_button_report >= 1.0
+                    ):
+                        print(
+                            "[PICO button layers] "
+                            f"raw=A{int(button_state.a)} B{int(button_state.b)} "
+                            f"X{int(button_state.x)} Y{int(button_state.y)} "
+                            f"grip={button_state.left_grip:.2f} | "
+                            f"samples={button_diagnostics['samples']} "
+                            f"errors={button_diagnostics['read_errors']} "
+                            f"last_error={button_diagnostics['last_error'] or '-'} | "
+                            f"latched={button_diagnostics['latched']} | "
+                            f"consumed={button_diagnostics['consumed']}",
+                            flush=True,
+                        )
+                        last_button_signature = button_signature
+                        last_button_report = now
 
                 requested_policy_action = action.get("set_policy_action")
                 if requested_policy_action is not None:
