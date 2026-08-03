@@ -53,6 +53,12 @@ def override_wbc_config(
         "enable_gravity_compensation": config.enable_gravity_compensation,
         "gravity_compensation_joints": config.gravity_compensation_joints,
         "high_elbow_pose": config.high_elbow_pose,
+        "lower_body_controller": config.lower_body_controller,
+        "unitree_loco_start_fsm_id": config.unitree_loco_start_fsm_id,
+        "unitree_loco_command_frequency": config.unitree_loco_command_frequency,
+        "unitree_loco_max_linear_velocity": config.unitree_loco_max_linear_velocity,
+        "unitree_loco_max_angular_velocity": config.unitree_loco_max_angular_velocity,
+        "unitree_arm_weight_ramp_duration": config.unitree_arm_weight_ramp_duration,
     }
 
     if missed_keys_only:
@@ -102,6 +108,24 @@ class BaseConfig(ArgsConfigTemplate):
 
     wbc_policy_class: str = "G1DecoupledWholeBodyPolicy"
     """Whole body policy class."""
+
+    lower_body_controller: Literal["decoupled", "unitree_loco"] = "decoupled"
+    """Lower-body backend: local ONNX policy or Unitree's official loco service."""
+
+    unitree_loco_start_fsm_id: int = 501
+    """Official 29-DOF/3-waist-DOF G1 loco FSM entered by A+B+X+Y."""
+
+    unitree_loco_command_frequency: float = 10.0
+    """Maximum SetVelocity RPC frequency."""
+
+    unitree_loco_max_linear_velocity: float = 0.5
+    """Absolute official-loco x/y velocity limit in m/s."""
+
+    unitree_loco_max_angular_velocity: float = 1.0
+    """Absolute official-loco yaw-rate limit in rad/s."""
+
+    unitree_arm_weight_ramp_duration: float = 2.0
+    """Seconds used to blend from official arm control to ``rt/arm_sdk``."""
 
     # System Configuration
     interface: str = "sim"
@@ -226,6 +250,11 @@ class BaseConfig(ArgsConfigTemplate):
     def __post_init__(self):
         # Resolve interface (handles sim/real shortcuts, platform differences, and error handling)
         self.interface, self.env_type = resolve_interface(self.interface)
+        if self.lower_body_controller == "unitree_loco":
+            if self.env_type != "real":
+                raise ValueError("unitree_loco is a real-robot-only lower-body controller")
+            if self.enable_waist:
+                raise ValueError("unitree_loco must retain waist control; disable waist IK")
 
     def load_wbc_yaml(self) -> dict:
         """Load and merge wbc yaml with dataclass overrides"""

@@ -135,6 +135,7 @@ def main(config: ControlLoopConfig):
                         print("Emergency stop requested from teleop")
                         wbc_goal["navigate_cmd"] = DEFAULT_NAV_CMD
                         wbc_goal["set_policy_action"] = False
+                    env.handle_control_goal(wbc_goal)
                     # Send goal to policy
                     if wbc_goal:
                         wbc_goal["interpolation_garbage_collection_time"] = t_now - 2 * (
@@ -154,9 +155,14 @@ def main(config: ControlLoopConfig):
                 with telemetry.timer("publish_status"):
                     # Get policy status - check if the lower body policy has use_policy_action enabled
                     policy_use_action = False
+                    if config.lower_body_controller == "unitree_loco":
+                        policy_use_action = env.lower_body_active()
                     try:
                         # Access the lower body policy through the decoupled whole body policy
-                        if hasattr(wbc_policy, "lower_body_policy"):
+                        if (
+                            config.lower_body_controller != "unitree_loco"
+                            and hasattr(wbc_policy, "lower_body_policy")
+                        ):
                             policy_use_action = getattr(
                                 wbc_policy.lower_body_policy, "use_policy_action", False
                             )

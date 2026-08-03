@@ -47,6 +47,7 @@ def get_wbc_policy(
                 max_change_rate=wbc_config["upper_body_max_joint_speed"],
             )
 
+        use_official_loco = wbc_config.get("lower_body_controller") == "unitree_loco"
         lower_body_policy_type = wbc_config.get("VERSION", "gear_wbc")
         if lower_body_policy_type not in ["gear_wbc"]:
             raise ValueError(
@@ -57,7 +58,8 @@ def get_wbc_policy(
         # Get the base path to decoupled_wbc and convert to Path object
         package_path = Path(os.path.dirname(decoupled_wbc.__file__))
         gear_wbc_config = str(package_path / ".." / wbc_config["GEAR_WBC_CONFIG"])
-        if lower_body_policy_type == "gear_wbc":
+        lower_body_policy = None
+        if lower_body_policy_type == "gear_wbc" and not use_official_loco:
             lower_body_policy = G1GearWbcPolicy(
                 robot_model=robot_model,
                 config=gear_wbc_config,
@@ -68,6 +70,7 @@ def get_wbc_policy(
             robot_model=robot_model,
             upper_body_policy=upper_body_policy,
             lower_body_policy=lower_body_policy,
+            use_official_loco=use_official_loco,
         )
     else:
         raise ValueError(f"Invalid robot type: {robot_type}")
