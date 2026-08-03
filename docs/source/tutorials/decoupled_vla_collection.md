@@ -56,8 +56,30 @@ decoupled state.
 
 ### Robot-onboard wired PICO collection
 
-On the G1 onboard computer, use the dedicated wrapper so the original ThinkPad
-launch commands and defaults remain unchanged:
+The robot's external RJ45 ports share the onboard `eth0` network. The PICO
+Ethernet adapter requests an address with DHCP, so start the robot-local DHCP
+and ARM64 XRoboToolkit PC Service before opening the collection program. The
+service script only leases `192.168.123.200` to the known PICO Ethernet MAC and
+does not change the robot's existing `192.168.123.164/24` configuration.
+
+From the repository root:
+
+```bash
+bash scripts/onboard_pico_services.sh start
+bash scripts/onboard_pico_services.sh status
+```
+
+Keep the service tmux session running. To inspect it, use:
+
+```bash
+bash scripts/onboard_pico_services.sh attach
+```
+
+Inside the PICO XRoboToolkit app, set `PC Service` to `192.168.123.164` and
+select `Reconnect`. The expected PICO address is `192.168.123.200`.
+
+Use the dedicated onboard wrapper so the original ThinkPad launch commands and
+defaults remain unchanged:
 
 ```bash
 python gear_sonic/scripts/launch_decoupled_vla_collection_onboard.py \
@@ -68,8 +90,33 @@ python gear_sonic/scripts/launch_decoupled_vla_collection_onboard.py \
 ```
 
 The wrapper defaults to the robot-local camera endpoint `192.168.123.164` and
-the `decoupled_vla_collection` conda environment. The PICO XRoboToolkit app
-should point its PC Service address at the robot's wired address.
+the `decoupled_vla_collection` conda environment. Datasets are stored locally
+on the robot under:
+
+```text
+/home/unitree/data_collection/GR00T-WholeBodyControl/outputs/onboard/<dataset-name>
+```
+
+The collection launcher runs in its own `decoupled_vla_collection` tmux
+session. Detach with `Ctrl+b`, then `d`, and reattach with:
+
+```bash
+tmux attach -t decoupled_vla_collection
+```
+
+After collection has stopped, verify the dataset before copying it off the
+robot:
+
+```bash
+du -sh outputs/onboard/<dataset-name>
+find outputs/onboard/<dataset-name>/meta -maxdepth 1 -type f -print
+```
+
+Stop the PICO network and PC Service only after collection has finished:
+
+```bash
+bash scripts/onboard_pico_services.sh stop
+```
 
 ## Simulation
 

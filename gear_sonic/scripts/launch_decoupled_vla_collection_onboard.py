@@ -25,6 +25,11 @@ def main() -> None:
     args = list(sys.argv[1:])
     if not any(arg == "--camera-host" or arg.startswith("--camera-host=") for arg in args):
         args[:0] = ["--camera-host", "192.168.123.164"]
+    if not any(
+        arg == "--root-output-dir" or arg.startswith("--root-output-dir=")
+        for arg in args
+    ):
+        args[:0] = ["--root-output-dir", str(repo_root / "outputs/onboard")]
     if not any(arg == "--conda-env" or arg.startswith("--conda-env=") for arg in args):
         args[:0] = ["--conda-env", env_name]
 
