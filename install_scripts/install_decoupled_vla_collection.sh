@@ -76,11 +76,15 @@ then
     echo "[OK] rclpy already imports; skipping ROS install"
 else
     echo "[INFO] Installing ROS 2 Humble Desktop from RoboStack..."
+    # RoboStack activation/deactivation hooks reference variables that may not
+    # exist yet, so conda operations must run with nounset temporarily relaxed.
+    set +u
     if command -v mamba &>/dev/null; then
         mamba install -y ros-humble-desktop
     else
         conda install -y ros-humble-desktop
     fi
+    set -u
 fi
 
 # RoboStack's setup.bash may read unset AMENT_* variables. Temporarily relax
