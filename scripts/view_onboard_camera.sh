@@ -29,8 +29,11 @@ if ss -ltn | awk '{print $4}' | grep -Eq "(^|:)${LOCAL_CAMERA_PORT}$"; then
     exit 1
 fi
 
+# The host alias may define unrelated RemoteForward entries.  Do not let a
+# collision on one of those ports tear down the camera's local tunnel; the
+# listener check below validates the local forward explicitly.
 ssh \
-    -o ExitOnForwardFailure=yes \
+    -o ExitOnForwardFailure=no \
     -o ServerAliveInterval=15 \
     -o ServerAliveCountMax=3 \
     -N \
@@ -45,7 +48,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 sleep 1
-if ! kill -0 "${TUNNEL_PID}" 2>/dev/null; then
+if ! kill -0 "${TUNNEL_PID}" 2>/dev/null \
+    || ! ss -ltn | awk '{print $4}' | grep -Eq "(^|:)${LOCAL_CAMERA_PORT}$"; then
     echo "ERROR: SSH camera tunnel failed to start." >&2
     exit 1
 fi
