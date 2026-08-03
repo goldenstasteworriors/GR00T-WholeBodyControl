@@ -110,10 +110,13 @@ def _default_hand_task_config(repo_root: Path) -> Path:
     return repo_root / "gear_sonic/config/data_collection/inspire_hand_tasks.json"
 
 
-def _aarch64_torch_tls_prefix() -> str:
-    """Preload PyTorch's OpenMP runtime before other aarch64 shared objects."""
+def _aarch64_control_runtime_prefix() -> str:
+    """Select the ARM64 DDS runtime and preload PyTorch's OpenMP library."""
     return (
         'if [ "$(uname -m)" = aarch64 ]; then '
+        'if [ -f "$HOME/cyclonedds/install/lib/libddsc.so" ]; then '
+        'export CYCLONEDDS_HOME="$HOME/cyclonedds/install"; '
+        "fi; "
         'SONIC_TORCH_LIBGOMP="$(find "$CONDA_PREFIX/lib" '
         "-path '*/torch.libs/libgomp*.so*' -print -quit)\"; "
         'if [ -n "$SONIC_TORCH_LIBGOMP" ]; then '
@@ -623,7 +626,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     control_cmd = (
         prefix
         + runtime_env
-        + _aarch64_torch_tls_prefix()
+        + _aarch64_control_runtime_prefix()
         + _shell_join(_build_control_args(config, interface))
     )
     teleop_cmd = prefix + runtime_env + _shell_join(_build_teleop_args(config, interface))
