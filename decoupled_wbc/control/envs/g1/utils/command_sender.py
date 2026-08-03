@@ -1,5 +1,7 @@
+import json
 import os
 import threading
+import time
 from typing import Dict
 
 import numpy as np
@@ -110,6 +112,132 @@ class BodyCommandSender:
 
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
         self.lowcmd_publisher_.Write(self.low_cmd)
+
+
+class UnitreeLocoArmCommandSender:
+    """Use Unitree loco for the lower body and ``rt/arm_sdk`` for both arms."""
+
+    ARM_MOTOR_INDICES = tuple(range(15, 29))
+    ARM_WEIGHT_INDEX = 29
+
+    def __init__(self, config: Dict):
+        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
+        from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
+        from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_
+
+        self.config = config
+        self.low_cmd = unitree_hg_msg_dds__LowCmd_()
+        self.crc = CRC()
+        self.publisher = ChannelPublisher("rt/arm_sdk", LowCmd_)
+        self.publisher.Init()
+        self.loco = LocoClient()
+        self.loco.SetTimeout(5.0)
+        self.loco.Init()
+        self.active = False
+        self._activation_requested = False
+        self._activation_deadline = 0.0
+        self._last_fsm_query = 0.0
+        self._last_velocity_send = 0.0
+        self._velocity_period = 1.0 / float(config.get("unitree_loco_command_frequency", 10.0))
+        self._start_fsm_id = int(config.get("unitree_loco_start_fsm_id", 501))
+        self._max_linear_velocity = float(config.get("unitree_loco_max_linear_velocity", 0.5))
+        self._max_angular_velocity = float(config.get("unitree_loco_max_angular_velocity", 1.0))
+        self._weight_ramp_duration = float(config.get("unitree_arm_weight_ramp_duration", 2.0))
+        self._activation_time = 0.0
+
+    @staticmethod
+    def _check_rpc(name: str, code) -> None:
+        if code not in (None, 0):
+            raise RuntimeError(f"Unitree loco {name} failed with code {code}")
+
+    def set_active(self, active: bool, emergency: bool = False) -> None:
+        active = bool(active)
+        if active and (self.active or self._activation_requested):
+            return
+        if not active and not (self.active or self._activation_requested or emergency):
+            return
+        if active:
+            self._check_rpc("SetFsmId", self.loco.SetFsmId(self._start_fsm_id))
+            self._activation_requested = True
+            self._activation_deadline = time.monotonic() + 10.0
+            print(f"Unitree official loco requested (fsm_id={self._start_fsm_id})")
+            return
+
+        self.active = False
+        self._activation_requested = False
+        self.low_cmd.motor_cmd[self.ARM_WEIGHT_INDEX].q = 0.0
+        self.low_cmd.crc = self.crc.Crc(self.low_cmd)
+        self.publisher.Write(self.low_cmd)
+        self._check_rpc("StopMove", self.loco.StopMove())
+        if emergency:
+            self._check_rpc("Damp", self.loco.Damp())
+            print(
+                "Unitree official loco emergency stop: arms released, "
+                "velocity zero, damp requested"
+            )
+
+    def update_status(self) -> None:
+        if not self._activation_requested or self.active:
+            return
+        now = time.monotonic()
+        if now > self._activation_deadline:
+            self._activation_requested = False
+            raise RuntimeError(
+                f"Unitree loco did not confirm fsm_id={self._start_fsm_id} within 10 seconds"
+            )
+        if now - self._last_fsm_query < 0.2:
+            return
+        code, data = self.loco._Call(7001, "")
+        self._check_rpc("GetFsmId", code)
+        self._last_fsm_query = now
+        response = json.loads(data) if isinstance(data, str) else data
+        fsm_id = int(response["data"])
+        if fsm_id == self._start_fsm_id:
+            self.active = True
+            self._activation_requested = False
+            self._activation_time = now
+            print(f"Unitree official loco confirmed (fsm_id={fsm_id})")
+
+    def send_velocity(self, navigate_cmd) -> None:
+        if not self.active:
+            return
+        now = time.monotonic()
+        if now - self._last_velocity_send < self._velocity_period:
+            return
+        velocity = np.asarray(navigate_cmd, dtype=np.float64)
+        if velocity.shape != (3,) or not np.isfinite(velocity).all():
+            raise ValueError("navigate_cmd must contain three finite values")
+        vx = float(np.clip(velocity[0], -self._max_linear_velocity, self._max_linear_velocity))
+        vy = float(np.clip(velocity[1], -self._max_linear_velocity, self._max_linear_velocity))
+        wz = float(np.clip(velocity[2], -self._max_angular_velocity, self._max_angular_velocity))
+        self._check_rpc("SetVelocity", self.loco.SetVelocity(vx, vy, wz, 0.25))
+        self._last_velocity_send = now
+
+    def send_command(self, cmd_q: np.ndarray, cmd_dq: np.ndarray, cmd_tau: np.ndarray):
+        if not self.active:
+            return
+        for motor_index in self.ARM_MOTOR_INDICES:
+            joint_index = self.config["MOTOR2JOINT"][motor_index]
+            motor = self.low_cmd.motor_cmd[motor_index]
+            motor.q = float(cmd_q[joint_index])
+            motor.dq = float(cmd_dq[joint_index])
+            motor.tau = float(cmd_tau[joint_index])
+            motor.kp = float(self.config["MOTOR_KP"][motor_index])
+            motor.kd = float(self.config["MOTOR_KD"][motor_index])
+        if self._weight_ramp_duration <= 0.0:
+            weight = 1.0
+        else:
+            weight = np.clip(
+                (time.monotonic() - self._activation_time) / self._weight_ramp_duration,
+                0.0,
+                1.0,
+            )
+        self.low_cmd.motor_cmd[self.ARM_WEIGHT_INDEX].q = float(weight)
+        self.low_cmd.crc = self.crc.Crc(self.low_cmd)
+        self.publisher.Write(self.low_cmd)
+
+    def close(self) -> None:
+        self.set_active(False, emergency=False)
 
 
 def make_hand_mode(motor_index: int) -> int:

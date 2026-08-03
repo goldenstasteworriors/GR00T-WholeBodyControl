@@ -255,6 +255,12 @@ class G1Env(HumanoidEnv):
             self.hands().left.queue_action({"hand_q": left_hand_actuator_q})
             self.hands().right.queue_action({"hand_q": right_hand_actuator_q})
 
+    def handle_control_goal(self, goal: Dict[str, any]) -> None:
+        self.body().handle_control_goal(goal)
+
+    def lower_body_active(self) -> bool:
+        return self.body().lower_body_active()
+
     def action_space(self) -> gym.Space:
         return gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.robot_model.num_dofs,))
 
@@ -291,6 +297,7 @@ class G1Env(HumanoidEnv):
             self.sim.reset()
 
     def close(self):
+        self.body().close()
         if self.sim:
             self.sim.close()
 

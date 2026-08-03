@@ -181,6 +181,9 @@ class DecoupledVLACollectionLaunchConfig:
     wbc_version: str = "gear_wbc"
     """Decoupled WBC version."""
 
+    lower_body_controller: str = "decoupled"
+    """Use ``decoupled`` ONNX control or Unitree's official ``unitree_loco`` service."""
+
     wbc_model_path: str = (
         "policy/GR00T-WholeBodyControl-Balance.onnx,"
         "policy/GR00T-WholeBodyControl-Walk.onnx"
@@ -378,6 +381,13 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
     if config.pico_input_source not in {"xrt", "isaac-teleop"}:
         errors.append("--pico-input-source must be xrt or isaac-teleop")
 
+    if config.lower_body_controller not in {"decoupled", "unitree_loco"}:
+        errors.append("--lower-body-controller must be decoupled or unitree_loco")
+    if config.lower_body_controller == "unitree_loco" and config.sim:
+        errors.append("--lower-body-controller unitree_loco is only available on the real robot")
+    if config.lower_body_controller == "unitree_loco" and config.enable_waist:
+        errors.append("unitree_loco owns the waist; do not use --enable-waist")
+
     hand_task_config = Path(config.hand_task_config).expanduser() if config.hand_task_config else _default_hand_task_config(repo_root)
     if not hand_task_config.exists():
         errors.append(f"hand task config missing: {hand_task_config}")
@@ -429,6 +439,8 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         config.env_name,
         "--wbc-version",
         config.wbc_version,
+        "--lower-body-controller",
+        config.lower_body_controller,
         "--wbc-model-path",
         config.wbc_model_path,
         "--control-frequency",
@@ -587,6 +599,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print("  Decoupled WBC -> Sonic VLA Data Collection")
     print("=" * 72)
     print(f"  Mode:          {'Simulation' if config.sim else 'Real Robot'}")
+    print(f"  Lower body:    {config.lower_body_controller}")
     print(f"  Interface:     {interface}")
     print(f"  Dataset:       {config.dataset_name or '(timestamp)'}")
     print(f"  Task:          {config.task_prompt}")
