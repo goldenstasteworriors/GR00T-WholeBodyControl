@@ -69,11 +69,18 @@ bash scripts/onboard_pico_services.sh start
 bash scripts/onboard_pico_services.sh status
 ```
 
-Keep the service tmux session running. To inspect it, use:
+`start` asks for the robot sudo password once, starts `dnsmasq` as a managed
+background daemon, and starts the unprivileged PC Service in tmux. It also
+repairs a partial startup when only one of the two services is running. Keep
+the PC Service tmux session running. To inspect it, use:
 
 ```bash
 bash scripts/onboard_pico_services.sh attach
 ```
+
+DHCP status and its log path are shown by `status`; the log is stored under
+`.runtime/onboard_pico/`. The `stop` command stops both the tmux PC Service and
+the managed DHCP daemon (and may ask for sudo once).
 
 Inside the PICO XRoboToolkit app, set `PC Service` to `192.168.123.164` and
 select `Reconnect`. The expected PICO address is `192.168.123.200`.
