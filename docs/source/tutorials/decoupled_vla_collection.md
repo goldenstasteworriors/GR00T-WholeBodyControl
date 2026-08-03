@@ -77,6 +77,22 @@ the official damp state. The PICO left joystick controls forward/backward and
 sideways velocity; the right joystick controls yaw. Do not send simultaneous
 movement commands from the Unitree remote during collection.
 
+For wired-PICO collection running directly on the robot Ubuntu host, the
+onboard wrapper selects `unitree_loco` by default:
+
+```bash
+python gear_sonic/scripts/launch_decoupled_vla_collection_onboard.py \
+  --task-prompt "grab the red bottle" \
+  --dataset-name 8_3_test \
+  --hand-task open_door \
+  --no-pico-data-streamer \
+  --no-with-hands
+```
+
+The PICO services and camera server remain separate prerequisites. Pass
+`--lower-body-controller decoupled` explicitly only when reverting to the old
+local Balance/Walk ONNX lower-body controller.
+
 ## Simulation
 
 ```bash
