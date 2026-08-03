@@ -198,11 +198,15 @@ pip_install --no-build-isolation \
     -e external_dependencies/XRoboToolkit-PC-Service-Pybind_X86_and_ARM64/
 
 echo "[INFO] Installing isaacteleop[cloudxr] from pypi.nvidia.com..."
-PIP_CONFIG_FILE=/dev/null python -m pip install \
-    -c "$PIP_CONSTRAINT_FILE" \
-    'isaacteleop[cloudxr]~=1.3.0' \
-    --pre \
-    --extra-index-url https://pypi.nvidia.com
+if [ "$ARCH" = "aarch64" ]; then
+    echo "[INFO] Skipping isaacteleop/CloudXR on aarch64; wired PICO uses XRoboToolkit."
+else
+    PIP_CONFIG_FILE=/dev/null python -m pip install \
+        -c "$PIP_CONSTRAINT_FILE" \
+        'isaacteleop[cloudxr]~=1.3.0' \
+        --pre \
+        --extra-index-url https://pypi.nvidia.com
+fi
 
 if [ ! -f "$HOME/cloudxr.env" ]; then
     echo "NV_DEVICE_PROFILE=Quest3" > "$HOME/cloudxr.env"
