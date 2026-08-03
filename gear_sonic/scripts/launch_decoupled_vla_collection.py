@@ -110,6 +110,18 @@ def _default_hand_task_config(repo_root: Path) -> Path:
     return repo_root / "gear_sonic/config/data_collection/inspire_hand_tasks.json"
 
 
+def _aarch64_torch_tls_prefix() -> str:
+    """Preload PyTorch's OpenMP runtime before other aarch64 shared objects."""
+    return (
+        'if [ "$(uname -m)" = aarch64 ]; then '
+        'SONIC_TORCH_LIBGOMP="$(find "$CONDA_PREFIX/lib" '
+        "-path '*/torch.libs/libgomp*.so*' -print -quit)\"; "
+        'if [ -n "$SONIC_TORCH_LIBGOMP" ]; then '
+        'export LD_PRELOAD="$SONIC_TORCH_LIBGOMP${LD_PRELOAD:+:$LD_PRELOAD}"; '
+        "fi; fi && "
+    )
+
+
 def _runtime_env_prefix(repo_root: Path, config: "DecoupledVLACollectionLaunchConfig") -> str:
     hand_task_config = Path(config.hand_task_config).expanduser() if config.hand_task_config else _default_hand_task_config(repo_root)
     return (
@@ -608,7 +620,12 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         _send_to_target(f"{SESSION_NAME}:sim", sim_cmd, wait=3.0)
         subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
 
-    control_cmd = prefix + runtime_env + _shell_join(_build_control_args(config, interface))
+    control_cmd = (
+        prefix
+        + runtime_env
+        + _aarch64_torch_tls_prefix()
+        + _shell_join(_build_control_args(config, interface))
+    )
     teleop_cmd = prefix + runtime_env + _shell_join(_build_teleop_args(config, interface))
     exporter_cmd = prefix + runtime_env + _shell_join(_build_exporter_args(config))
     viewer_cmd = (
