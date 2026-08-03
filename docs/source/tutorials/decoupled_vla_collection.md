@@ -104,6 +104,21 @@ session. Detach with `Ctrl+b`, then `d`, and reattach with:
 tmux attach -t decoupled_vla_collection
 ```
 
+To display the robot camera on the local workstation while collection and
+dataset storage remain onboard, open another terminal in the local checkout
+and run:
+
+```bash
+bash scripts/view_onboard_camera.sh
+```
+
+This creates an SSH tunnel through the configured `g1_bjutech_remote` host and
+starts the OpenCV viewer in the local `decoupled_vla_collection` conda
+environment. Press `Q` in the viewer window to close it. The tunnel is closed
+automatically. The robot camera server must already be listening on port
+`5555`; the helper reports an error instead of opening an empty viewer when it
+is not running.
+
 After collection has stopped, verify the dataset before copying it off the
 robot:
 
