@@ -27,6 +27,9 @@ ARCH="$(uname -m)"
 TMPDIR="$REPO_ROOT/.tmp/decoupled_vla_collection"
 mkdir -p "$TMPDIR"
 export TMPDIR
+# Editable dependencies may contain large Git LFS datasets that are not needed
+# for collection runtime. Avoid downloading them while pip clones pinned repos.
+export GIT_LFS_SKIP_SMUDGE=1
 PIP_CONSTRAINT_FILE="$TMPDIR/pip_constraints.txt"
 cat > "$PIP_CONSTRAINT_FILE" <<'EOF'
 torch==2.6.0
