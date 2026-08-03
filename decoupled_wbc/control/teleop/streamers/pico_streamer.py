@@ -82,6 +82,10 @@ class PicoStreamer(BaseStreamer):
             "data_collection": 0,
             "data_abort": 0,
         }
+        # Keep the last event identifier in every teleop message so a
+        # collection command cannot be lost between equal-rate ROS loops.
+        self._data_collection_event_id = 0
+        self._data_abort_event_id = 0
         self._button_sampler.start()
         self.enable_smpl_visualization = enable_smpl_visualization
         self._smpl_context = mp.get_context("spawn")
@@ -400,6 +404,20 @@ class PicoStreamer(BaseStreamer):
             event.toggle_data_collection for event in button_events
         )
         toggle_data_abort = any(event.toggle_data_abort for event in button_events)
+        if toggle_data_collection:
+            self._data_collection_event_id = time.time_ns()
+            print(
+                "[PicoStreamer] Left Grip+A detected: toggling recording "
+                f"(event {self._data_collection_event_id})",
+                flush=True,
+            )
+        if toggle_data_abort:
+            self._data_abort_event_id = time.time_ns()
+            print(
+                "[PicoStreamer] Left Grip+B detected: discarding recording "
+                f"(event {self._data_abort_event_id})",
+                flush=True,
+            )
 
         face_combo_pressed = pico_data["A"] and pico_data["B"] and pico_data["X"] and pico_data["Y"]
         upper_body_combo_pressed = pico_data["A"] and pico_data["X"] and not (
@@ -478,6 +496,8 @@ class PicoStreamer(BaseStreamer):
             data_collection_data={
                 "toggle_data_collection": toggle_data_collection,
                 "toggle_data_abort": toggle_data_abort,
+                "data_collection_event_id": self._data_collection_event_id,
+                "data_abort_event_id": self._data_abort_event_id,
             },
             source="pico",
         )

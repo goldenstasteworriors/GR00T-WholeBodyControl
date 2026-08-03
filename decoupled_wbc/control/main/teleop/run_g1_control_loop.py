@@ -105,6 +105,8 @@ def main(config: ControlLoopConfig):
     upper_body_policy_subscriber = ROSMsgSubscriber(CONTROL_GOAL_TOPIC)
 
     last_teleop_cmd = None
+    last_data_collection_event_id = 0
+    last_data_abort_event_id = 0
     try:
         while ros_manager.ok():
             t_start = time.monotonic()
@@ -175,13 +177,39 @@ def main(config: ControlLoopConfig):
                     }
                     joint_safety_status_pub.publish(joint_safety_status_msg)
 
-                # Start or Stop data collection
-                if wbc_goal.get("toggle_data_collection", False):
+                # PICO recording events carry a persistent unique identifier
+                # so they survive the teleop/control loop timing boundary.
+                data_collection_event_id = int(wbc_goal.get("data_collection_event_id", 0))
+                data_abort_event_id = int(wbc_goal.get("data_abort_event_id", 0))
+
+                new_data_collection_event = (
+                    data_collection_event_id != 0
+                    and data_collection_event_id != last_data_collection_event_id
+                )
+                new_data_abort_event = (
+                    data_abort_event_id != 0
+                    and data_abort_event_id != last_data_abort_event_id
+                )
+
+                # Start or stop data collection. Preserve the one-frame bool
+                # fallback for non-PICO and older teleop publishers.
+                if new_data_collection_event or (
+                    data_collection_event_id == 0
+                    and wbc_goal.get("toggle_data_collection", False)
+                ):
+                    print("Recording toggle received from PICO", flush=True)
                     dispatcher.handle_key("c")
+                if new_data_collection_event:
+                    last_data_collection_event_id = data_collection_event_id
 
                 # Abort the current episode
-                if wbc_goal.get("toggle_data_abort", False):
+                if new_data_abort_event or (
+                    data_abort_event_id == 0 and wbc_goal.get("toggle_data_abort", False)
+                ):
+                    print("Recording discard received from PICO", flush=True)
                     dispatcher.handle_key("x")
+                if new_data_abort_event:
+                    last_data_abort_event_id = data_abort_event_id
 
                 if env.use_sim and wbc_goal.get("reset_env_and_policy", False):
                     print("Resetting sim environment and policy")

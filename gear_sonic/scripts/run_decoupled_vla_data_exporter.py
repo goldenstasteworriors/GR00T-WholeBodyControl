@@ -716,6 +716,7 @@ class DecoupledVLADataCollector:
                 self._initial_yaw = None
                 self._episode_init_base_quat = None
                 self._play_audio_cue("discard")
+                self._print_and_say("Discarded current recording")
 
     def _normalise_full_q(
         self,
