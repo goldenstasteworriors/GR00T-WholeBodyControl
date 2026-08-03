@@ -119,13 +119,18 @@ echo "[INFO] Installing decoupled_wbc[full] dependencies..."
 pip_install tomli
 DECOUPLED_REQ_FILE="$(mktemp)"
 python - <<'PY' > "$DECOUPLED_REQ_FILE"
+import os
 from pathlib import Path
 import tomli
 
 config = tomli.loads(Path("decoupled_wbc/pyproject.toml").read_text())
 for requirement in config["project"]["dependencies"]:
+    if os.environ.get("LEROBOT_SOURCE_DIR") and requirement.startswith("lerobot @"):
+        continue
     print(requirement)
 for requirement in config["project"]["optional-dependencies"]["full"]:
+    if os.environ.get("LEROBOT_SOURCE_DIR") and requirement.startswith("lerobot @"):
+        continue
     print(requirement)
 PY
 GIT_LFS_SKIP_SMUDGE=1 pip_install -r "$DECOUPLED_REQ_FILE"
