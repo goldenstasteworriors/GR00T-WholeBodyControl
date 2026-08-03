@@ -86,6 +86,18 @@ def _conda_base() -> Path:
 def _conda_prefix(repo_root: Path, env_name: str) -> str:
     conda_hook = _conda_base() / "etc" / "profile.d" / "conda.sh"
     return (
+        # The G1 login shell sources ROS 1 Noetic from ~/.bashrc.  tmux panes
+        # inherit those paths before this ROS 2 environment is activated,
+        # which can make ROS 2 messages look like ROS 1 types and can exhaust
+        # aarch64 static TLS while importing torch.  Clean only this pane's
+        # process environment; do not change the user's shell configuration.
+        "unset ROS_ROOT ROS_PACKAGE_PATH ROS_MASTER_URI "
+        "ROSLISP_PACKAGE_DIRECTORIES ROS_DISTRO ROS_VERSION "
+        "ROS_PYTHON_VERSION ROS_ETC_DIR AMENT_PREFIX_PATH "
+        "COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH && "
+        'export PATH="${PATH//\\/opt\\/ros\\/noetic\\/bin:/}" && '
+        'export LD_LIBRARY_PATH="${LD_LIBRARY_PATH//\\/opt\\/ros\\/noetic\\/lib\\/aarch64-linux-gnu:/}" && '
+        'export LD_LIBRARY_PATH="${LD_LIBRARY_PATH//\\/opt\\/ros\\/noetic\\/lib:/}" && '
         f"source {shlex.quote(str(conda_hook))} && "
         f"conda activate {shlex.quote(env_name)} && "
         'if [ -f "$CONDA_PREFIX/setup.bash" ]; then source "$CONDA_PREFIX/setup.bash"; fi && '
