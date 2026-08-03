@@ -103,8 +103,17 @@ echo "[INFO] Upgrading pip tooling inside $ENV_NAME..."
 PIP_CONFIG_FILE=/dev/null python -m pip install -U pip setuptools wheel
 
 echo "[INFO] Installing editable project packages..."
-GIT_LFS_SKIP_SMUDGE=1 pip_install \
-    -e "gear_sonic[data_collection,teleop,camera,sim]"
+if [ -n "${LEROBOT_SOURCE_DIR:-}" ]; then
+    echo "[INFO] Installing pre-staged LeRobot source: $LEROBOT_SOURCE_DIR"
+    pip_install "$LEROBOT_SOURCE_DIR"
+    pip_install \
+        numpy==1.26.4 scipy==1.15.3 'torch>=2.4.0' joblib tqdm easydict loguru \
+        pyzmq msgpack msgpack-numpy pin mujoco tyro pyyaml opencv-python \
+        pyttsx3==2.90 'av>=14.2' datasets==3.6.0 depthai requests
+    pip_install --no-deps -e "gear_sonic[data_collection,teleop,camera,sim]"
+else
+    pip_install -e "gear_sonic[data_collection,teleop,camera,sim]"
+fi
 
 echo "[INFO] Installing decoupled_wbc[full] dependencies..."
 pip_install tomli
