@@ -54,6 +54,23 @@ With `--no-pico-data-streamer`, the dataset schema stays the same, but PICO-only
 SMPL/VR3PT fields are filled with defaults unless they can be derived from
 decoupled state.
 
+### Robot-onboard wired PICO collection
+
+On the G1 onboard computer, use the dedicated wrapper so the original ThinkPad
+launch commands and defaults remain unchanged:
+
+```bash
+python gear_sonic/scripts/launch_decoupled_vla_collection_onboard.py \
+  --task-prompt "grab the red bottle" \
+  --dataset-name pour_water_between_beakers_7_23 \
+  --hand-task grab_middle_beaker \
+  --no-pico-data-streamer
+```
+
+The wrapper defaults to the robot-local camera endpoint `192.168.123.164` and
+the `decoupled_vla_collection` conda environment. The PICO XRoboToolkit app
+should point its PC Service address at the robot's wired address.
+
 ## Simulation
 
 ```bash
