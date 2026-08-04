@@ -508,6 +508,7 @@ def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str
         "30",
         *_bool_arg("require-sonic-pose", config.require_sonic_pose),
         *_bool_arg("record-wrist-cameras", config.record_wrist_cameras),
+        *_bool_arg("with-hands", config.with_hands),
         *_bool_arg("text-to-speech", config.text_to_speech),
         *_bool_arg("audio-cues", config.audio_cues),
         "--audio-cue-volume",

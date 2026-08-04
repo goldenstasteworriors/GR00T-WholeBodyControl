@@ -46,8 +46,10 @@ from decoupled_wbc.control.utils.ros_utils import ROSMsgSubscriber
 from gear_sonic.camera.composed_camera import ComposedCameraClientSensor
 from gear_sonic.data.exporter import Gr00tDataExporter
 from gear_sonic.data.features_sonic_vla import (
+    get_features_sonic_body29,
     get_features_sonic_inspire6,
     get_g1_robot_model,
+    get_modality_config_sonic_body29,
     get_modality_config_sonic_inspire6,
     get_wrist_camera_features,
     get_wrist_camera_modality_config,
@@ -121,6 +123,9 @@ class DecoupledVLADataExporterConfig:
 
     record_wrist_cameras: bool = False
     """Record left_wrist/right_wrist camera streams if the camera server provides them."""
+
+    with_hands: bool = True
+    """Record native Inspire hand state/action fields when hand control is enabled."""
 
     text_to_speech: bool = False
     """Use optional text-to-speech voice feedback; local tone cues are separate."""
@@ -755,6 +760,8 @@ class DecoupledVLADataCollector:
 
     def _get_observation_state(self, proprio: dict, kinematic_state: np.ndarray) -> np.ndarray:
         body_indices = self.robot_model.get_body_actuated_joint_indices()
+        if not self.config.with_hands:
+            return np.ascontiguousarray(kinematic_state[body_indices], dtype=np.float64)
         return np.concatenate(
             [
                 kinematic_state[body_indices],
@@ -769,6 +776,10 @@ class DecoupledVLADataCollector:
             if key in proprio:
                 legacy_action = self._normalise_full_q(proprio[key])
                 body_indices = self.robot_model.get_body_actuated_joint_indices()
+                if not self.config.with_hands:
+                    return np.ascontiguousarray(
+                        legacy_action[body_indices], dtype=np.float64
+                    )
                 left_indices = self.robot_model.get_hand_actuated_joint_indices("left")
                 right_indices = self.robot_model.get_hand_actuated_joint_indices("right")
                 return np.concatenate(
@@ -973,8 +984,9 @@ class DecoupledVLADataCollector:
             side="right",
         )
 
-        frame_data["teleop.left_hand_joints"] = q[29:35].astype(np.float32)
-        frame_data["teleop.right_hand_joints"] = q[35:41].astype(np.float32)
+        if self.config.with_hands:
+            frame_data["teleop.left_hand_joints"] = q[29:35].astype(np.float32)
+            frame_data["teleop.right_hand_joints"] = q[35:41].astype(np.float32)
 
         frame_data["teleop.planner_mode"] = np.array(
             [planner_msg["planner_mode"]] if use_planner and planner_msg else [0],
@@ -1182,8 +1194,14 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
 
     try:
         robot_model = get_g1_robot_model()
-        dataset_features = get_features_sonic_inspire6(robot_model)
-        modality_config = get_modality_config_sonic_inspire6(robot_model)
+        if config.with_hands:
+            dataset_features = get_features_sonic_inspire6(robot_model)
+            modality_config = get_modality_config_sonic_inspire6(robot_model)
+            schema_compatibility = "g1_inspire_41dof"
+        else:
+            dataset_features = get_features_sonic_body29(robot_model)
+            modality_config = get_modality_config_sonic_body29(robot_model)
+            schema_compatibility = "g1_body_29dof"
 
         if config.record_wrist_cameras:
             dataset_features.update(get_wrist_camera_features())
@@ -1201,7 +1219,7 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
                 "pico_pose": "optional_sonic_zmq",
                 "camera": "gear_sonic_composed_camera",
             },
-            "schema_compatibility": "g1_inspire_41dof",
+            "schema_compatibility": schema_compatibility,
         }
 
         data_exporter = Gr00tDataExporter.create(

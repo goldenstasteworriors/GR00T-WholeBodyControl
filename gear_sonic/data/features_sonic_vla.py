@@ -426,6 +426,43 @@ def get_modality_config_sonic_inspire6(robot_model: RobotModel) -> dict:
     return modality
 
 
+def get_features_sonic_body29(robot_model: RobotModel) -> dict:
+    """Return a body-only schema without synthetic hand observations/actions."""
+    features = copy.deepcopy(get_features_sonic_vla(robot_model))
+    body_joint_names = robot_model.supplemental_info.body_actuated_joints
+    for key in ("observation.state", "action.wbc"):
+        features[key] = {
+            "dtype": "float64",
+            "shape": (29,),
+            "names": body_joint_names,
+        }
+    features.pop("teleop.left_hand_joints", None)
+    features.pop("teleop.right_hand_joints", None)
+    return features
+
+
+def get_modality_config_sonic_body29(robot_model: RobotModel) -> dict:
+    """Return modality metadata for :func:`get_features_sonic_body29`."""
+    modality = copy.deepcopy(get_modality_config_sonic_vla(robot_model))
+    modality["state"] = {
+        key: value
+        for key, value in modality["state"].items()
+        if key not in {"left_hand", "right_hand"}
+    }
+    modality["state"].update(
+        {
+            "left_leg": {"start": 0, "end": 6},
+            "right_leg": {"start": 6, "end": 12},
+            "waist": {"start": 12, "end": 15},
+            "left_arm": {"start": 15, "end": 22},
+            "right_arm": {"start": 22, "end": 29},
+        }
+    )
+    modality["action"].pop("left_hand_joints", None)
+    modality["action"].pop("right_hand_joints", None)
+    return modality
+
+
 def get_wrist_camera_features() -> dict:
     """Features for optional wrist cameras (added when ``record_wrist_cameras`` is enabled)."""
     return {
