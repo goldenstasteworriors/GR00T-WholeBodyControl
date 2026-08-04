@@ -9,7 +9,16 @@ CONDA_ENV="${CONDA_ENV:-decoupled_vla_collection}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-CONDA_BIN="${CONDA_BIN:-/home/ykj/miniconda3/bin/conda}"
+
+if [[ -z "${CONDA_BIN:-}" ]]; then
+    if command -v conda >/dev/null 2>&1; then
+        CONDA_BIN="$(command -v conda)"
+    elif [[ -x "${HOME}/miniconda3/bin/conda" ]]; then
+        CONDA_BIN="${HOME}/miniconda3/bin/conda"
+    else
+        CONDA_BIN="/home/ykj/miniconda3/bin/conda"
+    fi
+fi
 
 if [[ ! -x "${CONDA_BIN}" ]]; then
     echo "ERROR: conda executable not found: ${CONDA_BIN}" >&2
