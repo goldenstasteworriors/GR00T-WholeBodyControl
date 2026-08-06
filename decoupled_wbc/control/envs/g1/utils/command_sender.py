@@ -121,7 +121,7 @@ class UnitreeLocoArmCommandSender:
     ARM_WEIGHT_INDEX = 29
 
     def __init__(self, config: Dict):
-        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
+        import unitree_sdk2py.g1.loco.g1_loco_client as g1_loco_client
         from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_
 
@@ -130,7 +130,13 @@ class UnitreeLocoArmCommandSender:
         self.crc = CRC()
         self.publisher = ChannelPublisher("rt/arm_sdk", LowCmd_)
         self.publisher.Init()
-        self.loco = LocoClient()
+        # ai_sport >= 8.2 renamed this RPC service from ``loco`` to ``sport``.
+        # Keep it configurable so robots on older firmware can still opt in to
+        # the legacy name without modifying the vendored Unitree SDK.
+        g1_loco_client.LOCO_SERVICE_NAME = str(
+            config.get("unitree_loco_service_name", "sport")
+        )
+        self.loco = g1_loco_client.LocoClient()
         self.loco.SetTimeout(5.0)
         self.loco.Init()
         self.active = False
