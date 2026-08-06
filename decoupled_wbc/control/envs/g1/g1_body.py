@@ -4,7 +4,10 @@ import gymnasium as gym
 import numpy as np
 
 from decoupled_wbc.control.base.env import Env
-from decoupled_wbc.control.envs.g1.utils.command_sender import BodyCommandSender
+from decoupled_wbc.control.envs.g1.utils.command_sender import (
+    BodyCommandSender,
+    UnitreeLocoArmCommandSender,
+)
 from decoupled_wbc.control.envs.g1.utils.state_processor import BodyStateProcessor
 
 
@@ -12,7 +15,10 @@ class G1Body(Env):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         self.body_state_processor = BodyStateProcessor(config=config)
-        self.body_command_sender = BodyCommandSender(config=config)
+        if config.get("lower_body_controller", "decoupled") == "unitree_loco":
+            self.body_command_sender = UnitreeLocoArmCommandSender(config=config)
+        else:
+            self.body_command_sender = BodyCommandSender(config=config)
 
     def observe(self) -> dict[str, any]:
         body_state = self.body_state_processor._prepare_low_state()  # (1, 148)
@@ -46,6 +52,27 @@ class G1Body(Env):
         self.body_command_sender.send_command(
             action["body_q"], action["body_dq"], action["body_tau"]
         )
+
+    def handle_control_goal(self, goal: dict[str, any]) -> None:
+        if not isinstance(self.body_command_sender, UnitreeLocoArmCommandSender):
+            return
+        if goal.get("emergency_stop", False):
+            self.body_command_sender.set_active(False, emergency=True)
+            return
+        if "set_policy_action" in goal:
+            self.body_command_sender.set_active(bool(goal["set_policy_action"]))
+        self.body_command_sender.update_status()
+        self.body_command_sender.send_velocity(goal.get("navigate_cmd", (0.0, 0.0, 0.0)))
+
+    def lower_body_active(self) -> bool:
+        if isinstance(self.body_command_sender, UnitreeLocoArmCommandSender):
+            return self.body_command_sender.active
+        return False
+
+    def close(self) -> None:
+        close = getattr(self.body_command_sender, "close", None)
+        if close is not None:
+            close()
 
     def observation_space(self) -> gym.Space:
         return gym.spaces.Dict(

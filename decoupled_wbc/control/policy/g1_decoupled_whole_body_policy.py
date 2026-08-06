@@ -18,18 +18,23 @@ class G1DecoupledWholeBodyPolicy(Policy):
     def __init__(
         self,
         robot_model,
-        lower_body_policy: Policy,
+        lower_body_policy: Optional[Policy],
         upper_body_policy: Policy,
+        use_official_loco: bool = False,
     ):
         self.robot_model = robot_model
         self.lower_body_policy = lower_body_policy
         self.upper_body_policy = upper_body_policy
+        self.use_official_loco = use_official_loco
+        self.observation = None
         self.last_goal_time = time_module.monotonic()
         self.is_in_teleop_mode = False  # Track if lower body is in teleop mode
 
     def set_observation(self, observation):
         # Upper body policy is open loop (just interpolation), so we don't need to set the observation
-        self.lower_body_policy.set_observation(observation)
+        self.observation = observation
+        if self.lower_body_policy is not None:
+            self.lower_body_policy.set_observation(observation)
 
     def set_goal(self, goal):
         """
@@ -74,7 +79,8 @@ class G1DecoupledWholeBodyPolicy(Policy):
         # Set teleop policy command flag
         has_teleop_commands = ("navigate_cmd" in goal) or ("base_height_command" in goal)
         self.is_in_teleop_mode = has_teleop_commands  # Track teleop state for timeout safety
-        self.lower_body_policy.set_use_teleop_policy_cmd(has_teleop_commands)
+        if self.lower_body_policy is not None:
+            self.lower_body_policy.set_use_teleop_policy_cmd(has_teleop_commands)
 
         # Lower body goal keys
         lower_body_keys = [
@@ -87,7 +93,8 @@ class G1DecoupledWholeBodyPolicy(Policy):
                 lower_body_goal[key] = goal[key]
 
         self.upper_body_policy.set_goal(upper_body_goal)
-        self.lower_body_policy.set_goal(lower_body_goal)
+        if self.lower_body_policy is not None:
+            self.lower_body_policy.set_goal(lower_body_goal)
 
     def get_action(self, time: Optional[float] = None):
         current_time = time if time is not None else time_module.monotonic()
@@ -134,20 +141,27 @@ class G1DecoupledWholeBodyPolicy(Policy):
         yaw_only_waist_from_torso = waist_yaw_only_rotation.T @ torso_orientation
         torso_orientation_rpy = rpy.matrixToRpy(yaw_only_waist_from_torso)
 
-        lower_body_action = self.lower_body_policy.get_action(
-            time, q_arms, base_height_command, torso_orientation_rpy, interpolated_navigate_cmd
-        )
+        if self.use_official_loco:
+            if self.observation is None:
+                raise ValueError("No observation set. Call set_observation() first.")
+            q[lower_body_indices] = self.observation["q"][lower_body_indices]
+        else:
+            lower_body_action = self.lower_body_policy.get_action(
+                time, q_arms, base_height_command, torso_orientation_rpy, interpolated_navigate_cmd
+            )
 
-        # If pelvis is both in upper and lower body, lower body policy takes preference
-        q[lower_body_indices] = lower_body_action["body_action"][0][
-            : len(lower_body_indices)
-        ]  # lower body (legs + waist)
+            # If pelvis is both in upper and lower body, lower body policy takes preference
+            q[lower_body_indices] = lower_body_action["body_action"][0][
+                : len(lower_body_indices)
+            ]  # lower body (legs + waist)
 
         self.last_action = {"q": q}
 
         return {"q": q}
 
     def handle_keyboard_button(self, key):
+        if self.lower_body_policy is None:
+            return
         try:
             self.lower_body_policy.locomotion_policy.handle_keyboard_button(key)
         except AttributeError:

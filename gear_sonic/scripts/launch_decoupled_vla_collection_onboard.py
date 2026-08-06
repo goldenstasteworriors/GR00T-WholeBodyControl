@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import os
+from pathlib import Path
 import shutil
 import sys
 
 
 DEFAULT_CONDA = Path("/home/unitree/miniconda3/bin/conda")
 DEFAULT_ENV = "decoupled_vla_collection"
+DEFAULT_LOWER_BODY_CONTROLLER = "unitree_loco"
+
+
+def _has_option(args: list[str], option: str) -> bool:
+    return any(arg == option or arg.startswith(f"{option}=") for arg in args)
 
 
 def main() -> None:
@@ -23,15 +28,14 @@ def main() -> None:
 
     env_name = os.environ.get("DECOUPLED_VLA_CONDA_ENV", DEFAULT_ENV)
     args = list(sys.argv[1:])
-    if not any(arg == "--camera-host" or arg.startswith("--camera-host=") for arg in args):
+    if not _has_option(args, "--camera-host"):
         args[:0] = ["--camera-host", "192.168.123.164"]
-    if not any(
-        arg == "--root-output-dir" or arg.startswith("--root-output-dir=")
-        for arg in args
-    ):
+    if not _has_option(args, "--root-output-dir"):
         args[:0] = ["--root-output-dir", str(repo_root / "outputs/onboard")]
-    if not any(arg == "--conda-env" or arg.startswith("--conda-env=") for arg in args):
+    if not _has_option(args, "--conda-env"):
         args[:0] = ["--conda-env", env_name]
+    if not _has_option(args, "--lower-body-controller"):
+        args[:0] = ["--lower-body-controller", DEFAULT_LOWER_BODY_CONTROLLER]
 
     os.execv(
         conda,

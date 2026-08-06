@@ -22,7 +22,10 @@ class BodyStateProcessor:
         self.config = config
 
         # Enter debug mode for real robot
-        if self.config["ENV_TYPE"] == "real":
+        if (
+            self.config["ENV_TYPE"] == "real"
+            and self.config.get("lower_body_controller", "decoupled") == "decoupled"
+        ):
             msc = MotionSwitcherClient()
             msc.SetTimeout(5.0)
             msc.Init()
