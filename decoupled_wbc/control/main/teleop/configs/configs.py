@@ -55,6 +55,7 @@ def override_wbc_config(
         "high_elbow_pose": config.high_elbow_pose,
         "lower_body_controller": config.lower_body_controller,
         "unitree_loco_start_fsm_id": config.unitree_loco_start_fsm_id,
+        "unitree_loco_service_name": config.unitree_loco_service_name,
         "unitree_loco_command_frequency": config.unitree_loco_command_frequency,
         "unitree_loco_max_linear_velocity": config.unitree_loco_max_linear_velocity,
         "unitree_loco_max_angular_velocity": config.unitree_loco_max_angular_velocity,
