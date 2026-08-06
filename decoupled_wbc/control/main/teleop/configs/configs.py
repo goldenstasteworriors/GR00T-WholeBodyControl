@@ -115,6 +115,9 @@ class BaseConfig(ArgsConfigTemplate):
     unitree_loco_start_fsm_id: int = 501
     """Official 29-DOF/3-waist-DOF G1 loco FSM entered by A+B+X+Y."""
 
+    unitree_loco_service_name: str = "sport"
+    """Official loco RPC service name (``sport`` for ai_sport >= 8.2)."""
+
     unitree_loco_command_frequency: float = 10.0
     """Maximum SetVelocity RPC frequency."""
 
