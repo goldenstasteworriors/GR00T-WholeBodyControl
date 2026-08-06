@@ -157,6 +157,39 @@ class DecoupledVLACollectionLaunchConfig:
     lower_body_controller: str = "decoupled"
     """Use ``decoupled`` ONNX control or Unitree's official ``unitree_loco`` service."""
 
+    unitree_loco_start_fsm_id: int = 501
+    """Official locomotion FSM used after standing."""
+
+    unitree_loco_damp_fsm_id: int = 1
+    """Official damping FSM used to begin startup."""
+
+    unitree_loco_stand_fsm_id: int = 4
+    """Official dedicated StandUp FSM used during startup."""
+
+    unitree_loco_service_name: str = "sport"
+    """Official loco RPC service name."""
+
+    unitree_loco_damp_duration: float = 0.5
+    """Minimum Damp hold time in seconds."""
+
+    unitree_loco_stand_duration: float = 4.0
+    """Minimum StandUp transition time in seconds."""
+
+    unitree_loco_stability_duration: float = 0.5
+    """Continuous stability time required before confirmation."""
+
+    unitree_loco_activation_timeout: float = 15.0
+    """Overall official-loco startup timeout in seconds."""
+
+    unitree_loco_state_timeout: float = 0.5
+    """Maximum accepted age of measured robot state in seconds."""
+
+    unitree_loco_max_leg_velocity: float = 0.35
+    """Maximum settled leg speed in rad/s."""
+
+    unitree_loco_max_torso_tilt: float = 0.35
+    """Maximum upright torso tilt in radians."""
+
     wbc_model_path: str = (
         "policy/GR00T-WholeBodyControl-Balance.onnx,"
         "policy/GR00T-WholeBodyControl-Walk.onnx"
@@ -360,6 +393,24 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
         errors.append("--lower-body-controller unitree_loco is only available on the real robot")
     if config.lower_body_controller == "unitree_loco" and config.enable_waist:
         errors.append("unitree_loco owns the waist; do not use --enable-waist")
+    if config.lower_body_controller == "unitree_loco":
+        positive_values = {
+            "--unitree-loco-activation-timeout": config.unitree_loco_activation_timeout,
+            "--unitree-loco-state-timeout": config.unitree_loco_state_timeout,
+            "--unitree-loco-max-leg-velocity": config.unitree_loco_max_leg_velocity,
+            "--unitree-loco-max-torso-tilt": config.unitree_loco_max_torso_tilt,
+        }
+        errors.extend(f"{name} must be positive" for name, value in positive_values.items() if value <= 0.0)
+        nonnegative_values = {
+            "--unitree-loco-damp-duration": config.unitree_loco_damp_duration,
+            "--unitree-loco-stand-duration": config.unitree_loco_stand_duration,
+            "--unitree-loco-stability-duration": config.unitree_loco_stability_duration,
+        }
+        errors.extend(
+            f"{name} must be nonnegative"
+            for name, value in nonnegative_values.items()
+            if value < 0.0
+        )
 
     hand_task_config = Path(config.hand_task_config).expanduser() if config.hand_task_config else _default_hand_task_config(repo_root)
     if not hand_task_config.exists():
@@ -414,6 +465,28 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         config.wbc_version,
         "--lower-body-controller",
         config.lower_body_controller,
+        "--unitree-loco-start-fsm-id",
+        str(config.unitree_loco_start_fsm_id),
+        "--unitree-loco-damp-fsm-id",
+        str(config.unitree_loco_damp_fsm_id),
+        "--unitree-loco-stand-fsm-id",
+        str(config.unitree_loco_stand_fsm_id),
+        "--unitree-loco-service-name",
+        config.unitree_loco_service_name,
+        "--unitree-loco-damp-duration",
+        str(config.unitree_loco_damp_duration),
+        "--unitree-loco-stand-duration",
+        str(config.unitree_loco_stand_duration),
+        "--unitree-loco-stability-duration",
+        str(config.unitree_loco_stability_duration),
+        "--unitree-loco-activation-timeout",
+        str(config.unitree_loco_activation_timeout),
+        "--unitree-loco-state-timeout",
+        str(config.unitree_loco_state_timeout),
+        "--unitree-loco-max-leg-velocity",
+        str(config.unitree_loco_max_leg_velocity),
+        "--unitree-loco-max-torso-tilt",
+        str(config.unitree_loco_max_torso_tilt),
         "--wbc-model-path",
         config.wbc_model_path,
         "--control-frequency",

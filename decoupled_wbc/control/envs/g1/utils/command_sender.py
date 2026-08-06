@@ -119,6 +119,7 @@ class UnitreeLocoArmCommandSender:
 
     ARM_MOTOR_INDICES = tuple(range(15, 29))
     ARM_WEIGHT_INDEX = 29
+    LEG_JOINT_COUNT = 12
 
     def __init__(self, config: Dict):
         import unitree_sdk2py.g1.loco.g1_loco_client as g1_loco_client
@@ -141,11 +142,30 @@ class UnitreeLocoArmCommandSender:
         self.loco.Init()
         self.active = False
         self._activation_requested = False
+        self._activation_stage = "idle"
         self._activation_deadline = 0.0
+        self._stage_started = 0.0
         self._last_fsm_query = 0.0
+        self._last_fsm_id = None
         self._last_velocity_send = 0.0
+        self._latest_leg_dq = None
+        self._latest_torso_quat = None
+        self._latest_robot_state_time = 0.0
+        self._stable_since = None
+        self._stand_transition_seen = False
+        self._locomotion_zeroed = False
+        self._last_wait_log = 0.0
         self._velocity_period = 1.0 / float(config.get("unitree_loco_command_frequency", 10.0))
         self._start_fsm_id = int(config.get("unitree_loco_start_fsm_id", 501))
+        self._damp_fsm_id = int(config.get("unitree_loco_damp_fsm_id", 1))
+        self._stand_fsm_id = int(config.get("unitree_loco_stand_fsm_id", 4))
+        self._damp_duration = float(config.get("unitree_loco_damp_duration", 0.5))
+        self._stand_duration = float(config.get("unitree_loco_stand_duration", 4.0))
+        self._stability_duration = float(config.get("unitree_loco_stability_duration", 0.5))
+        self._activation_timeout = float(config.get("unitree_loco_activation_timeout", 15.0))
+        self._state_timeout = float(config.get("unitree_loco_state_timeout", 0.5))
+        self._max_leg_velocity = float(config.get("unitree_loco_max_leg_velocity", 0.35))
+        self._max_torso_tilt = float(config.get("unitree_loco_max_torso_tilt", 0.35))
         self._max_linear_velocity = float(config.get("unitree_loco_max_linear_velocity", 0.5))
         self._max_angular_velocity = float(config.get("unitree_loco_max_angular_velocity", 1.0))
         self._weight_ramp_duration = float(config.get("unitree_arm_weight_ramp_duration", 2.0))
@@ -156,6 +176,124 @@ class UnitreeLocoArmCommandSender:
         if code not in (None, 0):
             raise RuntimeError(f"Unitree loco {name} failed with code {code}")
 
+    def _set_fsm(self, fsm_id: int, name: str) -> None:
+        self._check_rpc(name, self.loco.SetFsmId(int(fsm_id)))
+
+    def _stop_move(self) -> None:
+        # Call SetVelocity directly because older Unitree Python SDK versions
+        # discard the return value from StopMove().
+        self._check_rpc("SetVelocity(0)", self.loco.SetVelocity(0.0, 0.0, 0.0, 0.25))
+        self._last_velocity_send = time.monotonic()
+
+    def _query_fsm_id(self) -> int:
+        code, data = self.loco._Call(7001, "")
+        self._check_rpc("GetFsmId", code)
+        response = json.loads(data) if isinstance(data, str) else data
+        if not isinstance(response, dict) or "data" not in response:
+            raise RuntimeError(f"Unitree loco GetFsmId returned invalid data: {data!r}")
+        return int(response["data"])
+
+    def update_robot_state(self, body_dq: np.ndarray, torso_quat: np.ndarray) -> None:
+        """Cache measured motion used to confirm that standing has settled."""
+        body_dq = np.asarray(body_dq, dtype=np.float64)
+        torso_quat = np.asarray(torso_quat, dtype=np.float64)
+        if body_dq.ndim != 1 or body_dq.size < self.LEG_JOINT_COUNT:
+            return
+        if torso_quat.shape != (4,):
+            return
+        if not np.isfinite(body_dq).all() or not np.isfinite(torso_quat).all():
+            return
+        self._latest_leg_dq = body_dq[: self.LEG_JOINT_COUNT].copy()
+        self._latest_torso_quat = torso_quat.copy()
+        self._latest_robot_state_time = time.monotonic()
+
+    def _robot_stability(self, now: float) -> tuple[bool, str]:
+        if self._latest_leg_dq is None or self._latest_torso_quat is None:
+            return False, "waiting for measured robot state"
+        state_age = now - self._latest_robot_state_time
+        if state_age > self._state_timeout:
+            return False, f"robot state is stale ({state_age:.2f}s)"
+
+        max_leg_velocity = float(np.max(np.abs(self._latest_leg_dq)))
+        if max_leg_velocity > self._max_leg_velocity:
+            return False, f"legs still moving ({max_leg_velocity:.2f} rad/s)"
+
+        quat = self._latest_torso_quat
+        quat_norm = float(np.linalg.norm(quat))
+        if quat_norm < 1e-6:
+            return False, "torso orientation is unavailable"
+        normalized_quat = quat / quat_norm
+        x = normalized_quat[1]
+        y = normalized_quat[2]
+        upright_cosine = float(np.clip(1.0 - 2.0 * (x * x + y * y), -1.0, 1.0))
+        torso_tilt = float(np.arccos(upright_cosine))
+        if torso_tilt > self._max_torso_tilt:
+            return False, f"torso is not upright ({torso_tilt:.2f} rad)"
+        return True, "stable"
+
+    def _stable_for_required_duration(self, now: float) -> tuple[bool, str]:
+        stable, reason = self._robot_stability(now)
+        if not stable:
+            self._stable_since = None
+            return False, reason
+        if self._stable_since is None:
+            self._stable_since = now
+        stable_time = now - self._stable_since
+        if stable_time < self._stability_duration:
+            return False, f"settling ({stable_time:.2f}/{self._stability_duration:.2f}s)"
+        return True, "stable"
+
+    def _set_activation_stage(self, stage: str, now: float) -> None:
+        self._activation_stage = stage
+        self._stage_started = now
+        self._stable_since = None
+
+    def _release_arms(self) -> None:
+        self.low_cmd.motor_cmd[self.ARM_WEIGHT_INDEX].q = 0.0
+        self.low_cmd.crc = self.crc.Crc(self.low_cmd)
+        self.publisher.Write(self.low_cmd)
+
+    def _reset_activation(self) -> None:
+        self.active = False
+        self._activation_requested = False
+        self._activation_stage = "idle"
+        self._activation_deadline = 0.0
+        self._stable_since = None
+        self._stand_transition_seen = False
+        self._locomotion_zeroed = False
+
+    def _safe_stop(self, request_damp: bool) -> list[str]:
+        errors = []
+        try:
+            self._release_arms()
+        except Exception as exc:
+            errors.append(f"release arms: {exc}")
+        try:
+            self._stop_move()
+        except Exception as exc:
+            errors.append(f"zero velocity: {exc}")
+        if request_damp:
+            try:
+                self._set_fsm(self._damp_fsm_id, "Damp")
+            except Exception as exc:
+                errors.append(f"Damp: {exc}")
+        self._reset_activation()
+        return errors
+
+    def _fail_activation(self, message: str) -> None:
+        errors = self._safe_stop(request_damp=True)
+        if errors:
+            message += "; safe-stop errors: " + ", ".join(errors)
+        raise RuntimeError(message)
+
+    def _log_waiting(self, now: float, reason: str) -> None:
+        if now - self._last_wait_log >= 1.0:
+            print(
+                f"Unitree official loco startup [{self._activation_stage}]: {reason}",
+                flush=True,
+            )
+            self._last_wait_log = now
+
     def set_active(self, active: bool, emergency: bool = False) -> None:
         active = bool(active)
         if active and (self.active or self._activation_requested):
@@ -163,46 +301,112 @@ class UnitreeLocoArmCommandSender:
         if not active and not (self.active or self._activation_requested or emergency):
             return
         if active:
-            self._check_rpc("SetFsmId", self.loco.SetFsmId(self._start_fsm_id))
+            now = time.monotonic()
+            self.active = False
             self._activation_requested = True
-            self._activation_deadline = time.monotonic() + 10.0
-            print(f"Unitree official loco requested (fsm_id={self._start_fsm_id})")
+            self._activation_deadline = now + self._activation_timeout
+            self._stand_transition_seen = False
+            self._locomotion_zeroed = False
+            self._last_wait_log = 0.0
+            self._last_fsm_query = 0.0
+            self._last_fsm_id = None
+            self._release_arms()
+            self._set_fsm(self._damp_fsm_id, "Damp")
+            self._set_activation_stage("wait_damp", now)
+            print(
+                "Unitree official loco startup requested: "
+                f"Damp({self._damp_fsm_id}) -> StandUp({self._stand_fsm_id}) "
+                f"-> locomotion({self._start_fsm_id})",
+                flush=True,
+            )
             return
 
-        self.active = False
-        self._activation_requested = False
-        self.low_cmd.motor_cmd[self.ARM_WEIGHT_INDEX].q = 0.0
-        self.low_cmd.crc = self.crc.Crc(self.low_cmd)
-        self.publisher.Write(self.low_cmd)
-        self._check_rpc("StopMove", self.loco.StopMove())
+        errors = self._safe_stop(request_damp=emergency)
         if emergency:
-            self._check_rpc("Damp", self.loco.Damp())
             print(
                 "Unitree official loco emergency stop: arms released, "
                 "velocity zero, damp requested"
             )
+        if errors:
+            raise RuntimeError("Unitree loco safe stop failed: " + ", ".join(errors))
 
     def update_status(self) -> None:
         if not self._activation_requested or self.active:
             return
         now = time.monotonic()
         if now > self._activation_deadline:
-            self._activation_requested = False
-            raise RuntimeError(
-                f"Unitree loco did not confirm fsm_id={self._start_fsm_id} within 10 seconds"
+            self._fail_activation(
+                "Unitree loco startup timed out during "
+                f"{self._activation_stage} after {self._activation_timeout:.1f} seconds"
             )
-        if now - self._last_fsm_query < 0.2:
+
+        if now - self._last_fsm_query >= 0.2:
+            self._last_fsm_id = self._query_fsm_id()
+            self._last_fsm_query = now
+
+        fsm_id = self._last_fsm_id
+        if self._activation_stage == "wait_damp":
+            if fsm_id != self._damp_fsm_id:
+                self._log_waiting(now, f"waiting for Damp, current fsm_id={fsm_id}")
+                return
+            damp_time = now - self._stage_started
+            if damp_time < self._damp_duration:
+                self._log_waiting(
+                    now, f"Damp hold ({damp_time:.2f}/{self._damp_duration:.2f}s)"
+                )
+                return
+            self._set_fsm(self._stand_fsm_id, "StandUp")
+            self._set_activation_stage("wait_stand", now)
+            print(f"Unitree official loco StandUp requested (fsm_id={self._stand_fsm_id})")
             return
-        code, data = self.loco._Call(7001, "")
-        self._check_rpc("GetFsmId", code)
-        self._last_fsm_query = now
-        response = json.loads(data) if isinstance(data, str) else data
-        fsm_id = int(response["data"])
-        if fsm_id == self._start_fsm_id:
+
+        if self._activation_stage == "wait_stand":
+            if fsm_id in {self._stand_fsm_id, 500, self._start_fsm_id}:
+                self._stand_transition_seen = True
+            stand_time = now - self._stage_started
+            if stand_time < self._stand_duration:
+                self._log_waiting(
+                    now,
+                    f"standing ({stand_time:.2f}/{self._stand_duration:.2f}s), "
+                    f"fsm_id={fsm_id}",
+                )
+                return
+            if not self._stand_transition_seen:
+                self._log_waiting(now, f"StandUp transition not observed, current fsm_id={fsm_id}")
+                return
+            stable, reason = self._stable_for_required_duration(now)
+            if not stable:
+                self._log_waiting(now, reason)
+                return
+            self._set_fsm(self._start_fsm_id, "Start locomotion")
+            self._set_activation_stage("wait_locomotion", now)
+            print(f"Unitree official loco locomotion requested (fsm_id={self._start_fsm_id})")
+            return
+
+        if self._activation_stage == "wait_locomotion":
+            if fsm_id != self._start_fsm_id:
+                self._stable_since = None
+                self._log_waiting(
+                    now, f"waiting for locomotion fsm_id={self._start_fsm_id}, current={fsm_id}"
+                )
+                return
+            if not self._locomotion_zeroed:
+                self._stop_move()
+                self._locomotion_zeroed = True
+                self._stable_since = None
+                return
+            stable, reason = self._stable_for_required_duration(now)
+            if not stable:
+                self._log_waiting(now, reason)
+                return
             self.active = True
             self._activation_requested = False
+            self._activation_stage = "active"
             self._activation_time = now
-            print(f"Unitree official loco confirmed (fsm_id={fsm_id})")
+            print(
+                f"Unitree official loco confirmed standing and active (fsm_id={fsm_id})",
+                flush=True,
+            )
 
     def send_velocity(self, navigate_cmd) -> None:
         if not self.active:

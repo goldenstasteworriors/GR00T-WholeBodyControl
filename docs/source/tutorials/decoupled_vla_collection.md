@@ -69,13 +69,21 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
   --lower-body-controller unitree_loco
 ```
 
-This mode intentionally rejects waist IK. The first `A+B+X+Y` press requests
-official loco FSM 501 and enables standing/navigation. `A+X` pauses or resumes
-upper-body teleoperation while preserving the official standing controller.
-The next `A+B+X+Y` press releases `arm_sdk`, sends zero velocity, and requests
-the official damp state. The PICO left joystick controls forward/backward and
-sideways velocity; the right joystick controls yaw. Do not send simultaneous
-movement commands from the Unitree remote during collection.
+When `A+B+X+Y` requests startup, the official backend now runs a non-blocking
+`Damp (FSM 1) -> StandUp (FSM 4) -> locomotion (FSM 501)` sequence.  It waits
+for fresh low-state measurements, low leg velocity, and an upright torso before
+publishing the confirmed lower-body-active status.  `A+X` remains disabled
+until the complete sequence succeeds.  A second `A+B+X+Y`, an RPC error, or a
+startup timeout releases the arm weight, commands zero velocity, and requests
+Damp.
+
+This mode intentionally rejects waist IK. The first `A+B+X+Y` press starts the
+full sequence above and enables navigation only after the final confirmation.
+`A+X` pauses or resumes upper-body teleoperation while preserving the official
+standing controller. The next `A+B+X+Y` press releases `arm_sdk`, sends zero
+velocity, and requests the official damp state. The PICO left joystick controls
+forward/backward and sideways velocity; the right joystick controls yaw. Do not
+send simultaneous movement commands from the Unitree remote during collection.
 
 For wired-PICO collection running directly on the robot Ubuntu host, the
 onboard wrapper selects `unitree_loco` by default:
