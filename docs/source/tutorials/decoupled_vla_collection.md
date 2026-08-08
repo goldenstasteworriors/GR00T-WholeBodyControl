@@ -89,6 +89,36 @@ command below does not need an extra controller argument. Pass
 `--lower-body-controller decoupled` explicitly only when reverting to the old
 local Balance/Walk ONNX lower-body controller.
 
+### Robot-onboard wireless keyboard collection
+
+For cable-free operation, keep the Unitree DDS control loop and dataset writer
+on the robot and use the workstation only to SSH into the robot's tmux session.
+PICO DHCP and PC Service are not required. Start the robot camera separately,
+then run:
+
+```bash
+python gear_sonic/scripts/launch_decoupled_vla_collection_onboard.py \
+  --task-prompt "grab the red bottle" \
+  --dataset-name keyboard_loco_test \
+  --hand-task open_door \
+  --keyboard-lower-body-control \
+  --keyboard-loco-command-timeout 0.5 \
+  --body-control-device dummy \
+  --hand-control-device dummy \
+  --no-enable-real-device \
+  --no-pico-data-streamer \
+  --no-with-hands
+```
+
+Focus the tmux control pane before entering commands. `G` starts the non-blocking
+`Damp (FSM 1) -> StandUp (FSM 4) -> locomotion (FSM 501)` sequence; pressing
+`G` again or pressing `Space` requests the safe emergency stop. Hold `W/S` for
+forward/backward motion, `A/D` for lateral motion, and `Q/E` for yaw. `Z` resets
+all velocity components immediately. The controller also resets velocity after
+0.5 seconds without a movement key, including when the SSH client disconnects.
+`C` starts/saves a recording episode and `X` discards it. Dataset output remains
+under `outputs/onboard/<dataset-name>`.
+
 ### Robot-onboard wired PICO collection
 
 The robot's external RJ45 ports share the onboard `eth0` network. The PICO

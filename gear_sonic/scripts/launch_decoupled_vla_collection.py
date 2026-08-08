@@ -253,6 +253,12 @@ class DecoupledVLACollectionLaunchConfig:
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher type for control loop."""
 
+    keyboard_lower_body_control: bool = False
+    """Control official lower-body startup and navigation from the control pane."""
+
+    keyboard_loco_command_timeout: float = 0.5
+    """Keyboard movement deadman timeout in seconds."""
+
     body_control_device: str = "pico"
     """Decoupled body teleop device."""
 
@@ -420,6 +426,15 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
         errors.append("--lower-body-controller unitree_loco is only available on the real robot")
     if config.lower_body_controller == "unitree_loco" and config.enable_waist:
         errors.append("unitree_loco owns the waist; do not use --enable-waist")
+    if config.keyboard_lower_body_control:
+        if config.lower_body_controller != "unitree_loco":
+            errors.append(
+                "--keyboard-lower-body-control requires --lower-body-controller unitree_loco"
+            )
+        if config.keyboard_dispatcher_type != "raw":
+            errors.append("--keyboard-lower-body-control requires --keyboard-dispatcher-type raw")
+        if config.keyboard_loco_command_timeout <= 0.0:
+            errors.append("--keyboard-loco-command-timeout must be positive")
     if config.lower_body_controller == "unitree_loco":
         positive_values = {
             "--unitree-loco-activation-timeout": config.unitree_loco_activation_timeout,
@@ -531,6 +546,9 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.startup_final_elbow_angle),
         "--keyboard-dispatcher-type",
         config.keyboard_dispatcher_type,
+        *_bool_arg("keyboard-lower-body-control", config.keyboard_lower_body_control),
+        "--keyboard-loco-command-timeout",
+        str(config.keyboard_loco_command_timeout),
         *_bool_arg("enable-waist", config.enable_waist),
         *_bool_arg("with-hands", config.with_hands),
         *_bool_arg("high-elbow-pose", config.high_elbow_pose),
@@ -674,6 +692,10 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print("=" * 72)
     print(f"  Mode:          {'Simulation' if config.sim else 'Real Robot'}")
     print(f"  Lower body:    {config.lower_body_controller}")
+    print(
+        "  Keyboard loco: "
+        f"{'enabled' if config.keyboard_lower_body_control else 'disabled'}"
+    )
     print(f"  Interface:     {interface}")
     print(f"  Dataset:       {config.dataset_name or '(timestamp)'}")
     print(f"  Task:          {config.task_prompt}")
@@ -758,7 +780,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print("  collection window:")
     print("    pane 0 top-left:     decoupled control loop")
     print("    pane 1 top-right:    VLA data exporter")
-    print("    pane 2 bottom-left:  decoupled PICO teleop loop")
+    print("    pane 2 bottom-left:  decoupled teleop loop")
     if config.camera_viewer:
         print("    pane 3 bottom-right: camera viewer")
     if config.sim and config.sim_separate_process:
@@ -769,6 +791,14 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         print(f"  logs:                  {profile_log_dir}")
     print()
     print("  Controls:")
+    if config.keyboard_lower_body_control:
+        print("    control pane: G start/toggle emergency, Space emergency stop")
+        print("    control pane: hold W/S forward, A/D lateral, Q/E yaw; Z zero")
+        print("    control pane: C start/save recording, X discard recording")
+        print(
+            "    movement deadman: zero after "
+            f"{config.keyboard_loco_command_timeout:.2f}s without a movement key"
+        )
     print("    Ctrl+b, arrows  switch panes")
     print("    Ctrl+b, d       detach")
     print("    Ctrl+\\          kill session")

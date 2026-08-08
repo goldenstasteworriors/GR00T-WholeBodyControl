@@ -233,6 +233,12 @@ class BaseConfig(ArgsConfigTemplate):
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher to use. [raw, ros]"""
 
+    keyboard_lower_body_control: bool = False
+    """Enable explicit keyboard startup, navigation, and emergency-stop controls."""
+
+    keyboard_loco_command_timeout: float = 0.5
+    """Seconds without a movement key before keyboard velocity is reset to zero."""
+
     # Gravity Compensation Configuration
     enable_gravity_compensation: bool = False
     """Enable gravity compensation using pinocchio dynamics."""
@@ -316,6 +322,15 @@ class BaseConfig(ArgsConfigTemplate):
                 raise ValueError(
                     f"unitree_loco values must be nonnegative: {', '.join(invalid)}"
                 )
+        if self.keyboard_lower_body_control:
+            if self.lower_body_controller != "unitree_loco":
+                raise ValueError(
+                    "keyboard lower-body control requires lower_body_controller=unitree_loco"
+                )
+            if self.keyboard_dispatcher_type != "raw":
+                raise ValueError("keyboard lower-body control requires the raw dispatcher")
+            if self.keyboard_loco_command_timeout <= 0.0:
+                raise ValueError("keyboard_loco_command_timeout must be positive")
 
     def load_wbc_yaml(self) -> dict:
         """Load and merge wbc yaml with dataclass overrides"""
