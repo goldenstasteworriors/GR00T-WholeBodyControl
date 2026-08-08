@@ -113,9 +113,10 @@ python gear_sonic/scripts/launch_decoupled_vla_collection_onboard.py \
 Focus the tmux control pane before entering commands. `G` starts the non-blocking
 `Damp (FSM 1) -> StandUp (FSM 4) -> locomotion (FSM 501)` sequence; pressing
 `G` again or pressing `Space` requests the safe emergency stop. Hold `W/S` for
-forward/backward motion, `A/D` for lateral motion, and `Q/E` for yaw. `Z` resets
-all velocity components immediately. The controller also resets velocity after
-0.5 seconds without a movement key, including when the SSH client disconnects.
+fixed +/-0.1 m/s forward/backward motion, `A/D` for fixed +/-0.1 m/s lateral
+motion, and `Q/E` for fixed +/-0.1 rad/s yaw. `Z` resets all velocity components
+immediately. The controller also resets velocity after 0.5 seconds without a
+movement key, including when the SSH client disconnects.
 `C` starts/saves a recording episode and `X` discards it. Dataset output remains
 under `outputs/onboard/<dataset-name>`.
 

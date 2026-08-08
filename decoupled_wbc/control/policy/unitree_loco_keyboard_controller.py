@@ -78,17 +78,17 @@ class UnitreeLocoKeyboardController:
                 return
 
             if key == "w":
-                self._velocity[0] += self._linear_step
+                self._velocity[0] = self._linear_step
             elif key == "s":
-                self._velocity[0] -= self._linear_step
+                self._velocity[0] = -self._linear_step
             elif key == "a":
-                self._velocity[1] += self._linear_step
+                self._velocity[1] = self._linear_step
             elif key == "d":
-                self._velocity[1] -= self._linear_step
+                self._velocity[1] = -self._linear_step
             elif key == "q":
-                self._velocity[2] += self._angular_step
+                self._velocity[2] = self._angular_step
             elif key == "e":
-                self._velocity[2] -= self._angular_step
+                self._velocity[2] = -self._angular_step
 
             self._velocity[:2] = np.clip(
                 self._velocity[:2],
