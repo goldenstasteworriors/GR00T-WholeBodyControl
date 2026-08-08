@@ -300,6 +300,28 @@ python gear_sonic/scripts/launch_data_collection.py \
     --record-wrist-cameras
 ```
 
+**With only the left Inspire hand available** (the bridge does not connect to
+the right hand, and right-hand dataset fields are stored as synthetic open
+values):
+
+```bash
+python gear_sonic/scripts/launch_data_collection.py \
+    --camera-host 192.168.123.164 \
+    --task-prompt "pick up the cup" \
+    --inspire-hand-bridge \
+    --inspire-hand-network enp7s0 \
+    --inspire-left-ip 192.168.123.210 \
+    --left-hand-only
+```
+
+The dataset uses the native Inspire layout shared with the decoupled VLA
+collector: `observation.state` and `action.wbc` contain 29 body joints, six
+left-hand motors, and six right-hand motors (41 values total). Each
+`teleop.*_hand_joints` field contains six values in the order `little`, `ring`,
+`middle`, `index`, `thumb_bend`, `thumb_rotate`. It also records
+`schema_compatibility: g1_inspire_41dof`, `hand_data_mode: left_only`, and the
+synthetic right-hand open pose under `script_config` in `meta/info.json`.
+
 **With onboard C++ deploy** (useful when the workstation has no NVIDIA GPU):
 
 ```bash
@@ -354,6 +376,8 @@ Common options:
 | `--offboard-zmq-host` | *(auto-detected)* | Workstation IP that onboard deploy uses to reach PICO ZMQ |
 | `--state-zmq-host` | *(local or onboard)* | Robot state publisher host |
 | `--record-wrist-cameras` | `False` | Record left/right wrist camera streams in the dataset |
+| `--inspire-hand-bridge` | `False` | Start the Inspire DDS-to-Modbus bridge |
+| `--left-hand-only` | `False` | Drive only the left Inspire hand and store the right-hand fields as synthetic open data |
 | `--no-text-to-speech` | *(on)* | Disable voice feedback via espeak |
 
 Run `python gear_sonic/scripts/launch_data_collection.py --help` for all options.

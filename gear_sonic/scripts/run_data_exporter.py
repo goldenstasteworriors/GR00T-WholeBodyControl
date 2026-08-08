@@ -40,9 +40,9 @@ import zmq
 
 from gear_sonic.data.exporter import Gr00tDataExporter
 from gear_sonic.data.features_sonic_vla import (
-    get_features_sonic_vla,
+    get_features_sonic_inspire6,
     get_g1_robot_model,
-    get_modality_config_sonic_vla,
+    get_modality_config_sonic_inspire6,
     get_wrist_camera_features,
     get_wrist_camera_modality_config,
 )
@@ -60,6 +60,14 @@ from gear_sonic.utils.data_collection.zmq_state_subscriber import (
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+
+INSPIRE_HAND_DOF = 6
+DEFAULT_INSPIRE_HAND_POSE_CONFIG = (
+    Path(__file__).resolve().parent.parent
+    / "config"
+    / "data_collection"
+    / "inspire_hand_pose.json"
+)
 
 
 @dataclass
@@ -82,6 +90,11 @@ class SonicDataExporterConfig:
     overwrite_existing_dataset: bool = False
     """Delete and recreate the dataset directory if it already exists."""
 
+    left_hand_only: bool = False
+    """Record the right-hand native Inspire fields as a synthetic open pose."""
+
+    inspire_hand_pose_config: str = str(DEFAULT_INSPIRE_HAND_POSE_CONFIG)
+    """JSON file containing native six-motor Inspire open and grasp poses."""
 
     # Camera
     camera_host: str = "localhost"
@@ -145,6 +158,27 @@ class SonicDataExporterConfig:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def load_inspire_hand_profiles(path: str) -> dict[str, np.ndarray]:
+    """Load the native Inspire open/grasp profiles used by the Modbus bridge."""
+    with Path(path).expanduser().open("r", encoding="utf-8") as stream:
+        data = json.load(stream)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+
+    profiles = {}
+    for name, aliases in {"open": ("open",), "grasp": ("grasp", "closed")}.items():
+        values = next((data[key] for key in aliases if key in data), None)
+        arr = np.asarray(values, dtype=np.float64)
+        if arr.shape != (INSPIRE_HAND_DOF,):
+            raise ValueError(
+                f"{path}: {name} must have {INSPIRE_HAND_DOF} values, got {arr.shape}"
+            )
+        if np.any(arr < 0.0) or np.any(arr > 1.0):
+            raise ValueError(f"{path}: {name} values must be in [0.0, 1.0]")
+        profiles[name] = arr
+    return profiles
 
 
 class RuntimeOutput:
@@ -396,11 +430,21 @@ class GrootDataCollector:
         audio_cue: AudioCue | None = None,
         status_callback=None,
         latency_recorder: LatencyRecorder | None = None,
+        left_hand_only: bool = False,
+        inspire_open_q: np.ndarray | None = None,
+        inspire_grasp_q: np.ndarray | None = None,
     ):
         self.text_to_speech = text_to_speech
         self.audio_cue = audio_cue
         self.status_callback = status_callback
         self.latency_recorder = latency_recorder
+        self.left_hand_only = left_hand_only
+        self.inspire_open_q = np.asarray(inspire_open_q, dtype=np.float64)
+        self.inspire_grasp_q = np.asarray(inspire_grasp_q, dtype=np.float64)
+        if self.inspire_open_q.shape != (INSPIRE_HAND_DOF,):
+            raise ValueError(f"inspire_open_q must have shape ({INSPIRE_HAND_DOF},)")
+        if self.inspire_grasp_q.shape != (INSPIRE_HAND_DOF,):
+            raise ValueError(f"inspire_grasp_q must have shape ({INSPIRE_HAND_DOF},)")
         self.frequency = frequency
         self.loop_period = 1.0 / frequency
         self.profile_timing = profile_timing
@@ -836,15 +880,33 @@ class GrootDataCollector:
         assert self.latest_proprio_msg is not None
         proprio = self.latest_proprio_msg
 
+        left_hand_q = self._native_inspire_state(proprio["left_hand_q"], "left_hand_q")
+        right_hand_q = self._native_inspire_state(proprio["right_hand_q"], "right_hand_q")
+        left_hand_action = self._legacy_hand_action_to_inspire(
+            proprio["last_left_hand_action"]
+        )
+        right_hand_action = self._legacy_hand_action_to_inspire(
+            proprio["last_right_hand_action"]
+        )
+        if self.left_hand_only:
+            right_hand_q = self.inspire_open_q.copy()
+            right_hand_action = self.inspire_open_q.copy()
+
+        observation_state = np.concatenate(
+            [proprio["body_q"], left_hand_q, right_hand_q]
+        ).astype(np.float64, copy=False)
+        action_wbc = np.concatenate(
+            [proprio["last_action"], left_hand_action, right_hand_action]
+        ).astype(np.float64, copy=False)
+
+        legacy_right_hand_q = proprio["right_hand_q"]
+        if self.left_hand_only:
+            legacy_right_hand_q = np.zeros_like(legacy_right_hand_q)
+
         whole_q = self.robot_model.get_configuration_from_actuated_joints(
             body_actuated_joint_values=proprio["body_q"],
             left_hand_actuated_joint_values=proprio["left_hand_q"],
-            right_hand_actuated_joint_values=proprio["right_hand_q"],
-        )
-        whole_action_wbc = self.robot_model.get_configuration_from_actuated_joints(
-            body_actuated_joint_values=proprio["last_action"],
-            left_hand_actuated_joint_values=proprio["last_left_hand_action"],
-            right_hand_actuated_joint_values=proprio["last_right_hand_action"],
+            right_hand_actuated_joint_values=legacy_right_hand_q,
         )
 
         self.robot_model.cache_forward_kinematics(whole_q)
@@ -859,14 +921,14 @@ class GrootDataCollector:
         observation_eef_state = np.concatenate(eef_parts)
 
         frame_data: dict = {
-            "observation.state": whole_q,
+            "observation.state": observation_state,
             "observation.eef_state": observation_eef_state,
-            "action.wbc": whole_action_wbc,
+            "action.wbc": action_wbc,
         }
 
         self._add_cpp_state_features(frame_data, proprio)
 
-        sonic_latency_ms = self._add_sonic_pose_features(frame_data)
+        sonic_latency_ms = self._add_sonic_pose_features(frame_data, observation_state)
 
         self._add_images_to_frame_data(frame_data)
 
@@ -874,6 +936,21 @@ class GrootDataCollector:
 
         self.data_exporter.add_frame(frame_data)
         return self._finalize_frame(t_start)
+
+    @staticmethod
+    def _native_inspire_state(values, name: str) -> np.ndarray:
+        arr = np.asarray(values, dtype=np.float64).reshape(-1)
+        if arr.size < INSPIRE_HAND_DOF:
+            raise ValueError(
+                f"{name} must contain at least {INSPIRE_HAND_DOF} values, got {arr.size}"
+            )
+        return np.ascontiguousarray(arr[:INSPIRE_HAND_DOF], dtype=np.float64)
+
+    def _legacy_hand_action_to_inspire(self, values) -> np.ndarray:
+        legacy_action = np.asarray(values, dtype=np.float64).reshape(-1)
+        grasp = bool(np.max(np.abs(legacy_action)) > 0.05)
+        profile = self.inspire_grasp_q if grasp else self.inspire_open_q
+        return profile.copy()
 
     def _add_cpp_state_features(self, frame_data: dict, proprio: dict) -> None:
         if "base_quat" in proprio:
@@ -924,7 +1001,11 @@ class GrootDataCollector:
         else:
             frame_data["action.motion_token"] = np.zeros(64, dtype=np.float64)
 
-    def _add_sonic_pose_features(self, frame_data: dict) -> float | None:
+    def _add_sonic_pose_features(
+        self,
+        frame_data: dict,
+        observation_state: np.ndarray,
+    ) -> float | None:
         """Add teleop features based on current stream mode."""
         sonic_latency_ms = None
 
@@ -1008,22 +1089,11 @@ class GrootDataCollector:
             else np.array([0], dtype=np.int64)
         )
 
-        hand_msg = (
-            smpl_msg if self.current_stream_mode in (1, 4) and smpl_msg is not None
-            else planner_msg if planner_msg is not None
-            else smpl_msg
+        frame_data["teleop.left_hand_joints"] = observation_state[29:35].astype(
+            np.float32
         )
-        frame_data["teleop.left_hand_joints"] = (
-            hand_msg["left_hand_joints"].astype(np.float32)
-            if hand_msg is not None
-            and hand_msg.get("left_hand_joints") is not None
-            else np.zeros(7, dtype=np.float32)
-        )
-        frame_data["teleop.right_hand_joints"] = (
-            hand_msg["right_hand_joints"].astype(np.float32)
-            if hand_msg is not None
-            and hand_msg.get("right_hand_joints") is not None
-            else np.zeros(7, dtype=np.float32)
+        frame_data["teleop.right_hand_joints"] = observation_state[35:41].astype(
+            np.float32
         )
 
         # Planner command fields
@@ -1190,9 +1260,10 @@ class GrootDataCollector:
 
 def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
     g1_rm = get_g1_robot_model()
+    inspire_profiles = load_inspire_hand_profiles(config.inspire_hand_pose_config)
 
-    dataset_features = get_features_sonic_vla(g1_rm)
-    modality_config = get_modality_config_sonic_vla(g1_rm)
+    dataset_features = get_features_sonic_inspire6(g1_rm)
+    modality_config = get_modality_config_sonic_inspire6(g1_rm)
 
     if config.record_wrist_cameras:
         print("[Camera] Wrist cameras enabled — adding to dataset schema")
@@ -1226,7 +1297,21 @@ def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
         features=dataset_features,
         modality_config=modality_config,
         task=config.task_prompt,
-        script_config={**robot_config, "record_wrist_cameras": config.record_wrist_cameras},
+        script_config={
+            **robot_config,
+            "record_wrist_cameras": config.record_wrist_cameras,
+            "schema_compatibility": "g1_inspire_41dof",
+            "inspire_hand_pose_config": config.inspire_hand_pose_config,
+            "hand_data_mode": "left_only" if config.left_hand_only else "both",
+            "active_hands": ["left"] if config.left_hand_only else ["left", "right"],
+            "right_hand_data": {
+                "source": "synthetic" if config.left_hand_only else "hardware",
+                "default_pose": "open" if config.left_hand_only else None,
+                "default_inspire_6d": (
+                    inspire_profiles["open"].tolist() if config.left_hand_only else None
+                ),
+            },
+        },
         overwrite_existing=config.overwrite_existing_dataset,
     )
 
@@ -1246,6 +1331,9 @@ def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
         audio_cue=audio_cue,
         status_callback=runtime_output.status,
         latency_recorder=latency_recorder,
+        left_hand_only=config.left_hand_only,
+        inspire_open_q=inspire_profiles["open"],
+        inspire_grasp_q=inspire_profiles["grasp"],
     )
     data_collector.run()
 

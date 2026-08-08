@@ -192,6 +192,9 @@ class DataCollectionLaunchConfig:
     inspire_hand_pose_config: str = str(DEFAULT_INSPIRE_HAND_POSE_CONFIG)
     """JSON file controlling PICO-trigger hand open/grasp poses for the Inspire bridge."""
 
+    left_hand_only: bool = False
+    """Drive only the left Inspire hand and store the right hand as synthetic open data."""
+
     # Data exporter options
     task_prompt: str = "demo"
     """Language task prompt for the data exporter."""
@@ -522,6 +525,8 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Inspire bridge:  {'Yes' if config.inspire_hand_bridge else 'No'}")
     if config.inspire_hand_bridge:
         print(f"  Inspire config:  {config.inspire_hand_pose_config}")
+    print(f"  Hand data mode:  {'left-only' if config.left_hand_only else 'both'}")
+    print("  Hand schema:     G1 body 29 + Inspire left 6 + right 6 (41 DOF)")
     print(f"  DC frequency:    {config.data_exporter_frequency} Hz")
     print(f"  Camera viewer:   {'Yes' if config.camera_viewer else 'No'}")
     print(f"  Wrist cameras:   {'Yes' if config.record_wrist_cameras else 'No'}")
@@ -555,6 +560,9 @@ def main(config: DataCollectionLaunchConfig):
             f"--left-ip {shlex.quote(config.inspire_left_ip)} "
             f"--right-ip {shlex.quote(config.inspire_right_ip)} "
             f"--hand-pose-config {shlex.quote(config.inspire_hand_pose_config)} "
+            f"--side {'left' if config.left_hand_only else 'both'} "
+            f"--publish-state "
+            f"--state-publish-frequency {config.data_exporter_frequency} "
             f"--dds-pose-mode profile"
         )
         hand_target = f"{SESSION_NAME}:inspire_hand"
@@ -665,6 +673,7 @@ def main(config: DataCollectionLaunchConfig):
         f"--sonic-zmq-port {config.sonic_zmq_port} "
         f"--state-zmq-host {state_zmq_host} "
         f"--state-zmq-port {config.state_zmq_port} "
+        f"--inspire-hand-pose-config {shlex.quote(config.inspire_hand_pose_config)} "
         f"--audio-cue-volume {config.audio_cue_volume} "
         f"--runtime-log-file {shlex.quote(str(runtime_log_file))} "
         f"--latency-log-file {shlex.quote(str(latency_raw_file))} "
@@ -680,6 +689,8 @@ def main(config: DataCollectionLaunchConfig):
         exporter_cmd += " --record-wrist-cameras"
     if config.overwrite_existing_dataset:
         exporter_cmd += " --overwrite-existing-dataset"
+    if config.left_hand_only:
+        exporter_cmd += " --left-hand-only"
     if not config.text_to_speech:
         exporter_cmd += " --no-text-to-speech"
 

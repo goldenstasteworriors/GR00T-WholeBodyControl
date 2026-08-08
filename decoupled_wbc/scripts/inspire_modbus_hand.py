@@ -4,18 +4,26 @@ import json
 from pathlib import Path
 import socket
 import struct
+import threading
 import time
 from typing import Iterable
 
 import numpy as np
-from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
-from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorCmds_
+from unitree_sdk2py.core.channel import (
+    ChannelFactoryInitialize,
+    ChannelPublisher,
+    ChannelSubscriber,
+)
+from unitree_sdk2py.idl.default import unitree_go_msg_dds__MotorState_
+from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorCmds_, MotorStates_
 
 
 REG_CLEAR_ERROR = 1004
 REG_ANGLE_SET = 1486
 REG_FORCE_SET = 1498
 REG_SPEED_SET = 1522
+REG_ANGLE_ACT = 1546
+REG_FORCE_ACT = 1582
 
 INSPIRE_HAND_DOF = 6
 THUMB_ROTATE_INDEX = 5
@@ -89,6 +97,30 @@ class InspireModbusHand:
         payload = struct.pack(">HHB", address, len(registers), len(registers) * 2)
         payload += struct.pack(">" + "H" * len(registers), *registers)
         self._request(0x10, payload)
+
+    def read_registers(self, address: int, count: int) -> list[int]:
+        if count <= 0:
+            raise ValueError(f"{self.side}: register count must be positive, got {count}")
+        payload = struct.pack(">HH", address, count)
+        response = self._request(0x03, payload)
+        expected_bytes = count * 2
+        if not response or response[0] != expected_bytes:
+            byte_count = response[0] if response else 0
+            raise ModbusTcpError(
+                f"{self.side}: expected {expected_bytes} data bytes, got {byte_count}"
+            )
+        data = response[1 : 1 + expected_bytes]
+        if len(data) != expected_bytes:
+            raise ModbusTcpError(f"{self.side}: short register response")
+        return list(struct.unpack(">" + "H" * count, data))
+
+    def read_angle_normalized(self) -> np.ndarray:
+        values = self.read_registers(REG_ANGLE_ACT, INSPIRE_HAND_DOF)
+        return np.clip(np.asarray(values, dtype=np.float64) / 1000.0, 0.0, 1.0)
+
+    def read_force_normalized(self) -> np.ndarray:
+        values = self.read_registers(REG_FORCE_ACT, INSPIRE_HAND_DOF)
+        return np.clip(np.asarray(values, dtype=np.float64) / 1000.0, 0.0, None)
 
     def set_angle(self, values: Iterable[int], speed: int = 3000, force: int = 12000) -> None:
         angle_values = [max(0, min(1000, int(v))) for v in values]
@@ -191,10 +223,105 @@ def run_command(args, hands: dict[str, InspireModbusHand]) -> None:
     send_to_target(hands, args.side, values, args.speed, args.force)
 
 
+def _make_inspire_state_msg(
+    right_q: np.ndarray,
+    left_q: np.ndarray,
+    right_dq: np.ndarray,
+    left_dq: np.ndarray,
+    right_tau_est: np.ndarray | None = None,
+    left_tau_est: np.ndarray | None = None,
+) -> MotorStates_:
+    msg = MotorStates_([])
+    right_tau = (
+        np.zeros(INSPIRE_HAND_DOF, dtype=np.float64)
+        if right_tau_est is None
+        else right_tau_est
+    )
+    left_tau = (
+        np.zeros(INSPIRE_HAND_DOF, dtype=np.float64)
+        if left_tau_est is None
+        else left_tau_est
+    )
+    for q, dq, tau_est in zip(right_q, right_dq, right_tau):
+        state = unitree_go_msg_dds__MotorState_()
+        state.q = float(q)
+        state.dq = float(dq)
+        state.tau_est = float(tau_est)
+        msg.states.append(state)
+    for q, dq, tau_est in zip(left_q, left_dq, left_tau):
+        state = unitree_go_msg_dds__MotorState_()
+        state.q = float(q)
+        state.dq = float(dq)
+        state.tau_est = float(tau_est)
+        msg.states.append(state)
+    return msg
+
+
+def run_state_publisher(
+    args,
+    hands: dict[str, InspireModbusHand],
+    active_sides: list[str],
+    stop_event: threading.Event,
+    publisher: ChannelPublisher,
+) -> None:
+    """Publish native six-motor hand state, synthesizing inactive sides as open."""
+    period = 1.0 / max(float(args.state_publish_frequency), 1e-6)
+    last_q: dict[str, np.ndarray] = {}
+    last_time: float | None = None
+    last_log_time = 0.0
+    open_q = np.asarray(args.open_q, dtype=np.float64)
+
+    while not stop_event.is_set():
+        loop_start = time.monotonic()
+        try:
+            q = {
+                side: (
+                    hands[side].read_angle_normalized()
+                    if side in active_sides
+                    else open_q.copy()
+                )
+                for side in ("right", "left")
+            }
+            now = time.monotonic()
+            dq = {}
+            for side in ("right", "left"):
+                if last_time is None or side not in last_q or side not in active_sides:
+                    dq[side] = np.zeros(INSPIRE_HAND_DOF, dtype=np.float64)
+                else:
+                    dq[side] = (q[side] - last_q[side]) / max(now - last_time, 1e-6)
+
+            tau = {"right": None, "left": None}
+            if args.read_force_state:
+                for side in active_sides:
+                    tau[side] = hands[side].read_force_normalized()
+
+            publisher.Write(
+                _make_inspire_state_msg(
+                    q["right"],
+                    q["left"],
+                    dq["right"],
+                    dq["left"],
+                    tau["right"],
+                    tau["left"],
+                )
+            )
+            last_q = q
+            last_time = now
+        except Exception as exc:
+            now = time.monotonic()
+            if now - last_log_time >= 1.0:
+                print(f"Inspire state publish failed: {exc}")
+                last_log_time = now
+
+        elapsed = time.monotonic() - loop_start
+        stop_event.wait(max(0.0, period - elapsed))
+
+
 def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
     last_command = None
     profile_samples = []
     last_profile_time = time.monotonic()
+    active_sides = ["left", "right"] if args.side == "both" else [args.side]
 
     def callback(msg: MotorCmds_) -> None:
         nonlocal last_command, last_profile_time
@@ -205,25 +332,37 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
 
         right_q = tuple(float(msg.cmds[i].q) for i in range(6))
         left_q = tuple(float(msg.cmds[i + 6].q) for i in range(6))
-        command_key = (right_q, left_q)
+        dds_q = {"left": left_q, "right": right_q}
+        command_key = tuple(dds_q[side] for side in active_sides)
         if command_key == last_command:
             return
         last_command = command_key
 
         try:
-            right_pose = profile_pose_from_dds(right_q, args)
-            left_pose = profile_pose_from_dds(left_q, args)
-            right_angle = normalized_to_angle(right_pose, args.thumb_rotate_default)
-            left_angle = normalized_to_angle(left_pose, args.thumb_rotate_default)
-            right_start = time.perf_counter()
-            hands["right"].set_angle(right_angle, speed=args.speed, force=args.force)
-            right_ms = (time.perf_counter() - right_start) * 1000.0
-            left_start = time.perf_counter()
-            hands["left"].set_angle(left_angle, speed=args.speed, force=args.force)
-            left_ms = (time.perf_counter() - left_start) * 1000.0
+            angles = {
+                side: normalized_to_angle(
+                    profile_pose_from_dds(dds_q[side], args),
+                    args.thumb_rotate_default,
+                )
+                for side in active_sides
+            }
+            side_ms = {"left": 0.0, "right": 0.0}
+            successful_sides = []
+            for side in active_sides:
+                side_start = time.perf_counter()
+                try:
+                    hands[side].set_angle(
+                        angles[side], speed=args.speed, force=args.force
+                    )
+                    successful_sides.append(side)
+                except Exception as exc:
+                    print(f"DDS -> Modbus {side} failed: {exc}")
+                finally:
+                    side_ms[side] = (time.perf_counter() - side_start) * 1000.0
+
             total_ms = (time.perf_counter() - callback_start) * 1000.0
             if args.profile_timing:
-                profile_samples.append((right_ms, left_ms, total_ms))
+                profile_samples.append((side_ms["right"], side_ms["left"], total_ms))
                 now = time.monotonic()
                 if now - last_profile_time >= args.profile_interval:
                     arr = np.asarray(profile_samples, dtype=np.float64)
@@ -237,19 +376,48 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
                     )
                     profile_samples.clear()
                     last_profile_time = now
-            print(f"DDS -> Modbus right={right_angle} left={left_angle}")
+            if successful_sides:
+                summary = " ".join(
+                    f"{side}={angles[side]}" for side in successful_sides
+                )
+                print(f"DDS -> Modbus {summary}")
         except Exception as exc:
             print(f"DDS -> Modbus failed: {exc}")
 
     ChannelFactoryInitialize(args.domain_id, args.network)
+    stop_event = threading.Event()
+    publisher = None
+    if args.publish_state:
+        publisher = ChannelPublisher("rt/inspire/state", MotorStates_)
+        publisher.Init()
+
     subscriber = ChannelSubscriber("rt/inspire/cmd", MotorCmds_)
     subscriber.Init(callback, 10)
-    print("DDS -> Modbus bridge running on rt/inspire/cmd. Press Ctrl+C to stop.")
+
+    if publisher is not None:
+        state_thread = threading.Thread(
+            target=run_state_publisher,
+            args=(args, hands, active_sides, stop_event, publisher),
+            daemon=True,
+        )
+        state_thread.start()
+        print(
+            "Modbus -> DDS state publisher running on rt/inspire/state "
+            f"at {args.state_publish_frequency:.1f} Hz."
+        )
+
+    print(
+        "DDS -> Modbus bridge running on rt/inspire/cmd "
+        f"for {','.join(active_sides)}. Press Ctrl+C to stop."
+    )
     print(f"Hand open q={args.open_q} angle={args.open_angle}")
     print(f"Hand grasp q={args.grasp_q} angle={args.grasp_angle}")
     print(f"DDS pose mode={args.dds_pose_mode}")
-    while True:
-        time.sleep(1.0)
+    try:
+        while True:
+            time.sleep(1.0)
+    finally:
+        stop_event.set()
 
 
 def parse_args():
@@ -269,6 +437,24 @@ def parse_args():
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--profile-timing", action="store_true", help="Print DDS to Modbus timing.")
     parser.add_argument("--profile-interval", type=float, default=1.0)
+    parser.add_argument(
+        "--publish-state",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="In DDS mode, read ANGLE_ACT over Modbus and publish rt/inspire/state.",
+    )
+    parser.add_argument(
+        "--state-publish-frequency",
+        type=float,
+        default=50.0,
+        help="Frequency for publishing native Inspire state in DDS mode.",
+    )
+    parser.add_argument(
+        "--read-force-state",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also read FORCE_ACT and publish it as tau_est.",
+    )
     parser.add_argument(
         "--thumb-rotate-default",
         type=float,

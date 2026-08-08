@@ -11,6 +11,7 @@ Joint names, counts, and group indices are derived at runtime from the
 
 from __future__ import annotations
 
+import copy
 from typing import Literal
 
 from gear_sonic.data.robot_model import RobotModel
@@ -367,6 +368,62 @@ def get_features_sonic_vla(robot_model: RobotModel) -> dict:
             ],
         },
     }
+
+
+def get_features_sonic_inspire6(robot_model: RobotModel) -> dict:
+    """Return the native 41-DOF G1 + Inspire hand collection schema.
+
+    The state/action layout is 29 body joints followed by six left-hand and
+    six right-hand Inspire motors.  The Inspire order matches the DDS/Modbus
+    bridge: little, ring, middle, index, thumb bend, thumb rotate.
+    """
+    features = copy.deepcopy(get_features_sonic_vla(robot_model))
+    body_joint_names = robot_model.supplemental_info.body_actuated_joints
+    hand_motor_names = [
+        "little",
+        "ring",
+        "middle",
+        "index",
+        "thumb_bend",
+        "thumb_rotate",
+    ]
+    state_names = (
+        body_joint_names
+        + [f"left_hand_{name}" for name in hand_motor_names]
+        + [f"right_hand_{name}" for name in hand_motor_names]
+    )
+    for key in ("observation.state", "action.wbc"):
+        features[key] = {
+            "dtype": "float64",
+            "shape": (41,),
+            "names": state_names,
+        }
+    for side in ("left", "right"):
+        features[f"teleop.{side}_hand_joints"] = {
+            "dtype": "float32",
+            "shape": (6,),
+            "names": [f"{side}_hand_{name}" for name in hand_motor_names],
+        }
+    return features
+
+
+def get_modality_config_sonic_inspire6(robot_model: RobotModel) -> dict:
+    """Return modality metadata for the native Inspire 41-DOF schema."""
+    modality = copy.deepcopy(get_modality_config_sonic_vla(robot_model))
+    modality["state"].update(
+        {
+            "left_leg": {"start": 0, "end": 6},
+            "right_leg": {"start": 6, "end": 12},
+            "waist": {"start": 12, "end": 15},
+            "left_arm": {"start": 15, "end": 22},
+            "right_arm": {"start": 22, "end": 29},
+            "left_hand": {"start": 29, "end": 35},
+            "right_hand": {"start": 35, "end": 41},
+        }
+    )
+    for side in ("left", "right"):
+        modality["action"][f"{side}_hand_joints"]["end"] = 6
+    return modality
 
 
 def get_wrist_camera_features() -> dict:
