@@ -54,6 +54,41 @@ With `--no-pico-data-streamer`, the dataset schema stays the same, but PICO-only
 SMPL/VR3PT fields are filled with defaults unless they can be derived from
 decoupled state.
 
+### Unitree official lower-body control
+
+For a 29-DOF G1 EDU with a 3-DOF waist, keep the Unitree loco service active and
+send only the arm targets through `rt/arm_sdk`:
+
+```bash
+python gear_sonic/scripts/launch_decoupled_vla_collection.py \
+  --camera-host 192.168.123.164 \
+  --task-prompt "grab the red bottle" \
+  --dataset-name pour_water_between_beakers_7_23 \
+  --hand-task grab_middle_beaker \
+  --no-pico-data-streamer \
+  --lower-body-controller unitree_loco
+```
+
+When `A+B+X+Y` requests startup, the official backend runs a non-blocking
+`Damp (FSM 1) -> StandUp (FSM 4) -> locomotion (FSM 501)` sequence. It waits
+for fresh low-state measurements, low leg velocity, and an upright torso before
+publishing the confirmed lower-body-active status. `A+X` remains disabled until
+the complete sequence succeeds. A second `A+B+X+Y`, an RPC error, or a startup
+timeout releases the arm weight, commands zero velocity, and requests Damp.
+
+This mode intentionally rejects waist IK. The first `A+B+X+Y` press starts the
+full sequence above and enables navigation only after the final confirmation.
+`A+X` pauses or resumes upper-body teleoperation while preserving the official
+standing controller. The next `A+B+X+Y` press releases `arm_sdk`, sends zero
+velocity, and requests the official damp state. The PICO left joystick controls
+forward/backward and sideways velocity; the right joystick controls yaw. Do not
+send simultaneous movement commands from the Unitree remote during collection.
+
+The onboard wrapper selects `unitree_loco` by default, so the robot-local launch
+command below does not need an extra controller argument. Pass
+`--lower-body-controller decoupled` explicitly only when reverting to the old
+local Balance/Walk ONNX lower-body controller.
+
 ### Robot-onboard wired PICO collection
 
 The robot's external RJ45 ports share the onboard `eth0` network. The PICO
