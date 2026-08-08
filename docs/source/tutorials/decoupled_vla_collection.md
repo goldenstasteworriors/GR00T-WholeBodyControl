@@ -54,6 +54,37 @@ With `--no-pico-data-streamer`, the dataset schema stays the same, but PICO-only
 SMPL/VR3PT fields are filled with defaults unless they can be derived from
 decoupled state.
 
+### ThinkPad keyboard test with Unitree loco
+
+Use the explicit keyboard mode to test the official lower-body controller
+without connecting PICO. The camera server must already be running on the
+robot. Run this from the ThinkPad checkout:
+
+```bash
+python gear_sonic/scripts/launch_decoupled_vla_collection.py \
+  --camera-host 192.168.123.164 \
+  --task-prompt "grab the red bottle" \
+  --dataset-name keyboard_loco_test \
+  --hand-task open_door \
+  --lower-body-controller unitree_loco \
+  --keyboard-lower-body-control \
+  --body-control-device dummy \
+  --hand-control-device dummy \
+  --no-enable-real-device \
+  --no-pico-data-streamer \
+  --no-with-hands
+```
+
+Focus the tmux control pane before pressing robot-control keys. `G` starts the
+non-blocking `Damp (FSM 1) -> StandUp (FSM 4) -> locomotion (FSM 501)` sequence;
+pressing `G` again requests the safe emergency stop. `W/S` adjust forward and
+backward velocity, `A/D` adjust lateral velocity, `Q/E` adjust yaw rate, and
+`Z` immediately resets all velocity components to zero. `Space` always requests
+the safe emergency stop. Movement keys are ignored until startup is confirmed.
+Each movement key press changes its component by 0.1 and the command persists,
+so press `Z` before changing focus or leaving the keyboard. `C` starts/saves a
+recording episode and `X` discards it.
+
 ### Robot-onboard wired PICO collection
 
 The robot's external RJ45 ports share the onboard `eth0` network. The PICO

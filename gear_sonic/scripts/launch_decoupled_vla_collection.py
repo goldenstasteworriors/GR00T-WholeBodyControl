@@ -184,6 +184,39 @@ class DecoupledVLACollectionLaunchConfig:
     lower_body_controller: str = "decoupled"
     """Use ``decoupled`` ONNX control or Unitree's official ``unitree_loco`` service."""
 
+    unitree_loco_start_fsm_id: int = 501
+    """Official locomotion FSM used after standing."""
+
+    unitree_loco_damp_fsm_id: int = 1
+    """Official damping FSM used to begin startup."""
+
+    unitree_loco_stand_fsm_id: int = 4
+    """Official dedicated StandUp FSM used during startup."""
+
+    unitree_loco_service_name: str = "sport"
+    """Official loco RPC service name."""
+
+    unitree_loco_damp_duration: float = 0.5
+    """Minimum Damp hold time in seconds."""
+
+    unitree_loco_stand_duration: float = 4.0
+    """Minimum StandUp transition time in seconds."""
+
+    unitree_loco_stability_duration: float = 0.5
+    """Continuous stability time required before confirmation."""
+
+    unitree_loco_activation_timeout: float = 15.0
+    """Overall official-loco startup timeout in seconds."""
+
+    unitree_loco_state_timeout: float = 0.5
+    """Maximum accepted age of measured robot state in seconds."""
+
+    unitree_loco_max_leg_velocity: float = 0.35
+    """Maximum settled leg speed in rad/s."""
+
+    unitree_loco_max_torso_tilt: float = 0.35
+    """Maximum upright torso tilt in radians."""
+
     wbc_model_path: str = (
         "policy/GR00T-WholeBodyControl-Balance.onnx,"
         "policy/GR00T-WholeBodyControl-Walk.onnx"
@@ -219,6 +252,9 @@ class DecoupledVLACollectionLaunchConfig:
 
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher type for control loop."""
+
+    keyboard_lower_body_control: bool = False
+    """Control official lower-body startup and navigation from the control pane."""
 
     body_control_device: str = "pico"
     """Decoupled body teleop device."""
@@ -387,6 +423,31 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
         errors.append("--lower-body-controller unitree_loco is only available on the real robot")
     if config.lower_body_controller == "unitree_loco" and config.enable_waist:
         errors.append("unitree_loco owns the waist; do not use --enable-waist")
+    if config.keyboard_lower_body_control:
+        if config.lower_body_controller != "unitree_loco":
+            errors.append(
+                "--keyboard-lower-body-control requires --lower-body-controller unitree_loco"
+            )
+        if config.keyboard_dispatcher_type != "raw":
+            errors.append("--keyboard-lower-body-control requires --keyboard-dispatcher-type raw")
+    if config.lower_body_controller == "unitree_loco":
+        positive_values = {
+            "--unitree-loco-activation-timeout": config.unitree_loco_activation_timeout,
+            "--unitree-loco-state-timeout": config.unitree_loco_state_timeout,
+            "--unitree-loco-max-leg-velocity": config.unitree_loco_max_leg_velocity,
+            "--unitree-loco-max-torso-tilt": config.unitree_loco_max_torso_tilt,
+        }
+        errors.extend(f"{name} must be positive" for name, value in positive_values.items() if value <= 0.0)
+        nonnegative_values = {
+            "--unitree-loco-damp-duration": config.unitree_loco_damp_duration,
+            "--unitree-loco-stand-duration": config.unitree_loco_stand_duration,
+            "--unitree-loco-stability-duration": config.unitree_loco_stability_duration,
+        }
+        errors.extend(
+            f"{name} must be nonnegative"
+            for name, value in nonnegative_values.items()
+            if value < 0.0
+        )
 
     hand_task_config = Path(config.hand_task_config).expanduser() if config.hand_task_config else _default_hand_task_config(repo_root)
     if not hand_task_config.exists():
@@ -441,6 +502,28 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         config.wbc_version,
         "--lower-body-controller",
         config.lower_body_controller,
+        "--unitree-loco-start-fsm-id",
+        str(config.unitree_loco_start_fsm_id),
+        "--unitree-loco-damp-fsm-id",
+        str(config.unitree_loco_damp_fsm_id),
+        "--unitree-loco-stand-fsm-id",
+        str(config.unitree_loco_stand_fsm_id),
+        "--unitree-loco-service-name",
+        config.unitree_loco_service_name,
+        "--unitree-loco-damp-duration",
+        str(config.unitree_loco_damp_duration),
+        "--unitree-loco-stand-duration",
+        str(config.unitree_loco_stand_duration),
+        "--unitree-loco-stability-duration",
+        str(config.unitree_loco_stability_duration),
+        "--unitree-loco-activation-timeout",
+        str(config.unitree_loco_activation_timeout),
+        "--unitree-loco-state-timeout",
+        str(config.unitree_loco_state_timeout),
+        "--unitree-loco-max-leg-velocity",
+        str(config.unitree_loco_max_leg_velocity),
+        "--unitree-loco-max-torso-tilt",
+        str(config.unitree_loco_max_torso_tilt),
         "--wbc-model-path",
         config.wbc_model_path,
         "--control-frequency",
@@ -458,6 +541,7 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.startup_final_elbow_angle),
         "--keyboard-dispatcher-type",
         config.keyboard_dispatcher_type,
+        *_bool_arg("keyboard-lower-body-control", config.keyboard_lower_body_control),
         *_bool_arg("enable-waist", config.enable_waist),
         *_bool_arg("with-hands", config.with_hands),
         *_bool_arg("high-elbow-pose", config.high_elbow_pose),
@@ -600,6 +684,10 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print("=" * 72)
     print(f"  Mode:          {'Simulation' if config.sim else 'Real Robot'}")
     print(f"  Lower body:    {config.lower_body_controller}")
+    print(
+        "  Keyboard loco: "
+        f"{'enabled' if config.keyboard_lower_body_control else 'disabled'}"
+    )
     print(f"  Interface:     {interface}")
     print(f"  Dataset:       {config.dataset_name or '(timestamp)'}")
     print(f"  Task:          {config.task_prompt}")
@@ -684,7 +772,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print("  collection window:")
     print("    pane 0 top-left:     decoupled control loop")
     print("    pane 1 top-right:    VLA data exporter")
-    print("    pane 2 bottom-left:  decoupled PICO teleop loop")
+    print("    pane 2 bottom-left:  decoupled teleop loop")
     if config.camera_viewer:
         print("    pane 3 bottom-right: camera viewer")
     if config.sim and config.sim_separate_process:
@@ -695,6 +783,10 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         print(f"  logs:                  {profile_log_dir}")
     print()
     print("  Controls:")
+    if config.keyboard_lower_body_control:
+        print("    control pane: G start/toggle emergency, Space emergency stop")
+        print("    control pane: W/S forward, A/D lateral, Q/E yaw, Z zero velocity")
+        print("    control pane: C start/save recording, X discard recording")
     print("    Ctrl+b, arrows  switch panes")
     print("    Ctrl+b, d       detach")
     print("    Ctrl+\\          kill session")

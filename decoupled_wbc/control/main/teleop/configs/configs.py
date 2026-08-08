@@ -55,7 +55,16 @@ def override_wbc_config(
         "high_elbow_pose": config.high_elbow_pose,
         "lower_body_controller": config.lower_body_controller,
         "unitree_loco_start_fsm_id": config.unitree_loco_start_fsm_id,
+        "unitree_loco_damp_fsm_id": config.unitree_loco_damp_fsm_id,
+        "unitree_loco_stand_fsm_id": config.unitree_loco_stand_fsm_id,
         "unitree_loco_service_name": config.unitree_loco_service_name,
+        "unitree_loco_damp_duration": config.unitree_loco_damp_duration,
+        "unitree_loco_stand_duration": config.unitree_loco_stand_duration,
+        "unitree_loco_stability_duration": config.unitree_loco_stability_duration,
+        "unitree_loco_activation_timeout": config.unitree_loco_activation_timeout,
+        "unitree_loco_state_timeout": config.unitree_loco_state_timeout,
+        "unitree_loco_max_leg_velocity": config.unitree_loco_max_leg_velocity,
+        "unitree_loco_max_torso_tilt": config.unitree_loco_max_torso_tilt,
         "unitree_loco_command_frequency": config.unitree_loco_command_frequency,
         "unitree_loco_max_linear_velocity": config.unitree_loco_max_linear_velocity,
         "unitree_loco_max_angular_velocity": config.unitree_loco_max_angular_velocity,
@@ -116,8 +125,35 @@ class BaseConfig(ArgsConfigTemplate):
     unitree_loco_start_fsm_id: int = 501
     """Official 29-DOF/3-waist-DOF G1 loco FSM entered by A+B+X+Y."""
 
+    unitree_loco_damp_fsm_id: int = 1
+    """Official damping FSM used at the start of every activation."""
+
+    unitree_loco_stand_fsm_id: int = 4
+    """Official dedicated StandUp FSM used before locomotion."""
+
     unitree_loco_service_name: str = "sport"
     """Official loco RPC service name (``sport`` for ai_sport >= 8.2)."""
+
+    unitree_loco_damp_duration: float = 0.5
+    """Minimum seconds to remain in Damp before requesting StandUp."""
+
+    unitree_loco_stand_duration: float = 4.0
+    """Minimum seconds allowed for the official StandUp transition."""
+
+    unitree_loco_stability_duration: float = 0.5
+    """Continuous stable time required before each activation confirmation."""
+
+    unitree_loco_activation_timeout: float = 15.0
+    """Overall timeout for Damp, StandUp, and locomotion activation."""
+
+    unitree_loco_state_timeout: float = 0.5
+    """Maximum accepted age of measured robot state during activation."""
+
+    unitree_loco_max_leg_velocity: float = 0.35
+    """Maximum absolute leg velocity accepted as settled, in rad/s."""
+
+    unitree_loco_max_torso_tilt: float = 0.35
+    """Maximum torso tilt accepted as upright, in radians."""
 
     unitree_loco_command_frequency: float = 10.0
     """Maximum SetVelocity RPC frequency."""
@@ -197,6 +233,9 @@ class BaseConfig(ArgsConfigTemplate):
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher to use. [raw, ros]"""
 
+    keyboard_lower_body_control: bool = False
+    """Enable explicit keyboard startup, navigation, and emergency-stop controls."""
+
     # Gravity Compensation Configuration
     enable_gravity_compensation: bool = False
     """Enable gravity compensation using pinocchio dynamics."""
@@ -259,6 +298,34 @@ class BaseConfig(ArgsConfigTemplate):
                 raise ValueError("unitree_loco is a real-robot-only lower-body controller")
             if self.enable_waist:
                 raise ValueError("unitree_loco must retain waist control; disable waist IK")
+            positive_values = {
+                "unitree_loco_command_frequency": self.unitree_loco_command_frequency,
+                "unitree_loco_activation_timeout": self.unitree_loco_activation_timeout,
+                "unitree_loco_state_timeout": self.unitree_loco_state_timeout,
+                "unitree_loco_max_leg_velocity": self.unitree_loco_max_leg_velocity,
+                "unitree_loco_max_torso_tilt": self.unitree_loco_max_torso_tilt,
+            }
+            invalid = [name for name, value in positive_values.items() if value <= 0.0]
+            if invalid:
+                raise ValueError(f"unitree_loco values must be positive: {', '.join(invalid)}")
+            nonnegative_values = {
+                "unitree_loco_damp_duration": self.unitree_loco_damp_duration,
+                "unitree_loco_stand_duration": self.unitree_loco_stand_duration,
+                "unitree_loco_stability_duration": self.unitree_loco_stability_duration,
+                "unitree_arm_weight_ramp_duration": self.unitree_arm_weight_ramp_duration,
+            }
+            invalid = [name for name, value in nonnegative_values.items() if value < 0.0]
+            if invalid:
+                raise ValueError(
+                    f"unitree_loco values must be nonnegative: {', '.join(invalid)}"
+                )
+        if self.keyboard_lower_body_control:
+            if self.lower_body_controller != "unitree_loco":
+                raise ValueError(
+                    "keyboard lower-body control requires lower_body_controller=unitree_loco"
+                )
+            if self.keyboard_dispatcher_type != "raw":
+                raise ValueError("keyboard lower-body control requires the raw dispatcher")
 
     def load_wbc_yaml(self) -> dict:
         """Load and merge wbc yaml with dataclass overrides"""

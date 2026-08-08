@@ -17,6 +17,9 @@ from decoupled_wbc.control.main.constants import (
 )
 from decoupled_wbc.control.main.teleop.configs.configs import ControlLoopConfig
 from decoupled_wbc.control.policy.wbc_policy_factory import get_wbc_policy
+from decoupled_wbc.control.policy.unitree_loco_keyboard_controller import (
+    UnitreeLocoKeyboardController,
+)
 from decoupled_wbc.control.robot_model.instantiation.g1 import (
     instantiate_g1_robot_model,
 )
@@ -85,6 +88,12 @@ def main(config: ControlLoopConfig):
     keyboard_listener_pub = KeyboardListenerPublisher()
     keyboard_estop = KeyboardEStop()
     sim_reset_keyboard_pub = SimResetKeyboardPublisher(sim_reset_pub)
+    keyboard_loco_controller = None
+    if config.keyboard_lower_body_control:
+        keyboard_loco_controller = UnitreeLocoKeyboardController(
+            max_linear_velocity=config.unitree_loco_max_linear_velocity,
+            max_angular_velocity=config.unitree_loco_max_angular_velocity,
+        )
     if config.keyboard_dispatcher_type == "raw":
         dispatcher = KeyboardDispatcher()
     elif config.keyboard_dispatcher_type == "ros":
@@ -97,6 +106,8 @@ def main(config: ControlLoopConfig):
     dispatcher.register(wbc_policy)
     dispatcher.register(keyboard_listener_pub)
     dispatcher.register(sim_reset_keyboard_pub)
+    if keyboard_loco_controller is not None:
+        dispatcher.register(keyboard_loco_controller)
     dispatcher.register(keyboard_estop)
     dispatcher.start()
 
@@ -133,6 +144,13 @@ def main(config: ControlLoopConfig):
                         last_teleop_cmd = upper_body_cmd.copy()
                         if config.ik_indicator:
                             env.set_ik_indicator(upper_body_cmd)
+                    if keyboard_loco_controller is not None:
+                        wbc_goal.update(
+                            keyboard_loco_controller.get_control_goal(
+                                env.lower_body_active()
+                            )
+                        )
+                        last_teleop_cmd = wbc_goal.copy()
                     if wbc_goal.get("emergency_stop", False):
                         print("Emergency stop requested from teleop")
                         wbc_goal["navigate_cmd"] = DEFAULT_NAV_CMD
