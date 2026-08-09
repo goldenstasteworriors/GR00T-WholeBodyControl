@@ -178,7 +178,9 @@ class UnitreeLocoArmCommandSender:
         )
         self._weight_ramp_duration = float(config.get("unitree_arm_weight_ramp_duration", 2.0))
         self._activation_time = 0.0
-        self._arm_ready_reported = False
+        self._arm_preparing = False
+        self._arm_preparation_started = 0.0
+        self._arm_preparation_complete = False
 
     @staticmethod
     def _check_rpc(name: str, code) -> None:
@@ -271,22 +273,52 @@ class UnitreeLocoArmCommandSender:
         self._stand_transition_seen = False
         self._locomotion_zeroed = False
         self._last_start_request = 0.0
-        self._arm_ready_reported = False
+        self._arm_preparing = False
+        self._arm_preparation_started = 0.0
+        self._arm_preparation_complete = False
 
     def operator_ready(self) -> bool:
         """Return true after locomotion and the optional arm preparation are ready."""
         if not self.active:
             return False
-        if not self._arm_control_enabled or self._weight_ramp_duration <= 0.0:
-            return True
-        ready = time.monotonic() - self._activation_time >= self._weight_ramp_duration
-        if ready and not self._arm_ready_reported:
+        return not self._arm_control_enabled or self._arm_preparation_complete
+
+    def _arm_output_active(self) -> bool:
+        return self._arm_control_enabled and (
+            self._arm_preparing or self._arm_preparation_complete or self.active
+        )
+
+    def _start_arm_preparation(self, now: float) -> None:
+        self._arm_preparing = True
+        self._arm_preparation_started = now
+        self._arm_preparation_complete = False
+        self._set_activation_stage("prepare_arms", now)
+        destination = (
+            "locked-standing activation"
+            if self._start_fsm_id is None
+            else f"FSM {self._start_fsm_id}"
+        )
+        print(
+            "Unitree locked standing confirmed; moving arms to preparation pose "
+            f"for {self._weight_ramp_duration:.1f}s before {destination}",
+            flush=True,
+        )
+
+    def _finish_standing_setup(self, now: float) -> None:
+        if self._start_fsm_id is None:
+            self._set_activation_stage("wait_ready", now)
             print(
-                "Unitree arm_sdk preparation pose ready; A+X teleoperation is now enabled",
+                "Unitree official loco locked standing confirmed; no velocity RPC sent",
                 flush=True,
             )
-            self._arm_ready_reported = True
-        return ready
+            return
+        self._set_fsm(self._start_fsm_id, "Start locomotion")
+        self._last_start_request = now
+        self._set_activation_stage("wait_locomotion", now)
+        print(
+            "Unitree official loco Start requested "
+            f"(fsm_id={self._start_fsm_id})"
+        )
 
     def _safe_stop(self, request_damp: bool) -> list[str]:
         errors = []
@@ -342,6 +374,9 @@ class UnitreeLocoArmCommandSender:
             self._last_fsm_query = 0.0
             self._last_fsm_id = None
             self._last_start_request = 0.0
+            self._arm_preparing = False
+            self._arm_preparation_started = 0.0
+            self._arm_preparation_complete = False
             try:
                 self._release_arms()
                 self._set_fsm(self._damp_fsm_id, "Damp")
@@ -355,6 +390,8 @@ class UnitreeLocoArmCommandSender:
                 raise
             self._set_activation_stage("wait_damp", now)
             startup_path = f"Damp({self._damp_fsm_id}) -> StandUp({self._stand_fsm_id})"
+            if self._arm_control_enabled:
+                startup_path += " -> prepare arms"
             if self._start_fsm_id is None:
                 startup_path += " -> locked standing"
             else:
@@ -420,26 +457,50 @@ class UnitreeLocoArmCommandSender:
             if not self._stand_transition_seen:
                 self._log_waiting(now, f"StandUp transition not observed, current fsm_id={fsm_id}")
                 return
+            if fsm_id != self._stand_fsm_id:
+                self._log_waiting(
+                    now,
+                    f"waiting for locked standing fsm_id={self._stand_fsm_id}, current={fsm_id}",
+                )
+                return
             stable, reason = self._stable_for_required_duration(now)
             if not stable:
                 self._log_waiting(now, reason)
                 return
-            if self._start_fsm_id is None:
-                # Locked-standing test mode deliberately never calls
-                # SetVelocity; FSM 4 remains entirely firmware-owned.
-                self._set_activation_stage("wait_ready", now)
-                print(
-                    "Unitree official loco locked standing confirmed; no velocity RPC sent",
-                    flush=True,
-                )
+            if self._arm_control_enabled:
+                self._start_arm_preparation(now)
             else:
-                self._set_fsm(self._start_fsm_id, "Start locomotion")
-                self._last_start_request = now
-                self._set_activation_stage("wait_locomotion", now)
-                print(
-                    "Unitree official loco Start requested "
-                    f"(fsm_id={self._start_fsm_id})"
+                self._finish_standing_setup(now)
+            return
+
+        if self._activation_stage == "prepare_arms":
+            if fsm_id != self._stand_fsm_id:
+                self._stable_since = None
+                self._log_waiting(
+                    now,
+                    f"holding for arm preparation in fsm_id={self._stand_fsm_id}, current={fsm_id}",
                 )
+                return
+            preparation_time = now - self._arm_preparation_started
+            if preparation_time < self._weight_ramp_duration:
+                self._stable_since = None
+                self._log_waiting(
+                    now,
+                    "preparing arms "
+                    f"({preparation_time:.2f}/{self._weight_ramp_duration:.2f}s)",
+                )
+                return
+            stable, reason = self._stable_for_required_duration(now)
+            if not stable:
+                self._log_waiting(now, f"arms prepared; waiting for lower body: {reason}")
+                return
+            self._arm_preparing = False
+            self._arm_preparation_complete = True
+            print(
+                "Unitree arm_sdk preparation pose ready in locked standing",
+                flush=True,
+            )
+            self._finish_standing_setup(now)
             return
 
         if self._activation_stage == "wait_ready":
@@ -507,7 +568,7 @@ class UnitreeLocoArmCommandSender:
         self._last_velocity_send = now
 
     def send_command(self, cmd_q: np.ndarray, cmd_dq: np.ndarray, cmd_tau: np.ndarray):
-        if not self.active or not self._arm_control_enabled:
+        if not self._arm_output_active():
             return
         for motor_index in self.ARM_MOTOR_INDICES:
             joint_index = self.config["MOTOR2JOINT"][motor_index]
@@ -517,11 +578,12 @@ class UnitreeLocoArmCommandSender:
             motor.tau = float(cmd_tau[joint_index])
             motor.kp = float(self.config["MOTOR_KP"][motor_index])
             motor.kd = float(self.config["MOTOR_KD"][motor_index])
-        if self._weight_ramp_duration <= 0.0:
+        if self._arm_preparation_complete or self._weight_ramp_duration <= 0.0:
             weight = 1.0
         else:
             weight = np.clip(
-                (time.monotonic() - self._activation_time) / self._weight_ramp_duration,
+                (time.monotonic() - self._arm_preparation_started)
+                / self._weight_ramp_duration,
                 0.0,
                 1.0,
             )

@@ -32,6 +32,11 @@ def _make_sender() -> UnitreeLocoArmCommandSender:
     sender._max_linear_velocity = 0.05
     sender._max_angular_velocity = 0.1
     sender._navigation_enabled = False
+    sender._arm_control_enabled = False
+    sender._weight_ramp_duration = 2.0
+    sender._arm_preparing = False
+    sender._arm_preparation_started = 0.0
+    sender._arm_preparation_complete = False
     return sender
 
 
@@ -94,26 +99,116 @@ def test_locked_standing_mode_never_sends_velocity():
     sender.loco.SetVelocity.assert_not_called()
 
 
-def test_operator_ready_waits_for_arm_preparation_ramp():
+def test_operator_ready_requires_preparation_before_active_locomotion():
     sender = _make_sender()
     sender.active = True
     sender._arm_control_enabled = True
-    sender._weight_ramp_duration = 2.0
-    sender._activation_time = 10.0
-    sender._arm_ready_reported = False
+
+    assert not sender.operator_ready()
+
+    sender._arm_preparation_complete = True
+    assert sender.operator_ready()
+
+
+def test_arm_output_is_enabled_during_locked_standing_preparation():
+    sender = _make_sender()
+    sender._arm_control_enabled = True
+    sender._arm_preparing = True
+
+    assert sender._arm_output_active()
+    assert not sender.active
+
+
+def test_stable_locked_standing_starts_arm_preparation_before_fsm_501():
+    sender = _make_sender()
+    sender._arm_control_enabled = True
+    sender._activation_requested = True
+    sender._activation_stage = "wait_stand"
+    sender._activation_deadline = 20.0
+    sender._stage_started = 0.0
+    sender._stand_duration = 5.0
+    sender._stand_transition_seen = True
+    sender._query_fsm_id = Mock(return_value=4)
+    sender._stable_for_required_duration = Mock(return_value=(True, "stable"))
 
     with patch(
         "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
-        return_value=11.9,
+        return_value=10.0,
     ):
-        assert not sender.operator_ready()
+        sender.update_status()
+
+    assert sender._activation_stage == "prepare_arms"
+    assert sender._arm_preparing
+    assert sender._arm_preparation_started == 10.0
+    sender.loco.SetFsmId.assert_not_called()
+
+
+def test_transitional_fsm_does_not_start_arm_preparation():
+    sender = _make_sender()
+    sender._arm_control_enabled = True
+    sender._activation_requested = True
+    sender._activation_stage = "wait_stand"
+    sender._activation_deadline = 20.0
+    sender._stage_started = 0.0
+    sender._stand_duration = 5.0
+    sender._stand_transition_seen = True
+    sender._query_fsm_id = Mock(return_value=3)
+    sender._log_waiting = Mock()
 
     with patch(
         "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
-        return_value=12.0,
+        return_value=10.0,
     ):
-        assert sender.operator_ready()
-        assert sender._arm_ready_reported
+        sender.update_status()
+
+    assert sender._activation_stage == "wait_stand"
+    assert not sender._arm_preparing
+    sender.loco.SetFsmId.assert_not_called()
+
+
+def test_fsm_501_is_requested_only_after_arms_prepare_and_body_resettles():
+    sender = _make_sender()
+    sender._arm_control_enabled = True
+    sender._arm_preparing = True
+    sender._arm_preparation_started = 7.0
+    sender._activation_requested = True
+    sender._activation_stage = "prepare_arms"
+    sender._activation_deadline = 20.0
+    sender._query_fsm_id = Mock(return_value=4)
+    sender._stable_for_required_duration = Mock(return_value=(True, "stable"))
+
+    with patch(
+        "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
+        return_value=10.0,
+    ):
+        sender.update_status()
+
+    assert sender._arm_preparation_complete
+    assert not sender._arm_preparing
+    sender.loco.SetFsmId.assert_called_once_with(501)
+    assert sender._activation_stage == "wait_locomotion"
+
+
+def test_fsm_501_is_not_requested_while_arm_weight_is_still_ramping():
+    sender = _make_sender()
+    sender._arm_control_enabled = True
+    sender._arm_preparing = True
+    sender._arm_preparation_started = 7.0
+    sender._activation_requested = True
+    sender._activation_stage = "prepare_arms"
+    sender._activation_deadline = 20.0
+    sender._query_fsm_id = Mock(return_value=4)
+    sender._log_waiting = Mock()
+
+    with patch(
+        "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
+        return_value=8.5,
+    ):
+        sender.update_status()
+
+    sender.loco.SetFsmId.assert_not_called()
+    assert sender._arm_preparing
+    assert not sender._arm_preparation_complete
 
 
 def test_emergency_stop_requests_damp_without_following_move():
