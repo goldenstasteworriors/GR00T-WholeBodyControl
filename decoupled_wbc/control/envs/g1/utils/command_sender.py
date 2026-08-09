@@ -156,10 +156,10 @@ class UnitreeLocoArmCommandSender:
         self._locomotion_zeroed = False
         self._last_wait_log = 0.0
         self._velocity_period = 1.0 / float(config.get("unitree_loco_command_frequency", 10.0))
-        start_fsm_id = int(config.get("unitree_loco_start_fsm_id", -1))
+        start_fsm_id = int(config.get("unitree_loco_start_fsm_id", 500))
         self._start_fsm_id = start_fsm_id if start_fsm_id >= 0 else None
         self._damp_fsm_id = int(config.get("unitree_loco_damp_fsm_id", 1))
-        self._stand_fsm_id = int(config.get("unitree_loco_stand_fsm_id", 706))
+        self._stand_fsm_id = int(config.get("unitree_loco_stand_fsm_id", 4))
         self._damp_duration = float(config.get("unitree_loco_damp_duration", 0.5))
         self._stand_duration = float(config.get("unitree_loco_stand_duration", 4.0))
         self._stability_duration = float(config.get("unitree_loco_stability_duration", 0.5))
@@ -314,9 +314,7 @@ class UnitreeLocoArmCommandSender:
             self._release_arms()
             self._set_fsm(self._damp_fsm_id, "Damp")
             self._set_activation_stage("wait_damp", now)
-            startup_path = (
-                f"Damp({self._damp_fsm_id}) -> Squat2StandUp({self._stand_fsm_id})"
-            )
+            startup_path = f"Damp({self._damp_fsm_id}) -> StandUp({self._stand_fsm_id})"
             if self._start_fsm_id is None:
                 startup_path += " -> velocity control"
             else:
@@ -358,19 +356,14 @@ class UnitreeLocoArmCommandSender:
                     now, f"Damp hold ({damp_time:.2f}/{self._damp_duration:.2f}s)"
                 )
                 return
-            self._set_fsm(self._stand_fsm_id, "Squat2StandUp")
+            self._set_fsm(self._stand_fsm_id, "StandUp")
             self._set_activation_stage("wait_stand", now)
-            print(
-                "Unitree official loco Squat2StandUp requested "
-                f"(fsm_id={self._stand_fsm_id})"
-            )
+            print(f"Unitree official loco StandUp requested (fsm_id={self._stand_fsm_id})")
             return
 
         if self._activation_stage == "wait_stand":
-            # Squat2StandUp is an action FSM and may finish in a different
-            # standing state before the next 5 Hz query.  A transition away
-            # from passive/zero-torque states is therefore the reliable signal
-            # that the official firmware accepted the request.
+            # A transition away from passive/zero-torque states confirms that
+            # the official firmware accepted the StandUp request.
             if fsm_id not in {self._damp_fsm_id, 0}:
                 self._stand_transition_seen = True
             stand_time = now - self._stage_started
@@ -389,10 +382,9 @@ class UnitreeLocoArmCommandSender:
                 self._log_waiting(now, reason)
                 return
             if self._start_fsm_id is None:
-                # The G1 SDK example sends Move directly after
-                # Squat2StandUp.  Do not require an undocumented locomotion
-                # FSM transition; zero velocity first, then re-check measured
-                # stability before enabling operator commands.
+                # Compatibility mode for firmware that accepts velocity
+                # directly from its standing FSM. Zero velocity first, then
+                # re-check stability before enabling operator commands.
                 self._stop_move()
                 self._locomotion_zeroed = True
                 self._set_activation_stage("wait_ready", now)
