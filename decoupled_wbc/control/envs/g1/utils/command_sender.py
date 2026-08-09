@@ -120,10 +120,6 @@ class UnitreeLocoArmCommandSender:
     ARM_MOTOR_INDICES = tuple(range(15, 29))
     ARM_WEIGHT_INDEX = 29
     LEG_JOINT_COUNT = 12
-    SWITCH_TO_USER_CTRL_API_ID = 7110
-    SWITCH_TO_INTERNAL_CTRL_API_ID = 7111
-    INTERNAL_CTRL_PASSIVE_MODE = 1
-
     def __init__(self, config: Dict):
         import unitree_sdk2py.g1.loco.g1_loco_client as g1_loco_client
         from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
@@ -143,13 +139,7 @@ class UnitreeLocoArmCommandSender:
         self.loco = g1_loco_client.LocoClient()
         self.loco.SetTimeout(5.0)
         self.loco.Init()
-        # Newer G1 firmware exposes control-authority handoff through the
-        # sport service.  Register the firmware RPCs on this client instead of
-        # modifying or replacing the installed Unitree SDK.
-        self.loco._RegistApi(self.SWITCH_TO_USER_CTRL_API_ID, 0)
-        self.loco._RegistApi(self.SWITCH_TO_INTERNAL_CTRL_API_ID, 0)
         self.active = False
-        self._user_control_selected = False
         self._activation_requested = False
         self._activation_stage = "idle"
         self._activation_deadline = 0.0
@@ -157,6 +147,7 @@ class UnitreeLocoArmCommandSender:
         self._last_fsm_query = 0.0
         self._last_fsm_id = None
         self._last_velocity_send = 0.0
+        self._last_start_request = 0.0
         self._latest_leg_dq = None
         self._latest_torso_quat = None
         self._latest_robot_state_time = 0.0
@@ -165,24 +156,27 @@ class UnitreeLocoArmCommandSender:
         self._locomotion_zeroed = False
         self._last_wait_log = 0.0
         self._velocity_period = 1.0 / float(config.get("unitree_loco_command_frequency", 10.0))
-        start_fsm_id = int(config.get("unitree_loco_start_fsm_id", 500))
+        start_fsm_id = int(config.get("unitree_loco_start_fsm_id", 501))
         self._start_fsm_id = start_fsm_id if start_fsm_id >= 0 else None
         self._damp_fsm_id = int(config.get("unitree_loco_damp_fsm_id", 1))
         self._stand_fsm_id = int(config.get("unitree_loco_stand_fsm_id", 4))
-        self._damp_duration = float(config.get("unitree_loco_damp_duration", 0.5))
-        self._stand_duration = float(config.get("unitree_loco_stand_duration", 4.0))
+        self._damp_duration = float(config.get("unitree_loco_damp_duration", 1.0))
+        self._stand_duration = float(config.get("unitree_loco_stand_duration", 5.0))
+        self._start_retry_interval = float(
+            config.get("unitree_loco_start_retry_interval", 1.0)
+        )
         self._stability_duration = float(config.get("unitree_loco_stability_duration", 0.5))
-        self._activation_timeout = float(config.get("unitree_loco_activation_timeout", 15.0))
+        self._activation_timeout = float(config.get("unitree_loco_activation_timeout", 25.0))
         self._state_timeout = float(config.get("unitree_loco_state_timeout", 0.5))
         self._max_leg_velocity = float(config.get("unitree_loco_max_leg_velocity", 0.35))
         self._max_torso_tilt = float(config.get("unitree_loco_max_torso_tilt", 0.35))
-        self._max_linear_velocity = float(config.get("unitree_loco_max_linear_velocity", 0.5))
-        self._max_angular_velocity = float(config.get("unitree_loco_max_angular_velocity", 1.0))
+        self._max_linear_velocity = float(config.get("unitree_loco_max_linear_velocity", 0.05))
+        self._max_angular_velocity = float(config.get("unitree_loco_max_angular_velocity", 0.1))
+        self._navigation_enabled = bool(config.get("unitree_loco_navigation_enabled", False))
+        self._arm_control_enabled = bool(
+            config.get("unitree_loco_arm_control_enabled", False)
+        )
         self._weight_ramp_duration = float(config.get("unitree_arm_weight_ramp_duration", 2.0))
-        self._active_fsm_ids = {
-            int(fsm_id)
-            for fsm_id in config.get("unitree_loco_active_fsm_ids", (500, 501, 802))
-        }
         self._activation_time = 0.0
 
     @staticmethod
@@ -192,20 +186,6 @@ class UnitreeLocoArmCommandSender:
 
     def _set_fsm(self, fsm_id: int, name: str) -> None:
         self._check_rpc(name, self.loco.SetFsmId(int(fsm_id)))
-
-    def _switch_to_user_control(self) -> None:
-        parameter = json.dumps({"data": False})
-        code, _ = self.loco._Call(self.SWITCH_TO_USER_CTRL_API_ID, parameter)
-        self._check_rpc("SwitchToUserCtrl", code)
-        self._user_control_selected = True
-
-    def _switch_to_internal_passive_control(self) -> None:
-        if not self._user_control_selected:
-            return
-        parameter = json.dumps({"data": self.INTERNAL_CTRL_PASSIVE_MODE})
-        code, _ = self.loco._Call(self.SWITCH_TO_INTERNAL_CTRL_API_ID, parameter)
-        self._check_rpc("SwitchToInternalCtrl(PASSIVE)", code)
-        self._user_control_selected = False
 
     def _stop_move(self) -> None:
         # Call SetVelocity directly because older Unitree Python SDK versions
@@ -289,6 +269,7 @@ class UnitreeLocoArmCommandSender:
         self._stable_since = None
         self._stand_transition_seen = False
         self._locomotion_zeroed = False
+        self._last_start_request = 0.0
 
     def _safe_stop(self, request_damp: bool) -> list[str]:
         errors = []
@@ -296,19 +277,20 @@ class UnitreeLocoArmCommandSender:
             self._release_arms()
         except Exception as exc:
             errors.append(f"release arms: {exc}")
-        try:
-            self._stop_move()
-        except Exception as exc:
-            errors.append(f"zero velocity: {exc}")
         if request_damp:
             try:
                 self._set_fsm(self._damp_fsm_id, "Damp")
             except Exception as exc:
                 errors.append(f"Damp: {exc}")
+                try:
+                    self._stop_move()
+                except Exception as stop_exc:
+                    errors.append(f"fallback zero velocity: {stop_exc}")
+        else:
             try:
-                self._switch_to_internal_passive_control()
+                self._stop_move()
             except Exception as exc:
-                errors.append(f"return internal passive control: {exc}")
+                errors.append(f"zero velocity: {exc}")
         self._reset_activation()
         return errors
 
@@ -326,35 +308,6 @@ class UnitreeLocoArmCommandSender:
             )
             self._last_wait_log = now
 
-    def _attach_to_existing_locomotion(self, now: float) -> bool:
-        """Attach arm/velocity commands without changing an active firmware FSM."""
-        fsm_id = self._query_fsm_id()
-        if fsm_id not in self._active_fsm_ids:
-            return False
-
-        stable, reason = self._robot_stability(now)
-        if not stable:
-            raise RuntimeError(
-                "Cannot attach to Unitree official locomotion "
-                f"fsm_id={fsm_id}: {reason}"
-            )
-
-        self._release_arms()
-        self._stop_move()
-        self.active = True
-        self._activation_requested = False
-        self._activation_stage = "active"
-        self._activation_deadline = 0.0
-        self._last_fsm_id = fsm_id
-        self._locomotion_zeroed = True
-        self._activation_time = now
-        print(
-            "Unitree official loco attached to existing firmware control "
-            f"(fsm_id={fsm_id}); no FSM transition requested",
-            flush=True,
-        )
-        return True
-
     def set_active(self, active: bool, emergency: bool = False) -> None:
         active = bool(active)
         if active and (self.active or self._activation_requested):
@@ -363,8 +316,6 @@ class UnitreeLocoArmCommandSender:
             return
         if active:
             now = time.monotonic()
-            if self._attach_to_existing_locomotion(now):
-                return
             self.active = False
             self._activation_requested = True
             self._activation_deadline = now + self._activation_timeout
@@ -373,9 +324,9 @@ class UnitreeLocoArmCommandSender:
             self._last_wait_log = 0.0
             self._last_fsm_query = 0.0
             self._last_fsm_id = None
+            self._last_start_request = 0.0
             try:
                 self._release_arms()
-                self._switch_to_user_control()
                 self._set_fsm(self._damp_fsm_id, "Damp")
             except Exception as exc:
                 errors = self._safe_stop(request_damp=True)
@@ -392,8 +343,7 @@ class UnitreeLocoArmCommandSender:
             else:
                 startup_path += f" -> Start({self._start_fsm_id})"
             print(
-                "Unitree official loco user control selected; "
-                f"startup requested: {startup_path}",
+                f"Unitree official loco startup requested: {startup_path}",
                 flush=True,
             )
             return
@@ -458,18 +408,16 @@ class UnitreeLocoArmCommandSender:
                 self._log_waiting(now, reason)
                 return
             if self._start_fsm_id is None:
-                # Compatibility mode for firmware that accepts velocity
-                # directly from its standing FSM. Zero velocity first, then
-                # re-check stability before enabling operator commands.
-                self._stop_move()
-                self._locomotion_zeroed = True
+                # Locked-standing test mode deliberately never calls
+                # SetVelocity; FSM 4 remains entirely firmware-owned.
                 self._set_activation_stage("wait_ready", now)
                 print(
-                    "Unitree official loco standing confirmed; zero velocity requested",
+                    "Unitree official loco locked standing confirmed; no velocity RPC sent",
                     flush=True,
                 )
             else:
                 self._set_fsm(self._start_fsm_id, "Start locomotion")
+                self._last_start_request = now
                 self._set_activation_stage("wait_locomotion", now)
                 print(
                     "Unitree official loco Start requested "
@@ -499,6 +447,9 @@ class UnitreeLocoArmCommandSender:
         if self._activation_stage == "wait_locomotion":
             if fsm_id != self._start_fsm_id:
                 self._stable_since = None
+                if now - self._last_start_request >= self._start_retry_interval:
+                    self._set_fsm(self._start_fsm_id, "Retry start locomotion")
+                    self._last_start_request = now
                 self._log_waiting(
                     now, f"waiting for locomotion fsm_id={self._start_fsm_id}, current={fsm_id}"
                 )
@@ -522,7 +473,7 @@ class UnitreeLocoArmCommandSender:
             )
 
     def send_velocity(self, navigate_cmd) -> None:
-        if not self.active:
+        if not self.active or self._start_fsm_id is None:
             return
         now = time.monotonic()
         if now - self._last_velocity_send < self._velocity_period:
@@ -530,6 +481,8 @@ class UnitreeLocoArmCommandSender:
         velocity = np.asarray(navigate_cmd, dtype=np.float64)
         if velocity.shape != (3,) or not np.isfinite(velocity).all():
             raise ValueError("navigate_cmd must contain three finite values")
+        if not self._navigation_enabled:
+            velocity = np.zeros(3, dtype=np.float64)
         vx = float(np.clip(velocity[0], -self._max_linear_velocity, self._max_linear_velocity))
         vy = float(np.clip(velocity[1], -self._max_linear_velocity, self._max_linear_velocity))
         wz = float(np.clip(velocity[2], -self._max_angular_velocity, self._max_angular_velocity))
@@ -537,7 +490,7 @@ class UnitreeLocoArmCommandSender:
         self._last_velocity_send = now
 
     def send_command(self, cmd_q: np.ndarray, cmd_dq: np.ndarray, cmd_tau: np.ndarray):
-        if not self.active:
+        if not self.active or not self._arm_control_enabled:
             return
         for motor_index in self.ARM_MOTOR_INDICES:
             joint_index = self.config["MOTOR2JOINT"][motor_index]
@@ -560,7 +513,7 @@ class UnitreeLocoArmCommandSender:
         self.publisher.Write(self.low_cmd)
 
     def close(self) -> None:
-        self.set_active(False, emergency=False)
+        self.set_active(False, emergency=True)
 
 
 def make_hand_mode(motor_index: int) -> int:

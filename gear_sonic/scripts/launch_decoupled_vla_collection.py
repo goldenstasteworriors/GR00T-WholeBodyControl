@@ -184,8 +184,8 @@ class DecoupledVLACollectionLaunchConfig:
     lower_body_controller: str = "decoupled"
     """Use ``decoupled`` ONNX control or Unitree's official ``unitree_loco`` service."""
 
-    unitree_loco_start_fsm_id: int = 500
-    """Official Start FSM used by the G1 sport service; negative skips the explicit transition."""
+    unitree_loco_start_fsm_id: int = 501
+    """Official motion FSM; set negative to stop at locked standing (FSM 4)."""
 
     unitree_loco_damp_fsm_id: int = 1
     """Official damping FSM used to begin startup."""
@@ -196,16 +196,19 @@ class DecoupledVLACollectionLaunchConfig:
     unitree_loco_service_name: str = "sport"
     """Official loco RPC service name."""
 
-    unitree_loco_damp_duration: float = 0.5
+    unitree_loco_damp_duration: float = 1.0
     """Minimum Damp hold time in seconds."""
 
-    unitree_loco_stand_duration: float = 4.0
+    unitree_loco_stand_duration: float = 5.0
     """Minimum StandUp transition time in seconds."""
 
     unitree_loco_stability_duration: float = 0.5
     """Continuous stability time required before confirmation."""
 
-    unitree_loco_activation_timeout: float = 15.0
+    unitree_loco_start_retry_interval: float = 1.0
+    """Seconds between repeated FSM 501 requests."""
+
+    unitree_loco_activation_timeout: float = 25.0
     """Overall official-loco startup timeout in seconds."""
 
     unitree_loco_state_timeout: float = 0.5
@@ -216,6 +219,18 @@ class DecoupledVLACollectionLaunchConfig:
 
     unitree_loco_max_torso_tilt: float = 0.35
     """Maximum upright torso tilt in radians."""
+
+    unitree_loco_navigation_enabled: bool = False
+    """Allow nonzero lower-body velocity; leave disabled for initial FSM tests."""
+
+    unitree_loco_arm_control_enabled: bool = False
+    """Allow upper-body ``rt/arm_sdk`` output; leave disabled for FSM tests."""
+
+    unitree_loco_max_linear_velocity: float = 0.05
+    """Maximum official-loco x/y speed after navigation is explicitly enabled."""
+
+    unitree_loco_max_angular_velocity: float = 0.1
+    """Maximum official-loco yaw speed after navigation is explicitly enabled."""
 
     wbc_model_path: str = (
         "policy/GR00T-WholeBodyControl-Balance.onnx,"
@@ -437,10 +452,13 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
             errors.append("--keyboard-loco-command-timeout must be positive")
     if config.lower_body_controller == "unitree_loco":
         positive_values = {
+            "--unitree-loco-start-retry-interval": config.unitree_loco_start_retry_interval,
             "--unitree-loco-activation-timeout": config.unitree_loco_activation_timeout,
             "--unitree-loco-state-timeout": config.unitree_loco_state_timeout,
             "--unitree-loco-max-leg-velocity": config.unitree_loco_max_leg_velocity,
             "--unitree-loco-max-torso-tilt": config.unitree_loco_max_torso_tilt,
+            "--unitree-loco-max-linear-velocity": config.unitree_loco_max_linear_velocity,
+            "--unitree-loco-max-angular-velocity": config.unitree_loco_max_angular_velocity,
         }
         errors.extend(f"{name} must be positive" for name, value in positive_values.items() if value <= 0.0)
         nonnegative_values = {
@@ -519,6 +537,8 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.unitree_loco_damp_duration),
         "--unitree-loco-stand-duration",
         str(config.unitree_loco_stand_duration),
+        "--unitree-loco-start-retry-interval",
+        str(config.unitree_loco_start_retry_interval),
         "--unitree-loco-stability-duration",
         str(config.unitree_loco_stability_duration),
         "--unitree-loco-activation-timeout",
@@ -529,6 +549,12 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.unitree_loco_max_leg_velocity),
         "--unitree-loco-max-torso-tilt",
         str(config.unitree_loco_max_torso_tilt),
+        *_bool_arg("unitree-loco-navigation-enabled", config.unitree_loco_navigation_enabled),
+        *_bool_arg("unitree-loco-arm-control-enabled", config.unitree_loco_arm_control_enabled),
+        "--unitree-loco-max-linear-velocity",
+        str(config.unitree_loco_max_linear_velocity),
+        "--unitree-loco-max-angular-velocity",
+        str(config.unitree_loco_max_angular_velocity),
         "--wbc-model-path",
         config.wbc_model_path,
         "--control-frequency",
@@ -791,6 +817,21 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         print(f"  logs:                  {profile_log_dir}")
     print()
     print("  Controls:")
+    if config.lower_body_controller == "unitree_loco":
+        target_mode = (
+            "locked standing (FSM 4)"
+            if config.unitree_loco_start_fsm_id < 0
+            else f"motion (FSM {config.unitree_loco_start_fsm_id})"
+        )
+        print(f"    Unitree startup target: {target_mode}")
+        print("    PICO: click both thumbsticks = unconditional emergency Damp (FSM 1)")
+        print("    PICO: A+B+X+Y starts; pressing it again also requests emergency Damp")
+        print(
+            "    navigation: "
+            f"{'enabled' if config.unitree_loco_navigation_enabled else 'ZERO ONLY'}; "
+            "arm_sdk: "
+            f"{'enabled' if config.unitree_loco_arm_control_enabled else 'disabled'}"
+        )
     if config.keyboard_lower_body_control:
         print("    control pane: G start/toggle emergency, Space emergency stop")
         print("    control pane: hold W/S forward, A/D lateral, Q/E yaw; Z zero")

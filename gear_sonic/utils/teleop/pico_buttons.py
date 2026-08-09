@@ -18,6 +18,7 @@ class PicoButtonState:
     y: bool = False
     left_grip: float = 0.0
     left_axis_click: bool = False
+    right_axis_click: bool = False
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class PicoButtonEvents:
     by_pressed: bool = False
     start_stop_pressed: bool = False
     left_axis_click_pressed: bool = False
+    emergency_stop_pressed: bool = False
     toggle_data_collection: bool = False
     toggle_data_abort: bool = False
 
@@ -40,6 +42,7 @@ class PicoButtonEvents:
                 self.by_pressed,
                 self.start_stop_pressed,
                 self.left_axis_click_pressed,
+                self.emergency_stop_pressed,
                 self.toggle_data_collection,
                 self.toggle_data_abort,
             )
@@ -59,6 +62,7 @@ class PicoButtonDiagnostics:
     start_stop_latched: int
     data_collection_latched: int
     data_abort_latched: int
+    emergency_stop_latched: int
 
 
 class PicoButtonEdgeDetector:
@@ -76,6 +80,10 @@ class PicoButtonEdgeDetector:
         previous_by_pressed = previous.b and previous.y
         start_stop_pressed = state.a and state.b and state.x and state.y
         previous_start_stop_pressed = previous.a and previous.b and previous.x and previous.y
+        emergency_stop_pressed = state.left_axis_click and state.right_axis_click
+        previous_emergency_stop_pressed = (
+            previous.left_axis_click and previous.right_axis_click
+        )
         toggle_data_collection = state.a and state.left_grip > 0.5
         previous_toggle_data_collection = previous.a and previous.left_grip > 0.5
         toggle_data_abort = state.b and state.left_grip > 0.5
@@ -87,6 +95,9 @@ class PicoButtonEdgeDetector:
             by_pressed=by_pressed and not previous_by_pressed,
             start_stop_pressed=start_stop_pressed and not previous_start_stop_pressed,
             left_axis_click_pressed=state.left_axis_click and not previous.left_axis_click,
+            emergency_stop_pressed=(
+                emergency_stop_pressed and not previous_emergency_stop_pressed
+            ),
             toggle_data_collection=(
                 toggle_data_collection and not previous_toggle_data_collection
             ),
@@ -123,6 +134,7 @@ class PicoButtonEventSampler:
         self._start_stop_latched = 0
         self._data_collection_latched = 0
         self._data_abort_latched = 0
+        self._emergency_stop_latched = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(
@@ -164,6 +176,7 @@ class PicoButtonEventSampler:
                 start_stop_latched=self._start_stop_latched,
                 data_collection_latched=self._data_collection_latched,
                 data_abort_latched=self._data_abort_latched,
+                emergency_stop_latched=self._emergency_stop_latched,
             )
 
     def _run(self) -> None:
@@ -188,4 +201,5 @@ class PicoButtonEventSampler:
                 self._start_stop_latched += int(events.start_stop_pressed)
                 self._data_collection_latched += int(events.toggle_data_collection)
                 self._data_abort_latched += int(events.toggle_data_abort)
+                self._emergency_stop_latched += int(events.emergency_stop_pressed)
             self._stop.wait(self._period)

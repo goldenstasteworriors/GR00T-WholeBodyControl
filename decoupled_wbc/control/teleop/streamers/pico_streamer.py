@@ -81,6 +81,7 @@ class PicoStreamer(BaseStreamer):
             "start_stop": 0,
             "data_collection": 0,
             "data_abort": 0,
+            "emergency_stop": 0,
         }
         # Keep the last event identifier in every teleop message so a
         # collection command cannot be lost between equal-rate ROS loops.
@@ -206,6 +207,7 @@ class PicoStreamer(BaseStreamer):
                 "start_stop": sampler.start_stop_latched,
                 "data_collection": sampler.data_collection_latched,
                 "data_abort": sampler.data_abort_latched,
+                "emergency_stop": sampler.emergency_stop_latched,
             },
             "consumed": self._button_events_consumed.copy(),
         }
@@ -327,14 +329,13 @@ class PicoStreamer(BaseStreamer):
         pico_data["Y"] = button_state.y
         pico_data["left_grip"] = button_state.left_grip
         pico_data["left_axis_click"] = button_state.left_axis_click
+        pico_data["right_axis_click"] = button_state.right_axis_click
 
         # Get the remaining button state of the left and right controllers
         pico_data["left_menu_button"] = self.xr_client.get_button_state_by_name("left_menu_button")
         pico_data["right_menu_button"] = self.xr_client.get_button_state_by_name(
             "right_menu_button"
         )
-        pico_data["right_axis_click"] = self.xr_client.get_button_state_by_name("right_axis_click")
-
         # Get the timestamp of the left and right controllers
         pico_data["timestamp"] = self.xr_client.get_timestamp_ns()
 
@@ -364,6 +365,9 @@ class PicoStreamer(BaseStreamer):
                 left_grip=float(self.xr_client.get_key_value_by_name("left_grip")),
                 left_axis_click=bool(
                     self.xr_client.get_button_state_by_name("left_axis_click")
+                ),
+                right_axis_click=bool(
+                    self.xr_client.get_button_state_by_name("right_axis_click")
                 ),
             )
 
@@ -396,8 +400,14 @@ class PicoStreamer(BaseStreamer):
                 event.toggle_data_collection
             )
             self._button_events_consumed["data_abort"] += int(event.toggle_data_abort)
+            self._button_events_consumed["emergency_stop"] += int(
+                event.emergency_stop_pressed
+            )
+        emergency_stop_event = any(
+            event.emergency_stop_pressed for event in button_events
+        )
         start_stop_event = any(event.start_stop_pressed for event in button_events)
-        upper_body_event = not start_stop_event and any(
+        upper_body_event = not (emergency_stop_event or start_stop_event) and any(
             event.ax_pressed for event in button_events
         )
         toggle_data_collection = any(
@@ -434,7 +444,19 @@ class PicoStreamer(BaseStreamer):
         set_teleop_active = None
         toggle_activation = False
         emergency_stop = False
-        if start_stop_event:
+        if emergency_stop_event:
+            self.control_enabled = False
+            set_policy_action = False
+            set_teleop_active = False
+            emergency_stop = True
+            lin_vel_x = 0.0
+            lin_vel_y = 0.0
+            ang_vel_z = 0.0
+            print(
+                "[PicoStreamer] Both thumbsticks clicked: unconditional emergency Damp",
+                flush=True,
+            )
+        elif start_stop_event:
             self.control_enabled = not self.control_enabled
             set_policy_action = self.control_enabled
             emergency_stop = not self.control_enabled

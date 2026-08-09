@@ -60,12 +60,15 @@ def override_wbc_config(
         "unitree_loco_service_name": config.unitree_loco_service_name,
         "unitree_loco_damp_duration": config.unitree_loco_damp_duration,
         "unitree_loco_stand_duration": config.unitree_loco_stand_duration,
+        "unitree_loco_start_retry_interval": config.unitree_loco_start_retry_interval,
         "unitree_loco_stability_duration": config.unitree_loco_stability_duration,
         "unitree_loco_activation_timeout": config.unitree_loco_activation_timeout,
         "unitree_loco_state_timeout": config.unitree_loco_state_timeout,
         "unitree_loco_max_leg_velocity": config.unitree_loco_max_leg_velocity,
         "unitree_loco_max_torso_tilt": config.unitree_loco_max_torso_tilt,
         "unitree_loco_command_frequency": config.unitree_loco_command_frequency,
+        "unitree_loco_navigation_enabled": config.unitree_loco_navigation_enabled,
+        "unitree_loco_arm_control_enabled": config.unitree_loco_arm_control_enabled,
         "unitree_loco_max_linear_velocity": config.unitree_loco_max_linear_velocity,
         "unitree_loco_max_angular_velocity": config.unitree_loco_max_angular_velocity,
         "unitree_arm_weight_ramp_duration": config.unitree_arm_weight_ramp_duration,
@@ -122,8 +125,8 @@ class BaseConfig(ArgsConfigTemplate):
     lower_body_controller: Literal["decoupled", "unitree_loco"] = "decoupled"
     """Lower-body backend: local ONNX policy or Unitree's official loco service."""
 
-    unitree_loco_start_fsm_id: int = 500
-    """Official Start FSM used by the G1 sport service; negative skips the explicit transition."""
+    unitree_loco_start_fsm_id: int = 501
+    """Official motion FSM; set negative to stop at locked standing (FSM 4)."""
 
     unitree_loco_damp_fsm_id: int = 1
     """Official damping FSM used at the start of every activation."""
@@ -134,16 +137,19 @@ class BaseConfig(ArgsConfigTemplate):
     unitree_loco_service_name: str = "sport"
     """Official loco RPC service name (``sport`` for ai_sport >= 8.2)."""
 
-    unitree_loco_damp_duration: float = 0.5
+    unitree_loco_damp_duration: float = 1.0
     """Minimum seconds to remain in Damp before requesting StandUp."""
 
-    unitree_loco_stand_duration: float = 4.0
+    unitree_loco_stand_duration: float = 5.0
     """Minimum seconds allowed for the official StandUp transition."""
 
     unitree_loco_stability_duration: float = 0.5
     """Continuous stable time required before each activation confirmation."""
 
-    unitree_loco_activation_timeout: float = 15.0
+    unitree_loco_start_retry_interval: float = 1.0
+    """Seconds between repeated FSM 501 requests while StandUp finishes."""
+
+    unitree_loco_activation_timeout: float = 25.0
     """Overall timeout for Damp, standing, and velocity-control activation."""
 
     unitree_loco_state_timeout: float = 0.5
@@ -158,10 +164,16 @@ class BaseConfig(ArgsConfigTemplate):
     unitree_loco_command_frequency: float = 10.0
     """Maximum SetVelocity RPC frequency."""
 
-    unitree_loco_max_linear_velocity: float = 0.5
+    unitree_loco_navigation_enabled: bool = False
+    """Allow nonzero navigation commands; disabled for initial FSM/stop tests."""
+
+    unitree_loco_arm_control_enabled: bool = False
+    """Allow ``rt/arm_sdk`` commands; disabled for isolated lower-body tests."""
+
+    unitree_loco_max_linear_velocity: float = 0.05
     """Absolute official-loco x/y velocity limit in m/s."""
 
-    unitree_loco_max_angular_velocity: float = 1.0
+    unitree_loco_max_angular_velocity: float = 0.1
     """Absolute official-loco yaw-rate limit in rad/s."""
 
     unitree_arm_weight_ramp_duration: float = 2.0
@@ -303,6 +315,7 @@ class BaseConfig(ArgsConfigTemplate):
                 raise ValueError("unitree_loco must retain waist control; disable waist IK")
             positive_values = {
                 "unitree_loco_command_frequency": self.unitree_loco_command_frequency,
+                "unitree_loco_start_retry_interval": self.unitree_loco_start_retry_interval,
                 "unitree_loco_activation_timeout": self.unitree_loco_activation_timeout,
                 "unitree_loco_state_timeout": self.unitree_loco_state_timeout,
                 "unitree_loco_max_leg_velocity": self.unitree_loco_max_leg_velocity,
