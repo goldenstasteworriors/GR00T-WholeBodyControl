@@ -339,7 +339,7 @@ class UnitreeLocoArmCommandSender:
             self._set_activation_stage("wait_damp", now)
             startup_path = f"Damp({self._damp_fsm_id}) -> StandUp({self._stand_fsm_id})"
             if self._start_fsm_id is None:
-                startup_path += " -> velocity control"
+                startup_path += " -> locked standing"
             else:
                 startup_path += f" -> Start({self._start_fsm_id})"
             print(
@@ -352,7 +352,7 @@ class UnitreeLocoArmCommandSender:
         if emergency:
             print(
                 "Unitree official loco emergency stop: arms released, "
-                "velocity zero, damp requested"
+                "Damp requested, no Move sent"
             )
         if errors:
             raise RuntimeError("Unitree loco safe stop failed: " + ", ".join(errors))
