@@ -120,6 +120,9 @@ class UnitreeLocoArmCommandSender:
     ARM_MOTOR_INDICES = tuple(range(15, 29))
     ARM_WEIGHT_INDEX = 29
     LEG_JOINT_COUNT = 12
+    SWITCH_TO_USER_CTRL_API_ID = 7110
+    SWITCH_TO_INTERNAL_CTRL_API_ID = 7111
+    INTERNAL_CTRL_PASSIVE_MODE = 1
 
     def __init__(self, config: Dict):
         import unitree_sdk2py.g1.loco.g1_loco_client as g1_loco_client
@@ -140,7 +143,13 @@ class UnitreeLocoArmCommandSender:
         self.loco = g1_loco_client.LocoClient()
         self.loco.SetTimeout(5.0)
         self.loco.Init()
+        # Newer G1 firmware exposes control-authority handoff through the
+        # sport service.  Register the firmware RPCs on this client instead of
+        # modifying or replacing the installed Unitree SDK.
+        self.loco._RegistApi(self.SWITCH_TO_USER_CTRL_API_ID, 0)
+        self.loco._RegistApi(self.SWITCH_TO_INTERNAL_CTRL_API_ID, 0)
         self.active = False
+        self._user_control_selected = False
         self._activation_requested = False
         self._activation_stage = "idle"
         self._activation_deadline = 0.0
@@ -179,6 +188,20 @@ class UnitreeLocoArmCommandSender:
 
     def _set_fsm(self, fsm_id: int, name: str) -> None:
         self._check_rpc(name, self.loco.SetFsmId(int(fsm_id)))
+
+    def _switch_to_user_control(self) -> None:
+        parameter = json.dumps({"data": False})
+        code, _ = self.loco._Call(self.SWITCH_TO_USER_CTRL_API_ID, parameter)
+        self._check_rpc("SwitchToUserCtrl", code)
+        self._user_control_selected = True
+
+    def _switch_to_internal_passive_control(self) -> None:
+        if not self._user_control_selected:
+            return
+        parameter = json.dumps({"data": self.INTERNAL_CTRL_PASSIVE_MODE})
+        code, _ = self.loco._Call(self.SWITCH_TO_INTERNAL_CTRL_API_ID, parameter)
+        self._check_rpc("SwitchToInternalCtrl(PASSIVE)", code)
+        self._user_control_selected = False
 
     def _stop_move(self) -> None:
         # Call SetVelocity directly because older Unitree Python SDK versions
@@ -278,6 +301,10 @@ class UnitreeLocoArmCommandSender:
                 self._set_fsm(self._damp_fsm_id, "Damp")
             except Exception as exc:
                 errors.append(f"Damp: {exc}")
+            try:
+                self._switch_to_internal_passive_control()
+            except Exception as exc:
+                errors.append(f"return internal passive control: {exc}")
         self._reset_activation()
         return errors
 
@@ -311,15 +338,29 @@ class UnitreeLocoArmCommandSender:
             self._last_wait_log = 0.0
             self._last_fsm_query = 0.0
             self._last_fsm_id = None
-            self._release_arms()
-            self._set_fsm(self._damp_fsm_id, "Damp")
+            try:
+                self._release_arms()
+                self._switch_to_user_control()
+                self._set_fsm(self._damp_fsm_id, "Damp")
+            except Exception as exc:
+                errors = self._safe_stop(request_damp=True)
+                if errors:
+                    raise RuntimeError(
+                        f"Unitree loco activation failed: {exc}; "
+                        "safe-stop errors: " + ", ".join(errors)
+                    ) from exc
+                raise
             self._set_activation_stage("wait_damp", now)
             startup_path = f"Damp({self._damp_fsm_id}) -> StandUp({self._stand_fsm_id})"
             if self._start_fsm_id is None:
                 startup_path += " -> velocity control"
             else:
                 startup_path += f" -> Start({self._start_fsm_id})"
-            print(f"Unitree official loco startup requested: {startup_path}", flush=True)
+            print(
+                "Unitree official loco user control selected; "
+                f"startup requested: {startup_path}",
+                flush=True,
+            )
             return
 
         errors = self._safe_stop(request_damp=emergency)
