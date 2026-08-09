@@ -69,12 +69,16 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
   --lower-body-controller unitree_loco
 ```
 
-When `A+B+X+Y` requests startup, the official backend runs a non-blocking
-`Damp (FSM 1) -> StandUp (FSM 4) -> locomotion (FSM 501)` sequence. It waits
-for fresh low-state measurements, low leg velocity, and an upright torso before
-publishing the confirmed lower-body-active status. `A+X` remains disabled until
-the complete sequence succeeds. A second `A+B+X+Y`, an RPC error, or a startup
-timeout releases the arm weight, commands zero velocity, and requests Damp.
+When `A+B+X+Y` requests startup, the official backend follows the G1 SDK example
+with a non-blocking `Damp (FSM 1) -> Squat2StandUp (FSM 706) -> zero velocity`
+sequence. It waits for fresh low-state measurements, low leg velocity, and an
+upright torso before publishing the confirmed lower-body-active status. It does
+not require an extra locomotion FSM transition because the bundled SDK example
+sends `Move` directly after `Squat2StandUp`. Firmware that requires an explicit
+Start FSM can opt in with `--unitree-loco-start-fsm-id <id>`. `A+X` remains
+disabled until the complete sequence succeeds. A second `A+B+X+Y`, an RPC
+error, or a startup timeout releases the arm weight, commands zero velocity,
+and requests Damp.
 
 This mode intentionally rejects waist IK. The first `A+B+X+Y` press starts the
 full sequence above and enables navigation only after the final confirmation.
@@ -111,7 +115,7 @@ python gear_sonic/scripts/launch_decoupled_vla_collection_onboard.py \
 ```
 
 Focus the tmux control pane before entering commands. `G` starts the non-blocking
-`Damp (FSM 1) -> StandUp (FSM 4) -> locomotion (FSM 501)` sequence; pressing
+`Damp (FSM 1) -> Squat2StandUp (FSM 706) -> zero velocity` sequence; pressing
 `G` again or pressing `Space` requests the safe emergency stop. Hold `W/S` for
 fixed +/-0.1 m/s forward/backward motion, `A/D` for fixed +/-0.1 m/s lateral
 motion, and `Q/E` for fixed +/-0.1 rad/s yaw. `Z` resets all velocity components

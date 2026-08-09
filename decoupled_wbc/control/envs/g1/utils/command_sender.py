@@ -156,9 +156,10 @@ class UnitreeLocoArmCommandSender:
         self._locomotion_zeroed = False
         self._last_wait_log = 0.0
         self._velocity_period = 1.0 / float(config.get("unitree_loco_command_frequency", 10.0))
-        self._start_fsm_id = int(config.get("unitree_loco_start_fsm_id", 501))
+        start_fsm_id = int(config.get("unitree_loco_start_fsm_id", -1))
+        self._start_fsm_id = start_fsm_id if start_fsm_id >= 0 else None
         self._damp_fsm_id = int(config.get("unitree_loco_damp_fsm_id", 1))
-        self._stand_fsm_id = int(config.get("unitree_loco_stand_fsm_id", 4))
+        self._stand_fsm_id = int(config.get("unitree_loco_stand_fsm_id", 706))
         self._damp_duration = float(config.get("unitree_loco_damp_duration", 0.5))
         self._stand_duration = float(config.get("unitree_loco_stand_duration", 4.0))
         self._stability_duration = float(config.get("unitree_loco_stability_duration", 0.5))
@@ -313,12 +314,14 @@ class UnitreeLocoArmCommandSender:
             self._release_arms()
             self._set_fsm(self._damp_fsm_id, "Damp")
             self._set_activation_stage("wait_damp", now)
-            print(
-                "Unitree official loco startup requested: "
-                f"Damp({self._damp_fsm_id}) -> StandUp({self._stand_fsm_id}) "
-                f"-> locomotion({self._start_fsm_id})",
-                flush=True,
+            startup_path = (
+                f"Damp({self._damp_fsm_id}) -> Squat2StandUp({self._stand_fsm_id})"
             )
+            if self._start_fsm_id is None:
+                startup_path += " -> velocity control"
+            else:
+                startup_path += f" -> Start({self._start_fsm_id})"
+            print(f"Unitree official loco startup requested: {startup_path}", flush=True)
             return
 
         errors = self._safe_stop(request_damp=emergency)
@@ -355,13 +358,20 @@ class UnitreeLocoArmCommandSender:
                     now, f"Damp hold ({damp_time:.2f}/{self._damp_duration:.2f}s)"
                 )
                 return
-            self._set_fsm(self._stand_fsm_id, "StandUp")
+            self._set_fsm(self._stand_fsm_id, "Squat2StandUp")
             self._set_activation_stage("wait_stand", now)
-            print(f"Unitree official loco StandUp requested (fsm_id={self._stand_fsm_id})")
+            print(
+                "Unitree official loco Squat2StandUp requested "
+                f"(fsm_id={self._stand_fsm_id})"
+            )
             return
 
         if self._activation_stage == "wait_stand":
-            if fsm_id in {self._stand_fsm_id, 500, self._start_fsm_id}:
+            # Squat2StandUp is an action FSM and may finish in a different
+            # standing state before the next 5 Hz query.  A transition away
+            # from passive/zero-torque states is therefore the reliable signal
+            # that the official firmware accepted the request.
+            if fsm_id not in {self._damp_fsm_id, 0}:
                 self._stand_transition_seen = True
             stand_time = now - self._stage_started
             if stand_time < self._stand_duration:
@@ -378,9 +388,44 @@ class UnitreeLocoArmCommandSender:
             if not stable:
                 self._log_waiting(now, reason)
                 return
-            self._set_fsm(self._start_fsm_id, "Start locomotion")
-            self._set_activation_stage("wait_locomotion", now)
-            print(f"Unitree official loco locomotion requested (fsm_id={self._start_fsm_id})")
+            if self._start_fsm_id is None:
+                # The G1 SDK example sends Move directly after
+                # Squat2StandUp.  Do not require an undocumented locomotion
+                # FSM transition; zero velocity first, then re-check measured
+                # stability before enabling operator commands.
+                self._stop_move()
+                self._locomotion_zeroed = True
+                self._set_activation_stage("wait_ready", now)
+                print(
+                    "Unitree official loco standing confirmed; zero velocity requested",
+                    flush=True,
+                )
+            else:
+                self._set_fsm(self._start_fsm_id, "Start locomotion")
+                self._set_activation_stage("wait_locomotion", now)
+                print(
+                    "Unitree official loco Start requested "
+                    f"(fsm_id={self._start_fsm_id})"
+                )
+            return
+
+        if self._activation_stage == "wait_ready":
+            if fsm_id in {self._damp_fsm_id, 0}:
+                self._stable_since = None
+                self._log_waiting(now, f"waiting for standing mode, current fsm_id={fsm_id}")
+                return
+            stable, reason = self._stable_for_required_duration(now)
+            if not stable:
+                self._log_waiting(now, reason)
+                return
+            self.active = True
+            self._activation_requested = False
+            self._activation_stage = "active"
+            self._activation_time = now
+            print(
+                f"Unitree official loco confirmed standing and active (fsm_id={fsm_id})",
+                flush=True,
+            )
             return
 
         if self._activation_stage == "wait_locomotion":

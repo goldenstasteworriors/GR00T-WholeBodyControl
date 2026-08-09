@@ -184,14 +184,14 @@ class DecoupledVLACollectionLaunchConfig:
     lower_body_controller: str = "decoupled"
     """Use ``decoupled`` ONNX control or Unitree's official ``unitree_loco`` service."""
 
-    unitree_loco_start_fsm_id: int = 501
-    """Official locomotion FSM used after standing."""
+    unitree_loco_start_fsm_id: int = -1
+    """Optional explicit Start FSM; negative sends velocity directly after official standing."""
 
     unitree_loco_damp_fsm_id: int = 1
     """Official damping FSM used to begin startup."""
 
-    unitree_loco_stand_fsm_id: int = 4
-    """Official dedicated StandUp FSM used during startup."""
+    unitree_loco_stand_fsm_id: int = 706
+    """Official Squat2StandUp action FSM used during startup."""
 
     unitree_loco_service_name: str = "sport"
     """Official loco RPC service name."""
@@ -200,7 +200,7 @@ class DecoupledVLACollectionLaunchConfig:
     """Minimum Damp hold time in seconds."""
 
     unitree_loco_stand_duration: float = 4.0
-    """Minimum StandUp transition time in seconds."""
+    """Minimum Squat2StandUp transition time in seconds."""
 
     unitree_loco_stability_duration: float = 0.5
     """Continuous stability time required before confirmation."""

@@ -122,14 +122,14 @@ class BaseConfig(ArgsConfigTemplate):
     lower_body_controller: Literal["decoupled", "unitree_loco"] = "decoupled"
     """Lower-body backend: local ONNX policy or Unitree's official loco service."""
 
-    unitree_loco_start_fsm_id: int = 501
-    """Official 29-DOF/3-waist-DOF G1 loco FSM entered by A+B+X+Y."""
+    unitree_loco_start_fsm_id: int = -1
+    """Optional explicit Start FSM; negative follows the SDK example and sends Move after standing."""
 
     unitree_loco_damp_fsm_id: int = 1
     """Official damping FSM used at the start of every activation."""
 
-    unitree_loco_stand_fsm_id: int = 4
-    """Official dedicated StandUp FSM used before locomotion."""
+    unitree_loco_stand_fsm_id: int = 706
+    """Official Squat2StandUp action FSM used by the robot's bundled G1 SDK."""
 
     unitree_loco_service_name: str = "sport"
     """Official loco RPC service name (``sport`` for ai_sport >= 8.2)."""
@@ -138,13 +138,13 @@ class BaseConfig(ArgsConfigTemplate):
     """Minimum seconds to remain in Damp before requesting StandUp."""
 
     unitree_loco_stand_duration: float = 4.0
-    """Minimum seconds allowed for the official StandUp transition."""
+    """Minimum seconds allowed for the official Squat2StandUp transition."""
 
     unitree_loco_stability_duration: float = 0.5
     """Continuous stable time required before each activation confirmation."""
 
     unitree_loco_activation_timeout: float = 15.0
-    """Overall timeout for Damp, StandUp, and locomotion activation."""
+    """Overall timeout for Damp, standing, and velocity-control activation."""
 
     unitree_loco_state_timeout: float = 0.5
     """Maximum accepted age of measured robot state during activation."""
