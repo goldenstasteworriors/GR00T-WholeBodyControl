@@ -167,8 +167,8 @@ class BaseConfig(ArgsConfigTemplate):
     unitree_loco_navigation_enabled: bool = False
     """Allow nonzero navigation commands; disabled for initial FSM/stop tests."""
 
-    unitree_loco_arm_control_enabled: bool = False
-    """Allow ``rt/arm_sdk`` commands; disabled for isolated lower-body tests."""
+    unitree_loco_arm_control_enabled: bool = True
+    """Hold a preparation pose through ``rt/arm_sdk`` before A+X teleoperation."""
 
     unitree_loco_max_linear_velocity: float = 0.05
     """Absolute official-loco x/y velocity limit in m/s."""

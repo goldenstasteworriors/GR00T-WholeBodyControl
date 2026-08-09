@@ -94,6 +94,28 @@ def test_locked_standing_mode_never_sends_velocity():
     sender.loco.SetVelocity.assert_not_called()
 
 
+def test_operator_ready_waits_for_arm_preparation_ramp():
+    sender = _make_sender()
+    sender.active = True
+    sender._arm_control_enabled = True
+    sender._weight_ramp_duration = 2.0
+    sender._activation_time = 10.0
+    sender._arm_ready_reported = False
+
+    with patch(
+        "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
+        return_value=11.9,
+    ):
+        assert not sender.operator_ready()
+
+    with patch(
+        "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
+        return_value=12.0,
+    ):
+        assert sender.operator_ready()
+        assert sender._arm_ready_reported
+
+
 def test_emergency_stop_requests_damp_without_following_move():
     sender = _make_sender()
     sender.active = True

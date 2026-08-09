@@ -223,8 +223,8 @@ class DecoupledVLACollectionLaunchConfig:
     unitree_loco_navigation_enabled: bool = False
     """Allow nonzero lower-body velocity; leave disabled for initial FSM tests."""
 
-    unitree_loco_arm_control_enabled: bool = False
-    """Allow upper-body ``rt/arm_sdk`` output; leave disabled for FSM tests."""
+    unitree_loco_arm_control_enabled: bool = True
+    """Hold the upper-body preparation pose through ``rt/arm_sdk`` before A+X."""
 
     unitree_loco_max_linear_velocity: float = 0.05
     """Maximum official-loco x/y speed after navigation is explicitly enabled."""
@@ -595,6 +595,11 @@ def _build_teleop_args(config: DecoupledVLACollectionLaunchConfig, interface: st
         config.env_name,
         "--wbc-version",
         config.wbc_version,
+        "--lower-body-controller",
+        config.lower_body_controller,
+        *_bool_arg("unitree-loco-arm-control-enabled", config.unitree_loco_arm_control_enabled),
+        "--startup-final-elbow-angle",
+        str(config.startup_final_elbow_angle),
         "--body-control-device",
         config.body_control_device,
         "--hand-control-device",

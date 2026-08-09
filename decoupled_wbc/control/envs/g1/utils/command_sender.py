@@ -178,6 +178,7 @@ class UnitreeLocoArmCommandSender:
         )
         self._weight_ramp_duration = float(config.get("unitree_arm_weight_ramp_duration", 2.0))
         self._activation_time = 0.0
+        self._arm_ready_reported = False
 
     @staticmethod
     def _check_rpc(name: str, code) -> None:
@@ -270,6 +271,22 @@ class UnitreeLocoArmCommandSender:
         self._stand_transition_seen = False
         self._locomotion_zeroed = False
         self._last_start_request = 0.0
+        self._arm_ready_reported = False
+
+    def operator_ready(self) -> bool:
+        """Return true after locomotion and the optional arm preparation are ready."""
+        if not self.active:
+            return False
+        if not self._arm_control_enabled or self._weight_ramp_duration <= 0.0:
+            return True
+        ready = time.monotonic() - self._activation_time >= self._weight_ramp_duration
+        if ready and not self._arm_ready_reported:
+            print(
+                "Unitree arm_sdk preparation pose ready; A+X teleoperation is now enabled",
+                flush=True,
+            )
+            self._arm_ready_reported = True
+        return ready
 
     def _safe_stop(self, request_damp: bool) -> list[str]:
         errors = []

@@ -34,6 +34,7 @@ class TeleopPolicy(Policy):
         activate_keyboard_listener: bool = True,
         activation_hold_duration: float = 0.5,
         resume_max_joint_delta: float = 0.005,
+        pre_activation_upper_body_pose: Optional[np.ndarray] = None,
     ):
         if activate_keyboard_listener:
             from decoupled_wbc.control.utils.keyboard_dispatcher import KeyboardListenerSubscriber
@@ -67,7 +68,23 @@ class TeleopPolicy(Policy):
         self._latest_robot_q: Optional[np.ndarray] = None
         self._startup_reference_synced = False
         self._held_body_q = robot_model.default_body_pose.copy()
-        self._held_upper_body_pose = robot_model.get_initial_upper_body_pose().copy()
+        initial_upper_body_pose = robot_model.get_initial_upper_body_pose().copy()
+        if pre_activation_upper_body_pose is not None:
+            pre_activation_upper_body_pose = np.asarray(
+                pre_activation_upper_body_pose, dtype=np.float64
+            )
+            if pre_activation_upper_body_pose.shape != initial_upper_body_pose.shape:
+                raise ValueError(
+                    "pre_activation_upper_body_pose must match the upper-body shape "
+                    f"{initial_upper_body_pose.shape}, got {pre_activation_upper_body_pose.shape}"
+                )
+            initial_upper_body_pose = pre_activation_upper_body_pose.copy()
+        self._pre_activation_upper_body_pose = (
+            None
+            if pre_activation_upper_body_pose is None
+            else pre_activation_upper_body_pose.copy()
+        )
+        self._held_upper_body_pose = initial_upper_body_pose
         self._last_safe_upper_target = self._held_upper_body_pose.copy()
 
         self.latest_left_wrist_data = np.eye(4)
@@ -91,11 +108,18 @@ class TeleopPolicy(Policy):
         if not self._startup_reference_synced:
             upper_indices = self.robot_model.get_joint_group_indices("upper_body")
             self._held_body_q = q.copy()
-            self._held_upper_body_pose = q[upper_indices].copy()
+            if self._pre_activation_upper_body_pose is None:
+                self._held_upper_body_pose = q[upper_indices].copy()
+            else:
+                self._held_upper_body_pose = self._pre_activation_upper_body_pose.copy()
+                self._held_body_q[upper_indices] = self._held_upper_body_pose
             self._last_safe_upper_target = self._held_upper_body_pose.copy()
             self.retargeting_ik.reset(reference_full_q=self._held_body_q)
             self._startup_reference_synced = True
-            print("Teleop startup reference synchronized from robot state")
+            if self._pre_activation_upper_body_pose is None:
+                print("Teleop startup reference synchronized from robot state")
+            else:
+                print("Teleop holding configured upper-body preparation pose before A+X")
 
     def set_lower_body_policy_active(self, active: bool) -> None:
         """Synchronize the confirmed lower-body state and enforce activation ordering."""
@@ -339,7 +363,12 @@ class TeleopPolicy(Policy):
         self._latest_robot_q = None
         self._startup_reference_synced = False
         self._held_body_q = self.robot_model.default_body_pose.copy()
-        self._held_upper_body_pose = self.robot_model.get_initial_upper_body_pose().copy()
+        if self._pre_activation_upper_body_pose is None:
+            self._held_upper_body_pose = self.robot_model.get_initial_upper_body_pose().copy()
+        else:
+            self._held_upper_body_pose = self._pre_activation_upper_body_pose.copy()
+            upper_indices = self.robot_model.get_joint_group_indices("upper_body")
+            self._held_body_q[upper_indices] = self._held_upper_body_pose
         self._last_safe_upper_target = self._held_upper_body_pose.copy()
         self._activation_deadline = None
         self._resume_ramp_deadline = None

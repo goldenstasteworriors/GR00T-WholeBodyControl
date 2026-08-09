@@ -49,6 +49,21 @@ def main(config: TeleopConfig):
         )
     else:
         print("running teleop policy, waiting teleop policy to be initialized...")
+        pre_activation_upper_body_pose = None
+        if (
+            config.lower_body_controller == "unitree_loco"
+            and config.unitree_loco_arm_control_enabled
+        ):
+            preparation_body_pose = robot_model.initial_body_pose.copy()
+            preparation_body_pose[robot_model.dof_index("left_elbow_joint")] = (
+                config.startup_final_elbow_angle
+            )
+            preparation_body_pose[robot_model.dof_index("right_elbow_joint")] = (
+                config.startup_final_elbow_angle
+            )
+            pre_activation_upper_body_pose = preparation_body_pose[
+                robot_model.get_joint_group_indices("upper_body")
+            ]
         retargeting_ik = TeleopRetargetingIK(
             robot_model=robot_model,
             left_hand_ik_solver=left_hand_ik_solver,
@@ -66,6 +81,7 @@ def main(config: TeleopConfig):
             enable_real_device=config.enable_real_device,
             replay_data_path=config.teleop_replay_path,
             pico_vis_smpl=config.pico_vis_smpl,
+            pre_activation_upper_body_pose=pre_activation_upper_body_pose,
         )
 
     # Create a publisher for the navigation commands

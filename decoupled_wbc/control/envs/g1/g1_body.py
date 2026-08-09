@@ -69,7 +69,7 @@ class G1Body(Env):
 
     def lower_body_active(self) -> bool:
         if isinstance(self.body_command_sender, UnitreeLocoArmCommandSender):
-            return self.body_command_sender.active
+            return self.body_command_sender.operator_ready()
         return False
 
     def close(self) -> None:
