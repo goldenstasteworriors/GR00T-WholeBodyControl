@@ -179,6 +179,10 @@ class UnitreeLocoArmCommandSender:
         self._max_linear_velocity = float(config.get("unitree_loco_max_linear_velocity", 0.5))
         self._max_angular_velocity = float(config.get("unitree_loco_max_angular_velocity", 1.0))
         self._weight_ramp_duration = float(config.get("unitree_arm_weight_ramp_duration", 2.0))
+        self._active_fsm_ids = {
+            int(fsm_id)
+            for fsm_id in config.get("unitree_loco_active_fsm_ids", (500, 501, 802))
+        }
         self._activation_time = 0.0
 
     @staticmethod
@@ -322,6 +326,35 @@ class UnitreeLocoArmCommandSender:
             )
             self._last_wait_log = now
 
+    def _attach_to_existing_locomotion(self, now: float) -> bool:
+        """Attach arm/velocity commands without changing an active firmware FSM."""
+        fsm_id = self._query_fsm_id()
+        if fsm_id not in self._active_fsm_ids:
+            return False
+
+        stable, reason = self._robot_stability(now)
+        if not stable:
+            raise RuntimeError(
+                "Cannot attach to Unitree official locomotion "
+                f"fsm_id={fsm_id}: {reason}"
+            )
+
+        self._release_arms()
+        self._stop_move()
+        self.active = True
+        self._activation_requested = False
+        self._activation_stage = "active"
+        self._activation_deadline = 0.0
+        self._last_fsm_id = fsm_id
+        self._locomotion_zeroed = True
+        self._activation_time = now
+        print(
+            "Unitree official loco attached to existing firmware control "
+            f"(fsm_id={fsm_id}); no FSM transition requested",
+            flush=True,
+        )
+        return True
+
     def set_active(self, active: bool, emergency: bool = False) -> None:
         active = bool(active)
         if active and (self.active or self._activation_requested):
@@ -330,6 +363,8 @@ class UnitreeLocoArmCommandSender:
             return
         if active:
             now = time.monotonic()
+            if self._attach_to_existing_locomotion(now):
+                return
             self.active = False
             self._activation_requested = True
             self._activation_deadline = now + self._activation_timeout
