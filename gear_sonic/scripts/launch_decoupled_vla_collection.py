@@ -801,7 +801,9 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     if config.camera_viewer:
         _send_to_target(f"{SESSION_NAME}:collection.3", viewer_cmd, wait=1.0)
     _send_to_target(f"{SESSION_NAME}:collection.1", exporter_cmd, wait=1.0)
-    subprocess.run(["tmux", "select-pane", "-t", f"{SESSION_NAME}:collection.1"])
+    # Keep the raw-keyboard control pane focused when attaching. This makes
+    # the unconditional Space emergency stop available even in PICO mode.
+    subprocess.run(["tmux", "select-pane", "-t", f"{SESSION_NAME}:collection.0"])
 
     print()
     print("=" * 72)
@@ -831,6 +833,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         print(f"    Unitree startup target: {target_mode}")
         print("    PICO: click both thumbsticks = unconditional emergency Damp (FSM 1)")
         print("    PICO: A+B+X+Y starts; pressing it again also requests emergency Damp")
+        print("    keyboard: Space in the control pane = unconditional emergency Damp")
         print(
             "    navigation: "
             f"{'enabled' if config.unitree_loco_navigation_enabled else 'ZERO ONLY'}; "
@@ -838,7 +841,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
             f"{'enabled' if config.unitree_loco_arm_control_enabled else 'disabled'}"
         )
     if config.keyboard_lower_body_control:
-        print("    control pane: G start/toggle emergency, Space emergency stop")
+        print("    control pane: G start/toggle emergency")
         print("    control pane: hold W/S forward, A/D lateral, Q/E yaw; Z zero")
         print("    control pane: C start/save recording, X discard recording")
         print(

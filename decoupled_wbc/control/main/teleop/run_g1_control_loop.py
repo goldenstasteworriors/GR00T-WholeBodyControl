@@ -89,11 +89,12 @@ def main(config: ControlLoopConfig):
     keyboard_estop = KeyboardEStop()
     sim_reset_keyboard_pub = SimResetKeyboardPublisher(sim_reset_pub)
     keyboard_loco_controller = None
-    if config.keyboard_lower_body_control:
+    if config.lower_body_controller == "unitree_loco":
         keyboard_loco_controller = UnitreeLocoKeyboardController(
             max_linear_velocity=config.unitree_loco_max_linear_velocity,
             max_angular_velocity=config.unitree_loco_max_angular_velocity,
             command_timeout=config.keyboard_loco_command_timeout,
+            full_control_enabled=config.keyboard_lower_body_control,
         )
     if config.keyboard_dispatcher_type == "raw":
         dispatcher = KeyboardDispatcher()
