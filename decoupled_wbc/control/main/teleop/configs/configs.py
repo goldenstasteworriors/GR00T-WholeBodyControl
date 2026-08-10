@@ -69,6 +69,9 @@ def override_wbc_config(
         "unitree_loco_command_frequency": config.unitree_loco_command_frequency,
         "unitree_loco_navigation_enabled": config.unitree_loco_navigation_enabled,
         "unitree_loco_arm_control_enabled": config.unitree_loco_arm_control_enabled,
+        "unitree_loco_waist_lock_enabled": config.unitree_loco_waist_lock_enabled,
+        "unitree_loco_waist_lock_kp": config.unitree_loco_waist_lock_kp,
+        "unitree_loco_waist_lock_kd": config.unitree_loco_waist_lock_kd,
         "unitree_loco_max_linear_velocity": config.unitree_loco_max_linear_velocity,
         "unitree_loco_max_angular_velocity": config.unitree_loco_max_angular_velocity,
         "unitree_arm_weight_ramp_duration": config.unitree_arm_weight_ramp_duration,
@@ -169,6 +172,15 @@ class BaseConfig(ArgsConfigTemplate):
 
     unitree_loco_arm_control_enabled: bool = True
     """Hold a preparation pose through ``rt/arm_sdk`` before A+X teleoperation."""
+
+    unitree_loco_waist_lock_enabled: bool = True
+    """Lock all three waist joints at their configured default angles through ``rt/arm_sdk``."""
+
+    unitree_loco_waist_lock_kp: float = 60.0
+    """Position gain for the three waist joints locked through ``rt/arm_sdk``."""
+
+    unitree_loco_waist_lock_kd: float = 1.5
+    """Velocity gain for the three waist joints locked through ``rt/arm_sdk``."""
 
     unitree_loco_max_linear_velocity: float = 0.05
     """Absolute official-loco x/y velocity limit in m/s."""
@@ -312,7 +324,7 @@ class BaseConfig(ArgsConfigTemplate):
             if self.env_type != "real":
                 raise ValueError("unitree_loco is a real-robot-only lower-body controller")
             if self.enable_waist:
-                raise ValueError("unitree_loco must retain waist control; disable waist IK")
+                raise ValueError("unitree_loco waist lock requires waist IK to remain disabled")
             positive_values = {
                 "unitree_loco_command_frequency": self.unitree_loco_command_frequency,
                 "unitree_loco_start_retry_interval": self.unitree_loco_start_retry_interval,
@@ -320,6 +332,7 @@ class BaseConfig(ArgsConfigTemplate):
                 "unitree_loco_state_timeout": self.unitree_loco_state_timeout,
                 "unitree_loco_max_leg_velocity": self.unitree_loco_max_leg_velocity,
                 "unitree_loco_max_torso_tilt": self.unitree_loco_max_torso_tilt,
+                "unitree_loco_waist_lock_kp": self.unitree_loco_waist_lock_kp,
             }
             invalid = [name for name, value in positive_values.items() if value <= 0.0]
             if invalid:
@@ -329,6 +342,7 @@ class BaseConfig(ArgsConfigTemplate):
                 "unitree_loco_stand_duration": self.unitree_loco_stand_duration,
                 "unitree_loco_stability_duration": self.unitree_loco_stability_duration,
                 "unitree_arm_weight_ramp_duration": self.unitree_arm_weight_ramp_duration,
+                "unitree_loco_waist_lock_kd": self.unitree_loco_waist_lock_kd,
             }
             invalid = [name for name, value in nonnegative_values.items() if value < 0.0]
             if invalid:

@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -33,6 +34,10 @@ def _make_sender() -> UnitreeLocoArmCommandSender:
     sender._max_angular_velocity = 0.1
     sender._navigation_enabled = False
     sender._arm_control_enabled = False
+    sender._waist_lock_enabled = False
+    sender._waist_lock_targets = np.zeros(3)
+    sender._waist_lock_kp = 60.0
+    sender._waist_lock_kd = 1.5
     sender._weight_ramp_duration = 2.0
     sender._arm_preparing = False
     sender._arm_preparation_started = 0.0
@@ -117,6 +122,49 @@ def test_arm_output_is_enabled_during_locked_standing_preparation():
 
     assert sender._arm_output_active()
     assert not sender.active
+
+
+def test_waist_lock_uses_default_targets_instead_of_wbc_or_ik_commands():
+    sender = _make_sender()
+    sender._waist_lock_enabled = True
+    sender._waist_lock_targets = np.array([0.1, -0.2, 0.3])
+    sender._arm_preparation_complete = True
+    sender.low_cmd = SimpleNamespace(
+        motor_cmd=[
+            SimpleNamespace(q=0.0, dq=0.0, tau=0.0, kp=0.0, kd=0.0)
+            for _ in range(30)
+        ],
+        crc=0,
+    )
+    sender.crc = Mock()
+    sender.crc.Crc.return_value = 123
+    sender.publisher = Mock()
+
+    cmd_q = np.zeros(29)
+    cmd_q[12:15] = [1.1, 1.2, 1.3]
+    sender.send_command(cmd_q, np.ones(29), np.ones(29))
+
+    for motor_index, target in zip(sender.WAIST_MOTOR_INDICES, [0.1, -0.2, 0.3]):
+        motor = sender.low_cmd.motor_cmd[motor_index]
+        assert motor.q == target
+        assert motor.dq == 0.0
+        assert motor.tau == 0.0
+        assert motor.kp == 60.0
+        assert motor.kd == 1.5
+    assert sender.low_cmd.motor_cmd[sender.ARM_WEIGHT_INDEX].q == 1.0
+    assert sender.low_cmd.crc == 123
+    sender.publisher.Write.assert_called_once_with(sender.low_cmd)
+
+
+def test_waist_lock_alone_requires_preparation_before_operator_ready():
+    sender = _make_sender()
+    sender.active = True
+    sender._waist_lock_enabled = True
+
+    assert not sender.operator_ready()
+
+    sender._arm_preparation_complete = True
+    assert sender.operator_ready()
 
 
 def test_stable_locked_standing_starts_arm_preparation_before_fsm_501():
