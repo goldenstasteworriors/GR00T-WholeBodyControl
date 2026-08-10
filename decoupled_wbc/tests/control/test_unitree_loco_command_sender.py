@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -38,27 +37,7 @@ def _make_sender() -> UnitreeLocoArmCommandSender:
     sender._arm_preparing = False
     sender._arm_preparation_started = 0.0
     sender._arm_preparation_complete = False
-    sender._automatic_arm_preparation_allowed = True
-    sender._last_arm_wait_log = 0.0
     return sender
-
-
-def _configure_arm_output(sender: UnitreeLocoArmCommandSender) -> None:
-    sender.config = {
-        "MOTOR2JOINT": {index: index for index in sender.ARM_MOTOR_INDICES},
-        "MOTOR_KP": [0.0] * 30,
-        "MOTOR_KD": [0.0] * 30,
-    }
-    sender.low_cmd = SimpleNamespace(
-        motor_cmd=[
-            SimpleNamespace(q=0.0, dq=0.0, tau=0.0, kp=0.0, kd=0.0)
-            for _ in range(30)
-        ],
-        crc=0,
-    )
-    sender.crc = Mock()
-    sender.crc.Crc.return_value = 123
-    sender.publisher = Mock()
 
 
 def test_startup_begins_with_damp_without_private_control_authority_rpc():
@@ -71,7 +50,7 @@ def test_startup_begins_with_damp_without_private_control_authority_rpc():
     ):
         sender.set_active(True)
 
-    sender._release_arms.assert_not_called()
+    sender._release_arms.assert_called_once_with()
     sender.loco.SetFsmId.assert_called_once_with(1)
     sender.loco._Call.assert_not_called()
     assert sender._activation_requested
@@ -140,52 +119,16 @@ def test_arm_output_is_enabled_during_locked_standing_preparation():
     assert not sender.active
 
 
-def test_arm_preparation_starts_and_finishes_without_lower_body_activation():
+def test_arm_output_is_disabled_before_lower_body_startup():
     sender = _make_sender()
     sender._arm_control_enabled = True
-    _configure_arm_output(sender)
-    cmd = np.zeros(29)
 
-    with patch(
-        "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
-        side_effect=[10.0, 12.0],
-    ):
-        sender.send_command(cmd, cmd, cmd)
-        assert sender._arm_preparing
-        assert not sender._arm_preparation_complete
-        assert sender.low_cmd.motor_cmd[sender.ARM_WEIGHT_INDEX].q == 0.0
-        sender.send_command(cmd, cmd, cmd)
-
-    assert not sender._arm_preparing
-    assert sender._arm_preparation_complete
-    assert sender.low_cmd.motor_cmd[sender.ARM_WEIGHT_INDEX].q == 1.0
-    assert sender.publisher.Write.call_count == 2
-    sender.loco.SetFsmId.assert_not_called()
-    assert not sender._activation_requested
+    assert not sender._arm_output_active()
 
 
-def test_lower_body_start_waits_for_automatic_arm_preparation():
+def test_stable_locked_standing_starts_arm_preparation_before_fsm_501():
     sender = _make_sender()
     sender._arm_control_enabled = True
-    sender._set_activation_stage = Mock()
-
-    with patch(
-        "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
-        side_effect=[10.0, 11.0],
-    ):
-        sender.set_active(True)
-        sender._arm_preparation_complete = True
-        sender.set_active(True)
-
-    sender.loco.SetFsmId.assert_called_once_with(1)
-    sender._release_arms.assert_not_called()
-    assert sender._activation_requested
-
-
-def test_stable_locked_standing_starts_fsm_501_after_arms_are_ready():
-    sender = _make_sender()
-    sender._arm_control_enabled = True
-    sender._arm_preparation_complete = True
     sender._activation_requested = True
     sender._activation_stage = "wait_stand"
     sender._activation_deadline = 20.0
@@ -201,8 +144,10 @@ def test_stable_locked_standing_starts_fsm_501_after_arms_are_ready():
     ):
         sender.update_status()
 
-    assert sender._activation_stage == "wait_locomotion"
-    sender.loco.SetFsmId.assert_called_once_with(501)
+    assert sender._activation_stage == "prepare_arms"
+    assert sender._arm_preparing
+    assert sender._arm_preparation_started == 10.0
+    sender.loco.SetFsmId.assert_not_called()
 
 
 def test_transitional_fsm_does_not_start_arm_preparation():
@@ -228,6 +173,51 @@ def test_transitional_fsm_does_not_start_arm_preparation():
     sender.loco.SetFsmId.assert_not_called()
 
 
+def test_fsm_501_is_requested_only_after_arms_prepare_and_body_resettles():
+    sender = _make_sender()
+    sender._arm_control_enabled = True
+    sender._arm_preparing = True
+    sender._arm_preparation_started = 7.0
+    sender._activation_requested = True
+    sender._activation_stage = "prepare_arms"
+    sender._activation_deadline = 20.0
+    sender._query_fsm_id = Mock(return_value=4)
+    sender._stable_for_required_duration = Mock(return_value=(True, "stable"))
+
+    with patch(
+        "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
+        return_value=10.0,
+    ):
+        sender.update_status()
+
+    assert sender._arm_preparation_complete
+    assert not sender._arm_preparing
+    sender.loco.SetFsmId.assert_called_once_with(501)
+    assert sender._activation_stage == "wait_locomotion"
+
+
+def test_fsm_501_is_not_requested_while_arm_weight_is_still_ramping():
+    sender = _make_sender()
+    sender._arm_control_enabled = True
+    sender._arm_preparing = True
+    sender._arm_preparation_started = 7.0
+    sender._activation_requested = True
+    sender._activation_stage = "prepare_arms"
+    sender._activation_deadline = 20.0
+    sender._query_fsm_id = Mock(return_value=4)
+    sender._log_waiting = Mock()
+
+    with patch(
+        "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
+        return_value=8.5,
+    ):
+        sender.update_status()
+
+    sender.loco.SetFsmId.assert_not_called()
+    assert sender._arm_preparing
+    assert not sender._arm_preparation_complete
+
+
 def test_emergency_stop_requests_damp_without_following_move():
     sender = _make_sender()
     sender.active = True
@@ -239,4 +229,3 @@ def test_emergency_stop_requests_damp_without_following_move():
     sender.loco.SetVelocity.assert_not_called()
     assert not sender.active
     assert not sender._activation_requested
-    assert not sender._automatic_arm_preparation_allowed
