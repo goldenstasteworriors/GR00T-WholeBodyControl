@@ -115,13 +115,11 @@ class BodyCommandSender:
 
 
 class UnitreeLocoArmCommandSender:
-    """Use Unitree loco for the legs and ``rt/arm_sdk`` for the waist and arms."""
+    """Use Unitree loco for the lower body and ``rt/arm_sdk`` for both arms."""
 
-    WAIST_MOTOR_INDICES = (12, 13, 14)
     ARM_MOTOR_INDICES = tuple(range(15, 29))
     ARM_WEIGHT_INDEX = 29
     LEG_JOINT_COUNT = 12
-
     def __init__(self, config: Dict):
         import unitree_sdk2py.g1.loco.g1_loco_client as g1_loco_client
         from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
@@ -178,21 +176,6 @@ class UnitreeLocoArmCommandSender:
         self._arm_control_enabled = bool(
             config.get("unitree_loco_arm_control_enabled", False)
         )
-        self._waist_lock_enabled = bool(
-            config.get("unitree_loco_waist_lock_enabled", True)
-        )
-        self._waist_lock_targets = np.asarray(
-            [config["DEFAULT_MOTOR_ANGLES"][i] for i in self.WAIST_MOTOR_INDICES],
-            dtype=np.float64,
-        )
-        if not np.isfinite(self._waist_lock_targets).all():
-            raise ValueError("Unitree waist lock targets must be finite")
-        self._waist_lock_kp = float(config.get("unitree_loco_waist_lock_kp", 60.0))
-        self._waist_lock_kd = float(config.get("unitree_loco_waist_lock_kd", 1.5))
-        if not np.isfinite(self._waist_lock_kp) or self._waist_lock_kp <= 0.0:
-            raise ValueError("unitree_loco_waist_lock_kp must be finite and positive")
-        if not np.isfinite(self._waist_lock_kd) or self._waist_lock_kd < 0.0:
-            raise ValueError("unitree_loco_waist_lock_kd must be finite and nonnegative")
         self._weight_ramp_duration = float(config.get("unitree_arm_weight_ramp_duration", 2.0))
         self._activation_time = 0.0
         self._arm_preparing = False
@@ -295,16 +278,13 @@ class UnitreeLocoArmCommandSender:
         self._arm_preparation_complete = False
 
     def operator_ready(self) -> bool:
-        """Return true after locomotion and optional arm/waist preparation are ready."""
+        """Return true after locomotion and the optional arm preparation are ready."""
         if not self.active:
             return False
-        return not self._sdk_control_enabled() or self._arm_preparation_complete
-
-    def _sdk_control_enabled(self) -> bool:
-        return self._arm_control_enabled or self._waist_lock_enabled
+        return not self._arm_control_enabled or self._arm_preparation_complete
 
     def _arm_output_active(self) -> bool:
-        return self._sdk_control_enabled() and (
+        return self._arm_control_enabled and (
             self._arm_preparing or self._arm_preparation_complete or self.active
         )
 
@@ -319,7 +299,7 @@ class UnitreeLocoArmCommandSender:
             else f"FSM {self._start_fsm_id}"
         )
         print(
-            "Unitree locked standing confirmed; preparing arm_sdk arms/waist "
+            "Unitree locked standing confirmed; moving arms to preparation pose "
             f"for {self._weight_ramp_duration:.1f}s before {destination}",
             flush=True,
         )
@@ -410,8 +390,8 @@ class UnitreeLocoArmCommandSender:
                 raise
             self._set_activation_stage("wait_damp", now)
             startup_path = f"Damp({self._damp_fsm_id}) -> StandUp({self._stand_fsm_id})"
-            if self._sdk_control_enabled():
-                startup_path += " -> prepare arms/waist"
+            if self._arm_control_enabled:
+                startup_path += " -> prepare arms"
             if self._start_fsm_id is None:
                 startup_path += " -> locked standing"
             else:
@@ -487,7 +467,7 @@ class UnitreeLocoArmCommandSender:
             if not stable:
                 self._log_waiting(now, reason)
                 return
-            if self._sdk_control_enabled():
+            if self._arm_control_enabled:
                 self._start_arm_preparation(now)
             else:
                 self._finish_standing_setup(now)
@@ -517,7 +497,7 @@ class UnitreeLocoArmCommandSender:
             self._arm_preparing = False
             self._arm_preparation_complete = True
             print(
-                "Unitree arm_sdk arms/waist preparation ready in locked standing",
+                "Unitree arm_sdk preparation pose ready in locked standing",
                 flush=True,
             )
             self._finish_standing_setup(now)
@@ -590,27 +570,14 @@ class UnitreeLocoArmCommandSender:
     def send_command(self, cmd_q: np.ndarray, cmd_dq: np.ndarray, cmd_tau: np.ndarray):
         if not self._arm_output_active():
             return
-
-        if self._waist_lock_enabled:
-            for motor_index, target in zip(
-                self.WAIST_MOTOR_INDICES, self._waist_lock_targets
-            ):
-                motor = self.low_cmd.motor_cmd[motor_index]
-                motor.q = float(target)
-                motor.dq = 0.0
-                motor.tau = 0.0
-                motor.kp = self._waist_lock_kp
-                motor.kd = self._waist_lock_kd
-
-        if self._arm_control_enabled:
-            for motor_index in self.ARM_MOTOR_INDICES:
-                joint_index = self.config["MOTOR2JOINT"][motor_index]
-                motor = self.low_cmd.motor_cmd[motor_index]
-                motor.q = float(cmd_q[joint_index])
-                motor.dq = float(cmd_dq[joint_index])
-                motor.tau = float(cmd_tau[joint_index])
-                motor.kp = float(self.config["MOTOR_KP"][motor_index])
-                motor.kd = float(self.config["MOTOR_KD"][motor_index])
+        for motor_index in self.ARM_MOTOR_INDICES:
+            joint_index = self.config["MOTOR2JOINT"][motor_index]
+            motor = self.low_cmd.motor_cmd[motor_index]
+            motor.q = float(cmd_q[joint_index])
+            motor.dq = float(cmd_dq[joint_index])
+            motor.tau = float(cmd_tau[joint_index])
+            motor.kp = float(self.config["MOTOR_KP"][motor_index])
+            motor.kd = float(self.config["MOTOR_KD"][motor_index])
         if self._arm_preparation_complete or self._weight_ramp_duration <= 0.0:
             weight = 1.0
         else:

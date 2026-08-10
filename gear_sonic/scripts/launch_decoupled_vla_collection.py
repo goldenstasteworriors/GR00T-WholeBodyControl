@@ -226,15 +226,6 @@ class DecoupledVLACollectionLaunchConfig:
     unitree_loco_arm_control_enabled: bool = True
     """Hold the upper-body preparation pose through ``rt/arm_sdk`` before A+X."""
 
-    unitree_loco_waist_lock_enabled: bool = True
-    """Lock all three waist joints at their default angles through ``rt/arm_sdk``."""
-
-    unitree_loco_waist_lock_kp: float = 60.0
-    """Position gain for the official-loco waist lock."""
-
-    unitree_loco_waist_lock_kd: float = 1.5
-    """Velocity gain for the official-loco waist lock."""
-
     unitree_loco_max_linear_velocity: float = 0.05
     """Maximum official-loco x/y speed after navigation is explicitly enabled."""
 
@@ -560,11 +551,6 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.unitree_loco_max_torso_tilt),
         *_bool_arg("unitree-loco-navigation-enabled", config.unitree_loco_navigation_enabled),
         *_bool_arg("unitree-loco-arm-control-enabled", config.unitree_loco_arm_control_enabled),
-        *_bool_arg("unitree-loco-waist-lock-enabled", config.unitree_loco_waist_lock_enabled),
-        "--unitree-loco-waist-lock-kp",
-        str(config.unitree_loco_waist_lock_kp),
-        "--unitree-loco-waist-lock-kd",
-        str(config.unitree_loco_waist_lock_kd),
         "--unitree-loco-max-linear-velocity",
         str(config.unitree_loco_max_linear_velocity),
         "--unitree-loco-max-angular-velocity",
@@ -849,9 +835,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
             "    navigation: "
             f"{'enabled' if config.unitree_loco_navigation_enabled else 'ZERO ONLY'}; "
             "arm_sdk: "
-            f"{'enabled' if config.unitree_loco_arm_control_enabled else 'disabled'}; "
-            "waist lock: "
-            f"{'enabled' if config.unitree_loco_waist_lock_enabled else 'disabled'}"
+            f"{'enabled' if config.unitree_loco_arm_control_enabled else 'disabled'}"
         )
     if config.keyboard_lower_body_control:
         print("    control pane: G start/toggle emergency, Space emergency stop")
