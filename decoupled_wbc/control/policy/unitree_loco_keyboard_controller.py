@@ -28,7 +28,8 @@ class UnitreeLocoKeyboardController:
         self._last_motion_key_time = 0.0
         self._reported_active = False
         self._start_pending = False
-        self._emergency_pending = False
+        self._emergency_request_pending = False
+        self._emergency_latched = False
         self._lock = threading.Lock()
 
     def _zero_velocity(self) -> None:
@@ -49,9 +50,16 @@ class UnitreeLocoKeyboardController:
         with self._lock:
             if key == "space":
                 self._start_pending = False
-                self._emergency_pending = True
+                self._emergency_request_pending = True
+                self._emergency_latched = True
                 self._zero_velocity()
-                print("Keyboard loco emergency stop requested", flush=True)
+                print(
+                    "Keyboard loco emergency stop latched; restart required to re-enable",
+                    flush=True,
+                )
+                return
+
+            if self._emergency_latched:
                 return
 
             if not self._full_control_enabled:
@@ -60,7 +68,7 @@ class UnitreeLocoKeyboardController:
             if key == "g":
                 if self._reported_active or self._start_pending:
                     self._start_pending = False
-                    self._emergency_pending = True
+                    self._emergency_request_pending = True
                     self._zero_velocity()
                     print("Keyboard loco emergency stop requested", flush=True)
                 else:
@@ -129,10 +137,12 @@ class UnitreeLocoKeyboardController:
                         flush=True,
                     )
                 goal["navigate_cmd"] = self._velocity.copy()
-            if self._emergency_pending:
+            if self._emergency_latched:
+                goal["set_policy_action"] = False
+            if self._emergency_request_pending:
                 goal["emergency_stop"] = True
                 goal["set_policy_action"] = False
-                self._emergency_pending = False
+                self._emergency_request_pending = False
             elif self._full_control_enabled and self._start_pending:
                 goal["set_policy_action"] = True
             return goal
