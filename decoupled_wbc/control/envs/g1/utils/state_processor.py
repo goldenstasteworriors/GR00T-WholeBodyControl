@@ -5,6 +5,7 @@ from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
     MotionSwitcherClient,
 )
 from unitree_sdk2py.core.channel import ChannelSubscriber
+from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorStates_
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_ as LowState_go
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import (
     HandState_,
@@ -141,3 +142,42 @@ class HandStateProcessor:
             .reshape(1, -1)
         )
         return state_data
+
+
+class InspireHandStateProcessor:
+    """Read RH56DFTP Inspire hand state from Unitree's shared DDS topic."""
+
+    def __init__(self, is_left: bool = True):
+        self.is_left = is_left
+        self.state_sub = ChannelSubscriber("rt/inspire/state", MotorStates_)
+        self.state_sub.Init(None, 0)
+        self.state_sub.Init(None, 0)
+        self.state = None
+        self.num_dof = 6
+        self.legacy_num_dof = 7
+
+    def _prepare_low_state(self) -> np.ndarray:
+        self.state = self.state_sub.Read()
+
+        if not self.state:
+            print("No inspire hand state received")
+            return np.zeros((1, self.legacy_num_dof * 4), dtype=np.float64)
+
+        offset = 6 if self.is_left else 0
+        state_size = len(self.state.states)
+        q = np.zeros(self.legacy_num_dof, dtype=np.float64)
+        dq = np.zeros(self.legacy_num_dof, dtype=np.float64)
+        tau_est = np.zeros(self.legacy_num_dof, dtype=np.float64)
+        ddq = np.zeros(self.legacy_num_dof, dtype=np.float64)
+
+        for i in range(self.num_dof):
+            idx = offset + i
+            if idx >= state_size:
+                break
+            motor_state = self.state.states[idx]
+            q[i] = motor_state.q
+            dq[i] = motor_state.dq
+            tau_est[i] = motor_state.tau_est
+            ddq[i] = motor_state.ddq
+
+        return np.concatenate([q, dq, tau_est, ddq], axis=0).reshape(1, -1)

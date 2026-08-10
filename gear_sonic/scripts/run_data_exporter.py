@@ -22,8 +22,16 @@ Usage (from repo root):
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 import json
+import math
+import shutil
+import struct
+import subprocess
+import tempfile
+import threading
 import time
+import wave
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -71,6 +79,9 @@ class SonicDataExporterConfig:
     data_collection_frequency: int = 50
     """Data collection frequency (Hz)."""
 
+    overwrite_existing_dataset: bool = False
+    """Delete and recreate the dataset directory if it already exists."""
+
 
     # Camera
     camera_host: str = "localhost"
@@ -103,6 +114,18 @@ class SonicDataExporterConfig:
     text_to_speech: bool = True
     """Use text-to-speech voice feedback."""
 
+    audio_cues: bool = True
+    """Play short local audio cues for record start, stop/save, and discard."""
+
+    audio_cue_volume: float = 0.35
+    """Audio cue volume in [0, 1]."""
+
+    profile_timing: bool = False
+    """Print periodic data exporter timing breakdown even when the loop does not miss."""
+
+    profile_interval: float = 1.0
+    """Seconds between timing profile log lines."""
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -115,6 +138,82 @@ class TimeDeltaException(Exception):
         self.reset_timeout_sec = reset_timeout_sec
         self.message = f"{self.failure_count} failures in {self.reset_timeout_sec} seconds"
         super().__init__(self.message)
+
+
+class AudioCue:
+    """Short best-effort local sound cues for data collection state changes."""
+
+    def __init__(self, volume: float = 0.35):
+        self.volume = max(0.0, min(1.0, float(volume)))
+        self._player = self._find_player()
+
+    @staticmethod
+    def _find_player() -> str | None:
+        for player in ("paplay", "aplay", "play"):
+            path = shutil.which(player)
+            if path is not None:
+                return path
+        return None
+
+    def play(self, cue: str) -> None:
+        thread = threading.Thread(target=self._play_blocking, args=(cue,), daemon=True)
+        thread.start()
+
+    def _play_blocking(self, cue: str) -> None:
+        patterns = {
+            "start": [(880, 0.08), (1175, 0.10)],
+            "stop": [(1175, 0.08), (880, 0.12)],
+            "discard": [(220, 0.12), (0, 0.05), (180, 0.18)],
+        }
+        pattern = patterns.get(cue)
+        if pattern is None:
+            return
+
+        if self._player is None:
+            print("\a", end="", flush=True)
+            return
+
+        wav_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                wav_path = tmp.name
+            self._write_wav(wav_path, pattern)
+            cmd = [self._player, wav_path]
+            if Path(self._player).name == "play":
+                cmd = [self._player, "-q", wav_path]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except Exception:
+            print("\a", end="", flush=True)
+        finally:
+            if wav_path is not None:
+                try:
+                    Path(wav_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    def _write_wav(self, path: str, pattern: list[tuple[int, float]]) -> None:
+        sample_rate = 44100
+        amplitude = int(32767 * self.volume)
+        frames = bytearray()
+        for freq, duration in pattern:
+            sample_count = int(sample_rate * duration)
+            for i in range(sample_count):
+                if freq <= 0:
+                    sample = 0
+                else:
+                    envelope = min(1.0, i / 400.0, (sample_count - i) / 400.0)
+                    sample = int(
+                        amplitude
+                        * envelope
+                        * math.sin(2.0 * math.pi * float(freq) * i / sample_rate)
+                    )
+                frames.extend(struct.pack("<h", sample))
+
+        with wave.open(path, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(bytes(frames))
 
 
 def unpack_pose_message(packed_data: bytes, topic: str = "pose") -> dict:
@@ -227,10 +326,16 @@ class GrootDataCollector:
         sonic_data_zmq_port: int = 5556,
         state_zmq_host: str = "localhost",
         state_zmq_port: int = 5557,
+        profile_timing: bool = False,
+        profile_interval: float = 1.0,
+        audio_cue: AudioCue | None = None,
     ):
         self.text_to_speech = text_to_speech
+        self.audio_cue = audio_cue
         self.frequency = frequency
         self.loop_period = 1.0 / frequency
+        self.profile_timing = profile_timing
+        self.profile_interval = profile_interval
         self.data_exporter = data_exporter
         self.robot_model = robot_model
 
@@ -280,6 +385,7 @@ class GrootDataCollector:
         )
 
         self._last_latency_log_time = 0.0
+        self._last_profile_log_time = time.monotonic()
         self._initial_yaw = None
 
         print(f"Recording to {self.data_exporter.meta.root}")
@@ -293,6 +399,10 @@ class GrootDataCollector:
             self.text_to_speech.print_and_say(message, say, blocking=blocking)
         else:
             print(message)
+
+    def _play_audio_cue(self, cue: str) -> None:
+        if self.audio_cue is not None:
+            self.audio_cue.play(cue)
 
     def _poll_state_zmq(self):
         """Poll the ``g1_debug`` ZMQ topic for robot state (non-blocking)."""
@@ -320,10 +430,12 @@ class GrootDataCollector:
             self._episode_state.change_state()
             if self._episode_state.get_state() == self._episode_state.RECORDING:
                 self._initial_yaw = None
+                self._play_audio_cue("start")
                 self._print_and_say(
                     f"Started recording {self.current_episode_index}", blocking=False
                 )
             elif self._episode_state.get_state() == self._episode_state.NEED_TO_SAVE:
+                self._play_audio_cue("stop")
                 self._print_and_say("Stopping recording, preparing to save", blocking=False)
             elif self._episode_state.get_state() == self._episode_state.IDLE:
                 self._print_and_say("Saved episode and back to idle state", blocking=False)
@@ -332,6 +444,7 @@ class GrootDataCollector:
                 self.data_exporter.save_episode_as_discarded()
                 self._episode_state.reset_state()
                 self._initial_yaw = None
+                self._play_audio_cue("discard")
                 self._print_and_say("Discarded episode", blocking=False)
 
     def _poll_sonic_zmq_messages(self):
@@ -874,6 +987,12 @@ class GrootDataCollector:
                         img_msg = self._image_subscriber.read()
                         if img_msg is not None:
                             self.latest_image_msg = img_msg
+                            timestamps = img_msg.get("timestamps", {})
+                            if timestamps:
+                                image_age = max(
+                                    time.time() - float(ts) for ts in timestamps.values()
+                                )
+                                self.telemetry.record_value("image_age", image_age)
 
                     with self.telemetry.timer("add_frame"):
                         self._add_data_frame()
@@ -892,6 +1011,14 @@ class GrootDataCollector:
                     self.telemetry.log_timing_info(
                         context="Data Exporter Loop Missed", threshold=0.001
                     )
+                elif self.profile_timing:
+                    now = time.monotonic()
+                    if now - self._last_profile_log_time >= self.profile_interval:
+                        self.telemetry.log_timing_info(
+                            context="Data Exporter Profile",
+                            threshold=0.0,
+                        )
+                        self._last_profile_log_time = now
 
         except KeyboardInterrupt:
             print("Data exporter terminated by user")
@@ -925,6 +1052,7 @@ def main(config: SonicDataExporterConfig):
                 modality_config[key] = value
 
     text_to_speech = TextToSpeech() if config.text_to_speech else None
+    audio_cue = AudioCue(volume=config.audio_cue_volume) if config.audio_cues else None
 
     robot_config = poll_robot_config_zmq(
         config.state_zmq_host, config.state_zmq_port, config.robot_config_timeout
@@ -937,6 +1065,7 @@ def main(config: SonicDataExporterConfig):
         modality_config=modality_config,
         task=config.task_prompt,
         script_config={**robot_config, "record_wrist_cameras": config.record_wrist_cameras},
+        overwrite_existing=config.overwrite_existing_dataset,
     )
 
     data_collector = GrootDataCollector(
@@ -950,6 +1079,9 @@ def main(config: SonicDataExporterConfig):
         sonic_data_zmq_port=config.sonic_zmq_port,
         state_zmq_host=config.state_zmq_host,
         state_zmq_port=config.state_zmq_port,
+        profile_timing=config.profile_timing,
+        profile_interval=config.profile_interval,
+        audio_cue=audio_cue,
     )
     data_collector.run()
 

@@ -176,6 +176,7 @@ find_package(Eigen3 REQUIRED)
 set(EXE_INCLUDES
   ${CMAKE_CURRENT_SOURCE_DIR}/include/
   ${ZMQ_INCLUDE_DIR}
+  ${MSGPACK_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIR}
 )
 
@@ -199,7 +200,7 @@ set(EXE_LIBS
 
 # build the main executable:
 add_executable(${EXECUTABLE_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/g1_deploy_onnx_ref.cpp)
-target_include_directories(${EXECUTABLE_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include/ ${PROJECT_SOURCE_DIR}/src)
+target_include_directories(${EXECUTABLE_NAME} PUBLIC ${EXE_INCLUDES} ${PROJECT_SOURCE_DIR}/src)
 
 target_link_directories(${EXECUTABLE_NAME} PRIVATE ${CUDA_LINK_DIRS})
 target_link_libraries(
@@ -249,7 +250,7 @@ file(GLOB_RECURSE TEST_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/*.cpp)
 add_executable(run_tests ${TEST_SRCS})
 target_link_directories(run_tests PRIVATE ${CUDA_LINK_DIRS})
 target_link_libraries(run_tests GTest::GTest GTest::Main ${EXE_LIBS})
-target_include_directories(run_tests PUBLIC ${EXE_INCLUDES})
+target_include_directories(run_tests PUBLIC ${EXE_INCLUDES} ${PROJECT_SOURCE_DIR}/src)
 
 # Setting our output directory and C++ standard
 set_target_properties(

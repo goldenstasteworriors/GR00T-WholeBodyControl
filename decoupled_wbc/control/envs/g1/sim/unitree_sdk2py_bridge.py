@@ -11,11 +11,13 @@ import scipy.spatial.transform
 from termcolor import colored
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
 from unitree_sdk2py.idl.default import (
+    unitree_go_msg_dds__MotorCmd_,
+    unitree_go_msg_dds__MotorState_,
     unitree_go_msg_dds__WirelessController_,
     unitree_hg_msg_dds__HandCmd_ as HandCmd_default,
     unitree_hg_msg_dds__HandState_ as HandState_default,
 )
-from unitree_sdk2py.idl.unitree_go.msg.dds_ import WirelessController_
+from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorCmds_, MotorStates_, WirelessController_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import HandCmd_, HandState_, OdoState_
 
 
@@ -93,6 +95,10 @@ class UnitreeSdk2Bridge:
         self.right_hand_state = HandState_default()
         self.right_hand_state_puber = ChannelPublisher("rt/dex3/right/state", HandState_)
         self.right_hand_state_puber.Init()
+        self.hand_type = config.get("HAND_TYPE", "dex3")
+        self.inspire_state = MotorStates_([])
+        self.inspire_state_puber = ChannelPublisher("rt/inspire/state", MotorStates_)
+        self.inspire_state_puber.Init()
 
         self.low_cmd_suber = ChannelSubscriber("rt/lowcmd", LowCmd_)
         self.low_cmd_suber.Init(self.LowCmdHandler, 1)
@@ -103,10 +109,17 @@ class UnitreeSdk2Bridge:
         self.right_hand_cmd = HandCmd_default()
         self.right_hand_cmd_suber = ChannelSubscriber("rt/dex3/right/cmd", HandCmd_)
         self.right_hand_cmd_suber.Init(self.RightHandCmdHandler, 1)
+        self.inspire_cmd = MotorCmds_([unitree_go_msg_dds__MotorCmd_() for _ in range(12)])
+        for cmd in self.inspire_cmd.cmds:
+            cmd.q = 1.0
+        self._sync_legacy_hand_cmds_from_inspire()
+        self.inspire_cmd_suber = ChannelSubscriber("rt/inspire/cmd", MotorCmds_)
+        self.inspire_cmd_suber.Init(self.InspireHandCmdHandler, 1)
 
         self.low_cmd_lock = threading.Lock()
         self.left_hand_cmd_lock = threading.Lock()
         self.right_hand_cmd_lock = threading.Lock()
+        self.inspire_cmd_lock = threading.Lock()
 
         self.wireless_controller = unitree_go_msg_dds__WirelessController_()
         self.wireless_controller_puber = ChannelPublisher(
@@ -147,6 +160,9 @@ class UnitreeSdk2Bridge:
         with self.right_hand_cmd_lock:
             self.right_hand_cmd_received = False
             self.new_right_hand_cmd = False
+        with self.inspire_cmd_lock:
+            self.inspire_cmd_received = False
+            self.new_inspire_cmd = False
 
     def LowCmdHandler(self, msg):
         with self.low_cmd_lock:
@@ -166,6 +182,13 @@ class UnitreeSdk2Bridge:
             self.right_hand_cmd_received = True
             self.new_right_hand_cmd = True
 
+    def InspireHandCmdHandler(self, msg):
+        with self.inspire_cmd_lock:
+            self.inspire_cmd = msg
+            self._sync_legacy_hand_cmds_from_inspire()
+            self.inspire_cmd_received = True
+            self.new_inspire_cmd = True
+
     def cmd_received(self):
         with self.low_cmd_lock:
             low_cmd_received = self.low_cmd_received
@@ -173,7 +196,14 @@ class UnitreeSdk2Bridge:
             left_hand_cmd_received = self.left_hand_cmd_received
         with self.right_hand_cmd_lock:
             right_hand_cmd_received = self.right_hand_cmd_received
-        return low_cmd_received or left_hand_cmd_received or right_hand_cmd_received
+        with self.inspire_cmd_lock:
+            inspire_cmd_received = self.inspire_cmd_received
+        return (
+            low_cmd_received
+            or left_hand_cmd_received
+            or right_hand_cmd_received
+            or inspire_cmd_received
+        )
 
     def PublishLowState(self, obs: Dict[str, any]):
         # publish body state
@@ -226,6 +256,17 @@ class UnitreeSdk2Bridge:
             self.right_hand_state.motor_state[i].dq = obs["right_hand_dq"][i]
         self.right_hand_state_puber.Write(self.right_hand_state)
 
+        self.inspire_state.states = []
+        for value in self._legacy_hand_q_to_inspire(obs["right_hand_q"]):
+            state = unitree_go_msg_dds__MotorState_()
+            state.q = float(value)
+            self.inspire_state.states.append(state)
+        for value in self._legacy_hand_q_to_inspire(obs["left_hand_q"]):
+            state = unitree_go_msg_dds__MotorState_()
+            state.q = float(value)
+            self.inspire_state.states.append(state)
+        self.inspire_state_puber.Write(self.inspire_state)
+
     def GetAction(self) -> Tuple[np.ndarray, bool, bool]:
         with self.low_cmd_lock:
             body_q = [self.low_cmd.motor_cmd[i].q for i in range(self.num_body_motor)]
@@ -233,18 +274,66 @@ class UnitreeSdk2Bridge:
             left_hand_q = [self.left_hand_cmd.motor_cmd[i].q for i in range(self.num_hand_motor)]
         with self.right_hand_cmd_lock:
             right_hand_q = [self.right_hand_cmd.motor_cmd[i].q for i in range(self.num_hand_motor)]
-        with self.low_cmd_lock and self.left_hand_cmd_lock and self.right_hand_cmd_lock:
-            is_new_action = self.new_low_cmd and self.new_left_hand_cmd and self.new_right_hand_cmd
-            if is_new_action:
-                self.new_low_cmd = False
-                self.new_left_hand_cmd = False
-                self.new_right_hand_cmd = False
+        if self.hand_type == "inspire":
+            with self.inspire_cmd_lock:
+                right_hand_q = self._inspire_hand_q_to_legacy(
+                    self._read_inspire_cmd_slice(0)
+                )
+                left_hand_q = self._inspire_hand_q_to_legacy(
+                    self._read_inspire_cmd_slice(6)
+                )
+                is_new_action = self.new_low_cmd and self.new_inspire_cmd
+                if is_new_action:
+                    self.new_low_cmd = False
+                    self.new_inspire_cmd = False
+        else:
+            with self.low_cmd_lock and self.left_hand_cmd_lock and self.right_hand_cmd_lock:
+                is_new_action = self.new_low_cmd and self.new_left_hand_cmd and self.new_right_hand_cmd
+                if is_new_action:
+                    self.new_low_cmd = False
+                    self.new_left_hand_cmd = False
+                    self.new_right_hand_cmd = False
 
         return (
             np.concatenate([body_q[:-7], left_hand_q, body_q[-7:], right_hand_q]),
             self.cmd_received(),
             is_new_action,
         )
+
+    @staticmethod
+    def _inspire_hand_q_to_legacy(q):
+        q = np.asarray(q, dtype=np.float64)
+        q = np.clip(q, 0.0, 1.0)
+        result = np.zeros(7, dtype=np.float64)
+        result[0:4] = 1.7 * (1.0 - q[0:4])
+        result[4] = 1.3 - q[5] * 1.4
+        result[5] = 0.5 * (1.0 - q[4])
+        return result
+
+    def _read_inspire_cmd_slice(self, offset):
+        values = np.ones(6, dtype=np.float64)
+        for i in range(6):
+            idx = offset + i
+            if idx < len(self.inspire_cmd.cmds):
+                values[i] = self.inspire_cmd.cmds[idx].q
+        return values
+
+    def _sync_legacy_hand_cmds_from_inspire(self):
+        right_hand_q = self._inspire_hand_q_to_legacy(self._read_inspire_cmd_slice(0))
+        left_hand_q = self._inspire_hand_q_to_legacy(self._read_inspire_cmd_slice(6))
+        for i, q in enumerate(left_hand_q[: self.num_hand_motor]):
+            self.left_hand_cmd.motor_cmd[i].q = float(q)
+        for i, q in enumerate(right_hand_q[: self.num_hand_motor]):
+            self.right_hand_cmd.motor_cmd[i].q = float(q)
+
+    @staticmethod
+    def _legacy_hand_q_to_inspire(q):
+        q = np.asarray(q, dtype=np.float64)
+        result = np.ones(6, dtype=np.float64)
+        result[0:4] = 1.0 - np.clip(q[0:4], 0.0, 1.7) / 1.7
+        result[4] = 1.0 - np.clip(q[5], 0.0, 0.5) / 0.5
+        result[5] = (1.3 - np.clip(q[4], -0.1, 1.3)) / 1.4
+        return np.clip(result, 0.0, 1.0)
 
     def PublishWirelessController(self):
         if self.joystick is not None:

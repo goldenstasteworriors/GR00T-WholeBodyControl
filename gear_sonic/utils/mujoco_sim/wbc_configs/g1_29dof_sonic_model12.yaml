@@ -9,6 +9,7 @@ DOMAIN_ID: 0 # Domain id
 # INTERFACE: "enxc8a3623c9cb7"
 INTERFACE: "lo"
 SIMULATOR: "mujoco"  # "robocasa"
+HAND_TYPE: "dex3"  # "dex3" or "inspire"
 
 USE_JOYSTICK: 0 # Simulate Unitree WirelessController using a gamepad (0: disable, 1: enable)
 JOYSTICK_TYPE: "xbox" # support "xbox" and "switch" gamepad layout

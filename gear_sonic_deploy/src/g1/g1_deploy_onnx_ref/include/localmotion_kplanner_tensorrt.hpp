@@ -169,18 +169,18 @@ private:
     // Input data buffers (pinned memory for efficient CPU ↔ GPU transfers)
     // ------------------------------------------------------------------
     TPinnedVector<float> context_qpos_values_;          ///< [4 × 36] Context frames (7 root + 29 joints each).
-    TPinnedVector<int64_t> mode_values_;                ///< [1] Locomotion mode.
+    TPinnedVector<int32_t> mode_values_;                ///< [1] Locomotion mode (TensorRT INT32).
     TPinnedVector<float> target_vel_values_;            ///< [1] Target speed (−1 = default).
     TPinnedVector<float> movement_direction_values_;    ///< [3] Movement direction unit vector.
     TPinnedVector<float> facing_direction_values_;      ///< [3] Facing direction unit vector.
-    TPinnedVector<int64_t> random_seed_values_;         ///< [1] Random seed.
+    TPinnedVector<int32_t> random_seed_values_;         ///< [1] Random seed (TensorRT INT32).
 
     // Version 1–2 additional inputs
     TPinnedVector<float> target_height_values_;         ///< [1] Target body height (−1 = default).
-    TPinnedVector<int64_t> has_specific_target_;        ///< [1] Whether specific waypoint target is set.
+    TPinnedVector<int32_t> has_specific_target_;        ///< [1] Whether specific waypoint target is set (TensorRT INT32).
     TPinnedVector<float> specific_target_positions_;    ///< [12] 4 waypoint positions × xyz.
     TPinnedVector<float> specific_target_headings_;     ///< [4]  4 waypoint heading angles.
-    TPinnedVector<int64_t> allowed_pred_num_tokens_;    ///< [11] Allowed prediction token mask.
+    TPinnedVector<int32_t> allowed_pred_num_tokens_;    ///< [11] Allowed prediction token mask (TensorRT INT32).
 
     // ------------------------------------------------------------------
     // Output data buffers (pinned memory)
