@@ -201,8 +201,13 @@ The tmux launcher also accepts `--camera-host`:
 ```sh
 python gear_sonic/scripts/launch_data_collection.py \
     --camera-host 192.168.123.164 \
-    --task-prompt "pick up the cup"
+    --task-prompt "pick up the cup" \
+    --enable-sonic-publish
 ```
+
+`--enable-sonic-publish` requests real-robot motor publishing. The onboard pane
+still requires an interactive confirmation before LowCmd is armed. Without the
+flag, deploy runs in inference-only `DISARMED` mode.
 
 ### ZMQ message format
 
@@ -372,11 +377,16 @@ Common options:
 | `--deploy-planner` | *(default)* | Custom planner model path for deploy.sh |
 | `--deploy-motion-data` | *(default)* | Custom motion data path for deploy.sh |
 | `--deploy-onboard` | `False` | Run C++ deploy on the G1 onboard computer over SSH |
+| `--enable-sonic-publish` | `False` | Explicitly request real-robot LowCmd publishing; still requires the onboard confirmation |
+| `--sonic-publish-max-runtime-s` | `3600` | Maximum duration of one publishing authorization |
+| `--sonic-streaming-timeout-s` | `5.0` | Compatibility value; stale SONIC input does not trigger safe exit |
+| `--sonic-lowstate-timeout-s` | `0.2` | Safe-exit timeout for stale robot LowState |
 | `--deploy-onboard-host` | *(camera host)* | G1 host/IP for SSH and robot-state ZMQ |
 | `--offboard-zmq-host` | *(auto-detected)* | Workstation IP that onboard deploy uses to reach PICO ZMQ |
 | `--state-zmq-host` | *(local or onboard)* | Robot state publisher host |
 | `--record-wrist-cameras` | `False` | Record left/right wrist camera streams in the dataset |
 | `--inspire-hand-bridge` | `False` | Start the Inspire DDS-to-Modbus bridge |
+| `--inspire-hand-state-frequency` | `50.0` | Inspire joint-angle feedback polling rate; force/tactile reads remain disabled by default |
 | `--left-hand-only` | `False` | Drive only the left Inspire hand and store the right-hand fields as synthetic open data |
 | `--no-text-to-speech` | *(on)* | Disable voice feedback via espeak |
 

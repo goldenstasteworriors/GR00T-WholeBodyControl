@@ -53,28 +53,68 @@ class InspireModbusHand:
         self.device_id = device_id
         self.timeout = timeout
         self._transaction_ids = itertools.count(1)
+        self._io_lock = threading.RLock()
+        self._sock: socket.socket | None = None
+        self._configured_speed_force: tuple[int, int] | None = None
+
+    def close(self) -> None:
+        with self._io_lock:
+            self._disconnect_locked()
+
+    def _disconnect_locked(self) -> None:
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            finally:
+                self._sock = None
+
+    def _connect_locked(self) -> socket.socket:
+        if self._sock is None:
+            self._sock = socket.create_connection(
+                (self.ip, self.port), timeout=self.timeout
+            )
+            self._sock.settimeout(self.timeout)
+        return self._sock
 
     def _request(self, function_code: int, payload: bytes) -> bytes:
-        transaction_id = next(self._transaction_ids) & 0xFFFF
-        pdu = struct.pack(">B", function_code) + payload
-        header = struct.pack(">HHHB", transaction_id, 0, len(pdu) + 1, self.device_id)
+        with self._io_lock:
+            last_error: Exception | None = None
+            for _attempt in range(2):
+                transaction_id = next(self._transaction_ids) & 0xFFFF
+                pdu = struct.pack(">B", function_code) + payload
+                header = struct.pack(
+                    ">HHHB", transaction_id, 0, len(pdu) + 1, self.device_id
+                )
+                try:
+                    sock = self._connect_locked()
+                    sock.sendall(header + pdu)
+                    response_header = self._recv_exact(sock, 7)
+                    rx_transaction_id, protocol_id, length, _unit_id = struct.unpack(
+                        ">HHHB", response_header
+                    )
+                    if rx_transaction_id != transaction_id or protocol_id != 0:
+                        raise ModbusTcpError(
+                            f"{self.side}: invalid Modbus response header"
+                        )
 
-        with socket.create_connection((self.ip, self.port), timeout=self.timeout) as sock:
-            sock.sendall(header + pdu)
-            response_header = self._recv_exact(sock, 7)
-            rx_transaction_id, protocol_id, length, _unit_id = struct.unpack(">HHHB", response_header)
-            if rx_transaction_id != transaction_id or protocol_id != 0:
-                raise ModbusTcpError(f"{self.side}: invalid Modbus response header")
-
-            response_pdu = self._recv_exact(sock, length - 1)
-            if not response_pdu:
-                raise ModbusTcpError(f"{self.side}: empty Modbus response")
-            if response_pdu[0] & 0x80:
-                code = response_pdu[1] if len(response_pdu) > 1 else -1
-                raise ModbusTcpError(f"{self.side}: Modbus exception code {code}")
-            if response_pdu[0] != function_code:
-                raise ModbusTcpError(f"{self.side}: unexpected function code {response_pdu[0]}")
-            return response_pdu[1:]
+                    response_pdu = self._recv_exact(sock, length - 1)
+                    if not response_pdu:
+                        raise ModbusTcpError(f"{self.side}: empty Modbus response")
+                    if response_pdu[0] & 0x80:
+                        code = response_pdu[1] if len(response_pdu) > 1 else -1
+                        raise ModbusTcpError(
+                            f"{self.side}: Modbus exception code {code}"
+                        )
+                    if response_pdu[0] != function_code:
+                        raise ModbusTcpError(
+                            f"{self.side}: unexpected function code {response_pdu[0]}"
+                        )
+                    return response_pdu[1:]
+                except (OSError, ModbusTcpError) as exc:
+                    last_error = exc
+                    self._disconnect_locked()
+            assert last_error is not None
+            raise last_error
 
     @staticmethod
     def _recv_exact(sock: socket.socket, size: int) -> bytes:
@@ -126,14 +166,28 @@ class InspireModbusHand:
         angle_values = [max(0, min(1000, int(v))) for v in values]
         if len(angle_values) != INSPIRE_HAND_DOF:
             raise ValueError(f"{self.side}: expected 6 angle values, got {len(angle_values)}")
+        speed_value = max(0, min(4000, int(speed)))
+        force_value = max(0, min(12000, int(force)))
 
-        self.write_register(REG_CLEAR_ERROR, 1)
-        time.sleep(0.02)
-        self.write_registers(REG_SPEED_SET, [max(0, min(4000, int(speed)))] * INSPIRE_HAND_DOF)
-        time.sleep(0.02)
-        self.write_registers(REG_FORCE_SET, [max(0, min(12000, int(force)))] * INSPIRE_HAND_DOF)
-        time.sleep(0.02)
-        self.write_registers(REG_ANGLE_SET, angle_values)
+        # Serialize the one-time setup and command write against state reads.
+        # The hand controller cannot reliably accept a storm of short-lived TCP
+        # connections, so keep one connection and avoid rewriting unchanged
+        # speed/force registers for every open/close transition.
+        with self._io_lock:
+            speed_force = (speed_value, force_value)
+            if self._configured_speed_force != speed_force:
+                self.write_register(REG_CLEAR_ERROR, 1)
+                time.sleep(0.02)
+                self.write_registers(
+                    REG_SPEED_SET, [speed_value] * INSPIRE_HAND_DOF
+                )
+                time.sleep(0.02)
+                self.write_registers(
+                    REG_FORCE_SET, [force_value] * INSPIRE_HAND_DOF
+                )
+                time.sleep(0.02)
+                self._configured_speed_force = speed_force
+            self.write_registers(REG_ANGLE_SET, angle_values)
 
 
 def validate_normalized_pose(values: Iterable[float], name: str) -> list[float]:
@@ -319,12 +373,15 @@ def run_state_publisher(
 
 def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
     last_command = None
+    last_attempt_command = None
+    last_attempt_time = 0.0
     profile_samples = []
     last_profile_time = time.monotonic()
     active_sides = ["left", "right"] if args.side == "both" else [args.side]
 
     def callback(msg: MotorCmds_) -> None:
-        nonlocal last_command, last_profile_time
+        nonlocal last_command, last_attempt_command
+        nonlocal last_attempt_time, last_profile_time
         callback_start = time.perf_counter()
         if len(msg.cmds) < 12:
             print(f"skip short inspire command: {len(msg.cmds)}")
@@ -336,7 +393,11 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
         command_key = tuple(dds_q[side] for side in active_sides)
         if command_key == last_command:
             return
-        last_command = command_key
+        now = time.monotonic()
+        if command_key == last_attempt_command and now - last_attempt_time < 0.05:
+            return
+        last_attempt_command = command_key
+        last_attempt_time = now
 
         try:
             angles = {
@@ -381,6 +442,8 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
                     f"{side}={angles[side]}" for side in successful_sides
                 )
                 print(f"DDS -> Modbus {summary}")
+            if len(successful_sides) == len(active_sides):
+                last_command = command_key
         except Exception as exc:
             print(f"DDS -> Modbus failed: {exc}")
 
@@ -418,6 +481,8 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
             time.sleep(1.0)
     finally:
         stop_event.set()
+        for hand in hands.values():
+            hand.close()
 
 
 def parse_args():

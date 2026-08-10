@@ -54,6 +54,8 @@ DEFAULT_INSPIRE_HAND_POSE_CONFIG = (
     / "inspire_hand_pose.json"
 )
 
+SONIC_PUBLISH_CONFIRMATION = "I_ACKNOWLEDGE_SONIC_CAN_MOVE_G1"
+
 
 def _bootstrap_venv():
     """Re-exec with the .venv_data_collection Python if tyro is not available."""
@@ -151,6 +153,18 @@ class DataCollectionLaunchConfig:
     deploy_output_type: str = ""
     """Output type for deploy.sh. Leave empty for default."""
 
+    enable_sonic_publish: bool = False
+    """Explicitly arm real-robot LowCmd publishing after the interactive confirmation."""
+
+    sonic_publish_max_runtime_s: float = 3600.0
+    """Maximum authorized real-robot publishing duration in seconds."""
+
+    sonic_streaming_timeout_s: float = 5.0
+    """Compatibility value passed onboard; stale SONIC input no longer stops publishing."""
+
+    sonic_lowstate_timeout_s: float = 0.2
+    """Stop publishing if robot LowState is stale for this many seconds."""
+
     # Teleop streamer options
     pico_manager: bool = True
     """Run pico_manager_thread_server with --manager flag."""
@@ -191,6 +205,9 @@ class DataCollectionLaunchConfig:
 
     inspire_hand_pose_config: str = str(DEFAULT_INSPIRE_HAND_POSE_CONFIG)
     """JSON file controlling PICO-trigger hand open/grasp poses for the Inspire bridge."""
+
+    inspire_hand_state_frequency: float = 50.0
+    """Modbus hand joint-angle feedback polling frequency."""
 
     left_hand_only: bool = False
     """Drive only the left Inspire hand and store the right hand as synthetic open data."""
@@ -299,6 +316,35 @@ def _check_prerequisites(config: DataCollectionLaunchConfig):
 
     if config.pico_input_source not in {"xrt", "isaac-teleop"}:
         errors.append("--pico-input-source must be one of: xrt, isaac-teleop")
+
+    if config.inspire_hand_bridge and not config.sim:
+        available_interfaces = {name for _, name in socket.if_nameindex()}
+        if config.inspire_hand_network not in available_interfaces:
+            known = ", ".join(sorted(available_interfaces))
+            errors.append(
+                "--inspire-hand-network does not exist: "
+                f"{config.inspire_hand_network!r} (available: {known})"
+            )
+        if not (0.0 < config.inspire_hand_state_frequency <= 50.0):
+            errors.append(
+                "--inspire-hand-state-frequency must be in (0, 50]"
+            )
+
+    if config.enable_sonic_publish:
+        if config.sim:
+            errors.append("--enable-sonic-publish is only valid for the real robot")
+        if config.deploy_input_type not in {"zmq", "zmq_manager"}:
+            errors.append(
+                "--enable-sonic-publish requires --deploy-input-type zmq or zmq_manager"
+            )
+        if not (0.05 <= config.sonic_streaming_timeout_s <= 5.0):
+            errors.append("--sonic-streaming-timeout-s must be in [0.05, 5.0]")
+        if not (0.05 <= config.sonic_lowstate_timeout_s <= 2.0):
+            errors.append("--sonic-lowstate-timeout-s must be in [0.05, 2.0]")
+        if not (0.0 < config.sonic_publish_max_runtime_s <= 6_000_000.0):
+            errors.append(
+                "--sonic-publish-max-runtime-s must be in (0, 6000000]"
+            )
 
     if errors:
         print("ERROR: Prerequisites not met:\n")
@@ -457,6 +503,22 @@ def _build_onboard_prebuilt_command(
         "--zmq-host",
         zmq_host,
     ]
+    if config.enable_sonic_publish:
+        deploy_args += [
+            "--zmq-port",
+            str(config.sonic_zmq_port),
+            "--zmq-topic",
+            "pose",
+            "--enable-sonic-publish",
+            "--max-runtime-s",
+            str(config.sonic_publish_max_runtime_s),
+            "--streaming-timeout-s",
+            str(config.sonic_streaming_timeout_s),
+            "--lowstate-timeout-s",
+            str(config.sonic_lowstate_timeout_s),
+            "--sonic-publish-confirm",
+            SONIC_PUBLISH_CONFIRMATION,
+        ]
     deploy_dir = config.deploy_onboard_repo_root + "/gear_sonic_deploy"
     return (
         f"cd {shlex.quote(deploy_dir)} && "
@@ -467,6 +529,7 @@ def _build_onboard_prebuilt_command(
         f"echo OBS_CONFIG={shlex.quote(config.deploy_obs_config)}; "
         f"echo PLANNER={shlex.quote(config.deploy_planner)}; "
         f"echo ZMQ_HOST={shlex.quote(zmq_host)}; "
+        f"echo SONIC_PUBLISH={'ARMED_REQUESTED' if config.enable_sonic_publish else 'DISARMED'}; "
         "read -r -p 'Proceed with REAL robot deployment? [Y/n]: ' confirm; "
         "case \"$confirm\" in "
         f"''|[Yy]) exec {_shell_join(deploy_args)} ;; "
@@ -507,6 +570,10 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Dataset name:    {config.dataset_name or '(auto)'}")
     print(f"  Deploy location: {'G1 onboard' if config.deploy_onboard else 'Local PC'}")
     print(f"  Deploy input:    {config.deploy_input_type}")
+    print(
+        "  Robot publishing:"
+        f" {'ARMED after confirmation' if config.enable_sonic_publish else 'DISARMED'}"
+    )
     print(f"  Deploy ZMQ host: {deploy_zmq_host}")
     if config.deploy_onboard:
         print(f"  Onboard host:    {onboard_host}")
@@ -562,7 +629,7 @@ def main(config: DataCollectionLaunchConfig):
             f"--hand-pose-config {shlex.quote(config.inspire_hand_pose_config)} "
             f"--side {'left' if config.left_hand_only else 'both'} "
             f"--publish-state "
-            f"--state-publish-frequency {config.data_exporter_frequency} "
+            f"--state-publish-frequency {config.inspire_hand_state_frequency} "
             f"--dds-pose-mode profile"
         )
         hand_target = f"{SESSION_NAME}:inspire_hand"
