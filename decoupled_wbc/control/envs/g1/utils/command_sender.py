@@ -115,8 +115,9 @@ class BodyCommandSender:
 
 
 class UnitreeLocoArmCommandSender:
-    """Use Unitree loco for the lower body and ``rt/arm_sdk`` for both arms."""
+    """Use Unitree loco for the legs and ``rt/arm_sdk`` for the held waist and arms."""
 
+    WAIST_MOTOR_INDICES = tuple(range(12, 15))
     ARM_MOTOR_INDICES = tuple(range(15, 29))
     ARM_WEIGHT_INDEX = 29
     LEG_JOINT_COUNT = 12
@@ -148,6 +149,8 @@ class UnitreeLocoArmCommandSender:
         self._last_fsm_id = None
         self._last_velocity_send = 0.0
         self._last_start_request = 0.0
+        self._latest_waist_q = None
+        self._held_waist_q = None
         self._latest_leg_dq = None
         self._latest_torso_quat = None
         self._latest_robot_state_time = 0.0
@@ -177,6 +180,10 @@ class UnitreeLocoArmCommandSender:
             config.get("unitree_loco_arm_control_enabled", False)
         )
         self._weight_ramp_duration = float(config.get("unitree_arm_weight_ramp_duration", 2.0))
+        self._waist_kp = float(config.get("unitree_arm_waist_kp", 60.0))
+        self._waist_kd = float(config.get("unitree_arm_waist_kd", 1.5))
+        if self._waist_kp <= 0.0 or self._waist_kd <= 0.0:
+            raise ValueError("unitree arm waist kp/kd must be positive")
         self._activation_time = 0.0
         self._arm_preparing = False
         self._arm_preparation_started = 0.0
@@ -204,22 +211,41 @@ class UnitreeLocoArmCommandSender:
             raise RuntimeError(f"Unitree loco GetFsmId returned invalid data: {data!r}")
         return int(response["data"])
 
-    def update_robot_state(self, body_dq: np.ndarray, torso_quat: np.ndarray) -> None:
+    def update_robot_state(
+        self,
+        body_q: np.ndarray,
+        body_dq: np.ndarray,
+        torso_quat: np.ndarray,
+    ) -> None:
         """Cache measured motion used to confirm that standing has settled."""
+        body_q = np.asarray(body_q, dtype=np.float64)
         body_dq = np.asarray(body_dq, dtype=np.float64)
         torso_quat = np.asarray(torso_quat, dtype=np.float64)
+        if body_q.ndim != 1 or body_q.size < self.LEG_JOINT_COUNT + 3:
+            return
         if body_dq.ndim != 1 or body_dq.size < self.LEG_JOINT_COUNT:
             return
         if torso_quat.shape != (4,):
             return
-        if not np.isfinite(body_dq).all() or not np.isfinite(torso_quat).all():
+        if (
+            not np.isfinite(body_q).all()
+            or not np.isfinite(body_dq).all()
+            or not np.isfinite(torso_quat).all()
+        ):
             return
+        self._latest_waist_q = body_q[
+            self.LEG_JOINT_COUNT : self.LEG_JOINT_COUNT + 3
+        ].copy()
         self._latest_leg_dq = body_dq[: self.LEG_JOINT_COUNT].copy()
         self._latest_torso_quat = torso_quat.copy()
         self._latest_robot_state_time = time.monotonic()
 
     def _robot_stability(self, now: float) -> tuple[bool, str]:
-        if self._latest_leg_dq is None or self._latest_torso_quat is None:
+        if (
+            self._latest_waist_q is None
+            or self._latest_leg_dq is None
+            or self._latest_torso_quat is None
+        ):
             return False, "waiting for measured robot state"
         state_age = now - self._latest_robot_state_time
         if state_age > self._state_timeout:
@@ -276,6 +302,7 @@ class UnitreeLocoArmCommandSender:
         self._arm_preparing = False
         self._arm_preparation_started = 0.0
         self._arm_preparation_complete = False
+        self._held_waist_q = None
 
     def operator_ready(self) -> bool:
         """Return true after locomotion and the optional arm preparation are ready."""
@@ -289,6 +316,9 @@ class UnitreeLocoArmCommandSender:
         )
 
     def _start_arm_preparation(self, now: float) -> None:
+        if self._latest_waist_q is None:
+            raise RuntimeError("cannot prepare arm_sdk before measured waist state is available")
+        self._held_waist_q = self._latest_waist_q.copy()
         self._arm_preparing = True
         self._arm_preparation_started = now
         self._arm_preparation_complete = False
@@ -300,7 +330,8 @@ class UnitreeLocoArmCommandSender:
         )
         print(
             "Unitree locked standing confirmed; moving arms to preparation pose "
-            f"for {self._weight_ramp_duration:.1f}s before {destination}",
+            f"for {self._weight_ramp_duration:.1f}s before {destination}; "
+            f"holding measured waist at {np.round(self._held_waist_q, 3).tolist()}",
             flush=True,
         )
 
@@ -377,6 +408,7 @@ class UnitreeLocoArmCommandSender:
             self._arm_preparing = False
             self._arm_preparation_started = 0.0
             self._arm_preparation_complete = False
+            self._held_waist_q = None
             try:
                 self._release_arms()
                 self._set_fsm(self._damp_fsm_id, "Damp")
@@ -570,6 +602,15 @@ class UnitreeLocoArmCommandSender:
     def send_command(self, cmd_q: np.ndarray, cmd_dq: np.ndarray, cmd_tau: np.ndarray):
         if not self._arm_output_active():
             return
+        if self._held_waist_q is None:
+            raise RuntimeError("arm_sdk output enabled without a held waist target")
+        for offset, motor_index in enumerate(self.WAIST_MOTOR_INDICES):
+            motor = self.low_cmd.motor_cmd[motor_index]
+            motor.q = float(self._held_waist_q[offset])
+            motor.dq = 0.0
+            motor.tau = 0.0
+            motor.kp = self._waist_kp
+            motor.kd = self._waist_kd
         for motor_index in self.ARM_MOTOR_INDICES:
             joint_index = self.config["MOTOR2JOINT"][motor_index]
             motor = self.low_cmd.motor_cmd[motor_index]

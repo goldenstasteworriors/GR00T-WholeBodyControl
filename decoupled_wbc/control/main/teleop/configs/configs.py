@@ -69,6 +69,8 @@ def override_wbc_config(
         "unitree_loco_command_frequency": config.unitree_loco_command_frequency,
         "unitree_loco_navigation_enabled": config.unitree_loco_navigation_enabled,
         "unitree_loco_arm_control_enabled": config.unitree_loco_arm_control_enabled,
+        "unitree_arm_waist_kp": config.unitree_arm_waist_kp,
+        "unitree_arm_waist_kd": config.unitree_arm_waist_kd,
         "unitree_loco_max_linear_velocity": config.unitree_loco_max_linear_velocity,
         "unitree_loco_max_angular_velocity": config.unitree_loco_max_angular_velocity,
         "unitree_arm_weight_ramp_duration": config.unitree_arm_weight_ramp_duration,
@@ -169,6 +171,12 @@ class BaseConfig(ArgsConfigTemplate):
 
     unitree_loco_arm_control_enabled: bool = True
     """Hold a preparation pose through ``rt/arm_sdk`` before A+X teleoperation."""
+
+    unitree_arm_waist_kp: float = 60.0
+    """Position gain used to hold the measured waist pose through ``rt/arm_sdk``."""
+
+    unitree_arm_waist_kd: float = 1.5
+    """Velocity gain used to hold the measured waist pose through ``rt/arm_sdk``."""
 
     unitree_loco_max_linear_velocity: float = 0.05
     """Absolute official-loco x/y velocity limit in m/s."""
@@ -320,6 +328,8 @@ class BaseConfig(ArgsConfigTemplate):
                 "unitree_loco_state_timeout": self.unitree_loco_state_timeout,
                 "unitree_loco_max_leg_velocity": self.unitree_loco_max_leg_velocity,
                 "unitree_loco_max_torso_tilt": self.unitree_loco_max_torso_tilt,
+                "unitree_arm_waist_kp": self.unitree_arm_waist_kp,
+                "unitree_arm_waist_kd": self.unitree_arm_waist_kd,
             }
             invalid = [name for name, value in positive_values.items() if value <= 0.0]
             if invalid:

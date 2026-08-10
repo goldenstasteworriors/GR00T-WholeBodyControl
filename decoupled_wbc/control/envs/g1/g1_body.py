@@ -36,7 +36,7 @@ class G1Body(Env):
         torso_ang_vel = body_state[0, 145:148]
 
         if isinstance(self.body_command_sender, UnitreeLocoArmCommandSender):
-            self.body_command_sender.update_robot_state(body_dq, torso_quat)
+            self.body_command_sender.update_robot_state(body_q, body_dq, torso_quat)
 
         return {
             "body_q": body_q,
