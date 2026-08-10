@@ -161,6 +161,10 @@ python gear_sonic/scripts/launch_data_collection.py \
     --task-prompt "pick up the cup"
 ```
 
+The onboard pane follows the NVIDIA deployment flow: it asks for interactive
+confirmation before starting the real-robot C++ process, which then publishes
+`LowCmd` as part of the official controller lifecycle.
+
 ### ZMQ message format
 
 The camera server publishes a single msgpack-encoded payload per frame cycle containing all camera images:
@@ -257,6 +261,28 @@ python gear_sonic/scripts/launch_data_collection.py \
     --record-wrist-cameras
 ```
 
+**With only the left Inspire hand available** (the bridge does not connect to
+the right hand, and right-hand dataset fields are stored as synthetic open
+values):
+
+```bash
+python gear_sonic/scripts/launch_data_collection.py \
+    --camera-host 192.168.123.164 \
+    --task-prompt "pick up the cup" \
+    --inspire-hand-bridge \
+    --inspire-hand-network enp7s0 \
+    --inspire-left-ip 192.168.123.210 \
+    --left-hand-only
+```
+
+The dataset uses the native Inspire layout shared with the decoupled VLA
+collector: `observation.state` and `action.wbc` contain 29 body joints, six
+left-hand motors, and six right-hand motors (41 values total). Each
+`teleop.*_hand_joints` field contains six values in the order `little`, `ring`,
+`middle`, `index`, `thumb_bend`, `thumb_rotate`. It also records
+`schema_compatibility: g1_inspire_41dof`, `hand_data_mode: left_only`, and the
+synthetic right-hand open pose under `script_config` in `meta/info.json`.
+
 **With onboard C++ deploy** (useful when the workstation has no NVIDIA GPU):
 
 ```bash
@@ -298,19 +324,22 @@ Common options:
 | `--task-prompt` | `"demo"` | Language task description (e.g., `"pick up the cup"`) |
 | `--dataset-name` | *(auto: timestamp)* | Dataset name; omit to auto-generate |
 | `--sim / --no-sim` | `False` | Run deploy.sh in sim mode (also starts the sim loop) |
-| `--camera-host` | `localhost` | Camera server host (e.g., `192.168.123.164` for real robot) |
+| `--camera-host` | `192.168.123.164` | Camera server host on the robot |
 | `--camera-port` | `5555` | Camera server port |
 | `--no-camera-viewer` | *(viewer on)* | Disable the camera viewer pane |
 | `--data-exporter-frequency` | `50` | Recording frequency (Hz) |
-| `--deploy-checkpoint` | *(default)* | Custom checkpoint path for deploy.sh |
-| `--deploy-obs-config` | *(default)* | Custom observation config for deploy.sh |
-| `--deploy-planner` | *(default)* | Custom planner model path for deploy.sh |
+| `--deploy-checkpoint` | `policy/release/model` | Checkpoint path for deploy.sh |
+| `--deploy-obs-config` | `policy/release/observation_config.yaml` | Observation config for deploy.sh |
+| `--deploy-planner` | release planner | Planner model path for deploy.sh |
 | `--deploy-motion-data` | *(default)* | Custom motion data path for deploy.sh |
-| `--deploy-onboard` | `False` | Run C++ deploy on the G1 onboard computer over SSH |
-| `--deploy-onboard-host` | *(camera host)* | G1 host/IP for SSH and robot-state ZMQ |
-| `--offboard-zmq-host` | *(auto-detected)* | Workstation IP that onboard deploy uses to reach PICO ZMQ |
-| `--state-zmq-host` | *(local or onboard)* | Robot state publisher host |
+| `--deploy-onboard / --no-deploy-onboard` | `True` | Run C++ deploy on the G1 onboard computer over SSH |
+| `--deploy-onboard-host` | `192.168.123.164` | G1 host/IP for SSH and robot-state ZMQ |
+| `--offboard-zmq-host` | `192.168.123.222` | Workstation IP that onboard deploy uses to reach PICO ZMQ |
+| `--state-zmq-host` | `192.168.123.164` | Robot state publisher host |
 | `--record-wrist-cameras` | `False` | Record left/right wrist camera streams in the dataset |
+| `--inspire-hand-bridge` | `False` | Start the Inspire DDS-to-Modbus bridge |
+| `--inspire-hand-state-frequency` | `50.0` | Inspire joint-angle feedback polling rate; force/tactile reads remain disabled by default |
+| `--left-hand-only` | `False` | Drive only the left Inspire hand and store the right-hand fields as synthetic open data |
 | `--no-text-to-speech` | *(on)* | Disable voice feedback via espeak |
 
 Run `python gear_sonic/scripts/launch_data_collection.py --help` for all options.

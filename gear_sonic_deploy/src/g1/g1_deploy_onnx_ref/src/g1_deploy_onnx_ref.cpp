@@ -61,10 +61,13 @@
 #include <functional>
 #include <unordered_map>
 #include <fstream>
+#include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <chrono>
 #include <algorithm>
 #include <numeric>
+#include <sstream>
 
 // DDS
 #include <unitree/robot/channel/channel_publisher.hpp>
@@ -287,6 +290,12 @@ class G1Deploy {
     static constexpr std::chrono::milliseconds STREAMING_DATA_ABSENT_THRESHOLD{150};
     CounterDebouncer streaming_data_absent_debouncer_{100, 500, 50, 1};
     RollingStats<1000> streaming_data_delay_rolling_stats_;
+    double streaming_data_delay_ms_ = 0.0;
+    double streaming_interval_max_delay_ms_ = 0.0;
+    bool streaming_data_absent_last_ = false;
+    std::optional<std::chrono::steady_clock::time_point> streaming_absent_enter_time_;
+    std::string input_type_name_;
+    std::unique_ptr<std::ofstream> streaming_event_file_;
     std::unique_ptr<AudioThread> audio_thread_;
     
     // =========================================================================
@@ -335,6 +344,119 @@ class G1Deploy {
 
     // State logger
     std::unique_ptr<StateLogger> state_logger_;
+
+    static std::string CsvQuote(const std::string& value) {
+      std::string escaped;
+      escaped.reserve(value.size() + 2);
+      escaped.push_back('"');
+      for (char ch : value) {
+        if (ch == '"') escaped.push_back('"');
+        escaped.push_back(ch);
+      }
+      escaped.push_back('"');
+      return escaped;
+    }
+
+    static const char* ProgramStateName(ProgramState state) {
+      switch (state) {
+        case ProgramState::INIT: return "INIT";
+        case ProgramState::WAIT_FOR_CONTROL: return "WAIT_FOR_CONTROL";
+        case ProgramState::CONTROL: return "CONTROL";
+      }
+      return "UNKNOWN";
+    }
+
+    void InitializeStreamingEventLog(const std::string& path) {
+      if (path.empty()) return;
+
+      try {
+        const std::filesystem::path event_path(path);
+        if (event_path.has_parent_path()) {
+          std::filesystem::create_directories(event_path.parent_path());
+        }
+        const bool write_header =
+          !std::filesystem::exists(event_path) || std::filesystem::file_size(event_path) == 0;
+        streaming_event_file_ = std::make_unique<std::ofstream>(event_path, std::ios::app);
+        if (!streaming_event_file_->good()) {
+          std::cerr << "[StreamingData] Failed to open event log: " << path << std::endl;
+          streaming_event_file_.reset();
+          return;
+        }
+        if (write_header) {
+          (*streaming_event_file_)
+            << "timestamp_local,timestamp_epoch_ms,event,delay_ms,duration_ms,"
+               "rolling_mean_ms,rolling_std_ms,interval_max_ms,input_type,motion_name,"
+               "program_state,planner_enabled,planner_initialized,has_vr3pt,has_vr5pt\n";
+          streaming_event_file_->flush();
+        }
+        std::cout << "[StreamingData] Event log: " << path << std::endl;
+      } catch (const std::exception& e) {
+        std::cerr << "[StreamingData] Failed to initialize event log: " << e.what() << std::endl;
+        streaming_event_file_.reset();
+      }
+    }
+
+    void LogStreamingEvent(const char* event, double delay_ms, double duration_ms) {
+      if (!streaming_event_file_) return;
+
+      const auto system_now = std::chrono::system_clock::now();
+      const auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        system_now.time_since_epoch()).count();
+      const std::time_t now_time = std::chrono::system_clock::to_time_t(system_now);
+      std::tm local_tm{};
+      localtime_r(&now_time, &local_tm);
+      std::ostringstream local_timestamp;
+      local_timestamp << std::put_time(&local_tm, "%Y-%m-%dT%H:%M:%S")
+                      << '.' << std::setfill('0') << std::setw(3) << (epoch_ms % 1000);
+
+      std::string motion_name = "none";
+      {
+        std::lock_guard<std::mutex> lock(current_motion_mutex_);
+        if (current_motion_) motion_name = current_motion_->name;
+      }
+      const bool planner_enabled = planner_ && planner_->planner_state_.enabled;
+      const bool planner_initialized = planner_ && planner_->planner_state_.initialized;
+
+      (*streaming_event_file_)
+        << CsvQuote(local_timestamp.str()) << ',' << epoch_ms << ',' << event << ','
+        << std::fixed << std::setprecision(3)
+        << delay_ms << ',' << duration_ms << ','
+        << streaming_data_delay_rolling_stats_.mean() << ','
+        << streaming_data_delay_rolling_stats_.stddev() << ','
+        << streaming_interval_max_delay_ms_ << ','
+        << CsvQuote(input_type_name_) << ',' << CsvQuote(motion_name) << ','
+        << ProgramStateName(program_state_) << ','
+        << planner_enabled << ',' << planner_initialized << ','
+        << has_vr_3point_data_ << ',' << has_vr_5point_data_ << '\n';
+      streaming_event_file_->flush();
+
+      std::cout << "[StreamingData] " << event
+                << " delay=" << delay_ms << "ms"
+                << " duration=" << duration_ms << "ms"
+                << " interval_max=" << streaming_interval_max_delay_ms_ << "ms"
+                << std::endl;
+    }
+
+    void UpdateStreamingEventState(bool absent, double delay_ms) {
+      streaming_interval_max_delay_ms_ = std::max(streaming_interval_max_delay_ms_, delay_ms);
+      if (absent == streaming_data_absent_last_) return;
+
+      const auto now = std::chrono::steady_clock::now();
+      double duration_ms = 0.0;
+      if (absent) {
+        streaming_absent_enter_time_ = now;
+        LogStreamingEvent("ENTER_ABSENT", delay_ms, duration_ms);
+      } else {
+        if (streaming_absent_enter_time_) {
+          duration_ms = std::chrono::duration<double, std::milli>(
+            now - *streaming_absent_enter_time_).count();
+        }
+        LogStreamingEvent("RECOVERED", delay_ms, duration_ms);
+        streaming_absent_enter_time_.reset();
+      }
+      streaming_data_absent_last_ = absent;
+      streaming_interval_max_delay_ms_ = delay_ms;
+    }
     
     // Output interfaces (supports multiple simultaneous outputs)
     std::vector<std::unique_ptr<OutputInterface>> output_interfaces_;
@@ -2150,6 +2272,7 @@ class G1Deploy {
       bool policy_fp16 = false,
       std::string logs_dir = "",
       bool enable_csv_logs = false,
+      std::string streaming_event_log = "logs/streaming_data_events.csv",
       std::string zmq_host = "localhost",
       int zmq_port = 5556,
       std::string zmq_topic = "pose",
@@ -2180,6 +2303,8 @@ class G1Deploy {
         //env(ORT_LOGGING_LEVEL_WARNING, "G1Deploy"),
         model_path(model_file_path),
         planner_path(planner_file_path) {
+
+      input_type_name_ = input_type;
       
       // Initialize ChannelFactory
       ChannelFactory::Instance()->Init(0, networkInterface);
@@ -2446,6 +2571,7 @@ class G1Deploy {
         std::cerr << "State logger is required for operation. Exiting..." << std::endl;
         throw;  // Re-throw to stop program initialization
       }
+      InitializeStreamingEventLog(streaming_event_log);
 
       // Initialize input interface based on type
       if (input_type == "gamepad") {
@@ -2977,10 +3103,12 @@ class G1Deploy {
       auto last_update_time = input_interface_->GetLastUpdateTime();
       if (last_update_time.has_value()) {
         auto streaming_data_delay = std::chrono::steady_clock::now() - last_update_time.value();
-        streaming_data_delay_rolling_stats_.push(static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(streaming_data_delay).count()));
+        streaming_data_delay_ms_ = std::chrono::duration<double, std::milli>(streaming_data_delay).count();
+        streaming_data_delay_rolling_stats_.push(streaming_data_delay_ms_);
 
         bool streaming_data_absent = streaming_data_delay > STREAMING_DATA_ABSENT_THRESHOLD;
         streaming_data_absent_debouncer_.update(streaming_data_absent);
+        UpdateStreamingEventState(streaming_data_absent_debouncer_.state(), streaming_data_delay_ms_);
       }
 
       auto low_state_data = low_state_buffer_.GetDataWithTime();
@@ -4049,6 +4177,8 @@ class G1Deploy {
             std::cout << "Loop timing - LowState age: " << used_low_state_data_.GetAgeMs() << "ms"
                       << ", Streaming data mean delay: " << streaming_data_delay_rolling_stats_.mean() << "ms"
                       << ", Streaming data std delay: " << streaming_data_delay_rolling_stats_.stddev() << "ms"
+                      << ", Streaming data current delay: " << streaming_data_delay_ms_ << "ms"
+                      << ", Streaming data max delay: " << streaming_data_delay_rolling_stats_.max() << "ms"
                       << ", IMU age: " << used_imu_torso_data_.GetAgeMs() << "ms"
                       << ", Obs: " << obs_duration.count() << "us"
                       << ", Policy: " << policy_duration.count() << "us"
@@ -4130,6 +4260,7 @@ int main(int argc, char const* argv[]) {
     std::cout << "  --zmq-out-topic <topic>: ZMQ topic/prefix for output (default: g1_debug)" << std::endl;
     std::cout << "  --logs-dir <path>: optional logs output base directory (default: logs/<timestamp>/)" << std::endl;
     std::cout << "  --enable-csv-logs: enable writing CSV logs (default: OFF)" << std::endl;
+    std::cout << "  --streaming-event-log <path>: streaming absent/recovery event CSV (default: logs/streaming_data_events.csv)" << std::endl;
     std::cout << "  --enable-motion-recording: enable motion recording for ZMQ/planner (default: OFF)" << std::endl;
     std::cout << "  --set-compliance <value>: set initial VR 3-point compliance (0.01=rigid, 0.5=compliant; default: [0.5, 0.5, 0.0])" << std::endl;
     std::cout << "                                 Can specify 1 value (both hands) or 3 values (left_wrist,right_wrist,head)" << std::endl;
@@ -4170,6 +4301,7 @@ int main(int argc, char const* argv[]) {
   bool policyFp16 = false;
   std::string logsDir = "";
   bool enableCsvLogs = false;
+  std::string streamingEventLog = "logs/streaming_data_events.csv";
   std::string zmq_host = "localhost";
   int zmq_port = 5556;
   std::string zmq_topic = "pose";
@@ -4344,6 +4476,15 @@ int main(int argc, char const* argv[]) {
         std::cerr << "Error: --logs-dir requires a path argument" << std::endl;
         exit(1);
       }
+    } else if (std::string(argv[i]) == "--streaming-event-log") {
+      if (i + 1 < argc) {
+        streamingEventLog = argv[i + 1];
+        std::cout << "[INFO] Streaming event log: " << streamingEventLog << std::endl;
+        i++;
+      } else {
+        std::cerr << "Error: --streaming-event-log requires a path argument" << std::endl;
+        exit(1);
+      }
     } else if (std::string(argv[i]) == "--zmq-host") {
       if (i + 1 < argc) { zmq_host = argv[i + 1]; i++; }
     } else if (std::string(argv[i]) == "--zmq-port") {
@@ -4432,6 +4573,7 @@ int main(int argc, char const* argv[]) {
     policyFp16,
     logsDir,
     enableCsvLogs,
+    streamingEventLog,
     zmq_host,
     zmq_port,
     zmq_topic,

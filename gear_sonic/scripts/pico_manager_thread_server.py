@@ -840,9 +840,14 @@ class PicoReader:
         pass
 
     def get_timestamp_ns(self) -> int:
-        if xrt is None:
-            return 0
-        return int(xrt.get_time_stamp_ns())
+        # Read the timestamp captured together with the latest body sample.  Calling
+        # into XRT here would race with the background reader and can make the
+        # planner observe an old timestamp even while PicoReader is receiving at
+        # full rate.
+        with self._lock:
+            if self._latest is None:
+                return 0
+            return int(self._latest.get("timestamp_ns", 0))
 
     def _run(self):
         last_report = time.time()
@@ -1748,6 +1753,9 @@ class PlannerStreamer:
         self.yaw_accumulator = YawAccumulator()
         self.last_send = time.time()
         self.last_xrt_timestamp = None
+        self.xrt_stale_since = None
+        self.last_xrt_stale_log = 0.0
+        self.xrt_stale_reported = False
 
         # Hand IK solvers for trigger-controlled hand open/close in VR 3PT mode
         self.left_hand_ik_solver, self.right_hand_ik_solver = init_hand_ik_solvers()
@@ -1786,7 +1794,24 @@ class PlannerStreamer:
             # Avoid sending old commands if XRT timestamp hasn't advanced, in case of headset disconnect
             xrt_timestamp = self.reader.get_timestamp_ns()
             if xrt_timestamp == self.last_xrt_timestamp:
+                now = time.monotonic()
+                if self.xrt_stale_since is None:
+                    self.xrt_stale_since = now
+                stale_s = now - self.xrt_stale_since
+                if stale_s >= 0.5 and now - self.last_xrt_stale_log >= 1.0:
+                    print(
+                        "[PlannerLoop] WARNING: XRT timestamp has not advanced "
+                        f"for {stale_s:.1f}s; planner packets are paused"
+                    )
+                    self.last_xrt_stale_log = now
+                    self.xrt_stale_reported = True
+                time.sleep(self.dt)
                 return
+            if self.xrt_stale_since is not None:
+                if self.xrt_stale_reported:
+                    print("[PlannerLoop] XRT timestamp resumed; planner packets restored")
+                self.xrt_stale_since = None
+                self.xrt_stale_reported = False
             self.last_xrt_timestamp = xrt_timestamp
 
             # A+B => next mode; X+Y => previous mode (rising edges)

@@ -59,6 +59,9 @@ class CameraViewerConfig:
     display: bool = True
     """Show OpenCV preview window when HighGUI support is available."""
 
+    display_depth: bool = False
+    """Include depth streams in the preview. By default only RGB streams are shown."""
+
     profile_timing: bool = False
     """Print receive/decode/display timing and camera frame age."""
 
@@ -94,7 +97,13 @@ def main(config: CameraViewerConfig):
         return
 
     camera_names = sorted(sample["images"].keys())
+    display_camera_names = [
+        name
+        for name in camera_names
+        if config.display_depth or "depth" not in name.lower()
+    ]
     print(f"Detected {len(camera_names)} camera stream(s): {camera_names}")
+    print(f"Previewing {len(display_camera_names)} RGB stream(s): {display_camera_names}")
 
     output_dir = Path(config.output_path) if config.output_path else Path("camera_recordings")
 
@@ -151,7 +160,7 @@ def main(config: CameraViewerConfig):
                 if is_recording and name in video_writers:
                     video_writers[name].write(img_bgr)
 
-                if not display_enabled:
+                if not display_enabled or name not in display_camera_names:
                     continue
 
                 h, w = img_bgr.shape[:2]

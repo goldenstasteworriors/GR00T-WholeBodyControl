@@ -31,7 +31,11 @@ class AudioThread {
   AudioCommand command_;
   AudioCommand command_last_;
 
-  // Cooldown for high temperature warning (avoid repeating every 1s loop)
+  // Cooldowns reduce repeated motor/LowState/high-temperature speech.
+  // Streaming-data warnings retain the original rising-edge behaviour.
+  std::chrono::steady_clock::time_point last_motor_error_tts_{};
+  std::chrono::steady_clock::time_point last_low_state_late_tts_{};
   std::chrono::steady_clock::time_point last_high_temp_tts_{};
-  static constexpr std::chrono::seconds HIGH_TEMP_TTS_INTERVAL{5};
+  static constexpr std::chrono::seconds TRANSIENT_WARNING_TTS_INTERVAL{30};
+  static constexpr std::chrono::seconds HIGH_TEMP_TTS_INTERVAL{60};
 };

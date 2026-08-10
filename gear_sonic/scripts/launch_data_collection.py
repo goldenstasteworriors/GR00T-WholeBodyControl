@@ -37,6 +37,7 @@ Usage (from repo root — no venv activation needed):
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -52,7 +53,6 @@ DEFAULT_INSPIRE_HAND_POSE_CONFIG = (
     / "data_collection"
     / "inspire_hand_pose.json"
 )
-
 
 def _bootstrap_venv():
     """Re-exec with the .venv_data_collection Python if tyro is not available."""
@@ -191,6 +191,12 @@ class DataCollectionLaunchConfig:
     inspire_hand_pose_config: str = str(DEFAULT_INSPIRE_HAND_POSE_CONFIG)
     """JSON file controlling PICO-trigger hand open/grasp poses for the Inspire bridge."""
 
+    inspire_hand_state_frequency: float = 50.0
+    """Modbus hand joint-angle feedback polling frequency."""
+
+    left_hand_only: bool = False
+    """Drive only the left Inspire hand and store the right hand as synthetic open data."""
+
     # Data exporter options
     task_prompt: str = "demo"
     """Language task prompt for the data exporter."""
@@ -221,6 +227,21 @@ class DataCollectionLaunchConfig:
 
     text_to_speech: bool = True
     """Enable voice feedback via espeak (data exporter)."""
+
+    audio_cue_volume: float = 0.6
+    """Volume for distinct start/stop/discard recording cues."""
+
+    quiet_data_exporter: bool = True
+    """Only show recording start/stop status in the data exporter pane."""
+
+    latency_dashboard: bool = True
+    """Create a separate tmux window with live per-stage latency curves."""
+
+    latency_sample_interval: float = 0.1
+    """Seconds between recorded latency samples."""
+
+    latency_history_size: int = 180
+    """Number of recent samples shown in each latency curve."""
 
     # Camera viewer
     camera_viewer: bool = True
@@ -280,6 +301,19 @@ def _check_prerequisites(config: DataCollectionLaunchConfig):
 
     if config.pico_input_source not in {"xrt", "isaac-teleop"}:
         errors.append("--pico-input-source must be one of: xrt, isaac-teleop")
+
+    if config.inspire_hand_bridge and not config.sim:
+        available_interfaces = {name for _, name in socket.if_nameindex()}
+        if config.inspire_hand_network not in available_interfaces:
+            known = ", ".join(sorted(available_interfaces))
+            errors.append(
+                "--inspire-hand-network does not exist: "
+                f"{config.inspire_hand_network!r} (available: {known})"
+            )
+        if not (0.0 < config.inspire_hand_state_frequency <= 50.0):
+            errors.append(
+                "--inspire-hand-state-frequency must be in (0, 50]"
+            )
 
     if errors:
         print("ERROR: Prerequisites not met:\n")
@@ -459,6 +493,12 @@ def _build_onboard_prebuilt_command(
 def main(config: DataCollectionLaunchConfig):
     repo_root = Path(__file__).resolve().parent.parent.parent
     local_ip = _get_local_ip()
+    log_tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", config.dataset_name).strip("._")
+    if not log_tag:
+        log_tag = time.strftime("%Y-%m-%d-%H-%M-%S")
+    runtime_log_file = repo_root / "logs" / f"data_exporter_{log_tag}.log"
+    latency_raw_file = repo_root / "logs" / f"latency_exporter_{log_tag}.jsonl"
+    latency_combined_file = repo_root / "logs" / f"latency_combined_{log_tag}.jsonl"
 
     _check_prerequisites(config)
     _kill_existing_session()
@@ -482,6 +522,7 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Dataset name:    {config.dataset_name or '(auto)'}")
     print(f"  Deploy location: {'G1 onboard' if config.deploy_onboard else 'Local PC'}")
     print(f"  Deploy input:    {config.deploy_input_type}")
+    print("  Robot publishing: NVIDIA official flow after onboard confirmation")
     print(f"  Deploy ZMQ host: {deploy_zmq_host}")
     if config.deploy_onboard:
         print(f"  Onboard host:    {onboard_host}")
@@ -500,12 +541,16 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Inspire bridge:  {'Yes' if config.inspire_hand_bridge else 'No'}")
     if config.inspire_hand_bridge:
         print(f"  Inspire config:  {config.inspire_hand_pose_config}")
+    print(f"  Hand data mode:  {'left-only' if config.left_hand_only else 'both'}")
+    print("  Hand schema:     G1 body 29 + Inspire left 6 + right 6 (41 DOF)")
     print(f"  DC frequency:    {config.data_exporter_frequency} Hz")
     print(f"  Camera viewer:   {'Yes' if config.camera_viewer else 'No'}")
     print(f"  Wrist cameras:   {'Yes' if config.record_wrist_cameras else 'No'}")
     print(f"  Profile timing:  {'Yes' if config.profile_timing else 'No'}")
     print(f"  Overwrite data:  {'Yes' if config.overwrite_existing_dataset else 'No'}")
     print(f"  Text-to-speech:  {'Yes' if config.text_to_speech else 'No'}")
+    print(f"  Quiet exporter:  {'Yes' if config.quiet_data_exporter else 'No'}")
+    print(f"  Latency curves:  {'Yes' if config.latency_dashboard else 'No'}")
     print(f"  PC IP (for PICO): {local_ip}")
     print(f"  Teleop vis:      vr3pt={config.pico_vis_vr3pt} smpl={config.pico_vis_smpl}")
     print("=" * 60)
@@ -531,6 +576,9 @@ def main(config: DataCollectionLaunchConfig):
             f"--left-ip {shlex.quote(config.inspire_left_ip)} "
             f"--right-ip {shlex.quote(config.inspire_right_ip)} "
             f"--hand-pose-config {shlex.quote(config.inspire_hand_pose_config)} "
+            f"--side {'left' if config.left_hand_only else 'both'} "
+            f"--publish-state "
+            f"--state-publish-frequency {config.inspire_hand_state_frequency} "
             f"--dds-pose-mode profile"
         )
         hand_target = f"{SESSION_NAME}:inspire_hand"
@@ -631,16 +679,24 @@ def main(config: DataCollectionLaunchConfig):
     exporter_cmd = (
         f"cd {repo_root} && "
         f"source .venv_data_collection/bin/activate && "
+        f"clear && "
         f"python gear_sonic/scripts/run_data_exporter.py "
-        f"--task-prompt '{config.task_prompt}' "
+        f"--task-prompt {shlex.quote(config.task_prompt)} "
         f"--data-collection-frequency {config.data_exporter_frequency} "
         f"--camera-host {config.camera_host} "
         f"--camera-port {config.camera_port} "
         f"--sonic-zmq-host {config.sonic_zmq_host} "
         f"--sonic-zmq-port {config.sonic_zmq_port} "
         f"--state-zmq-host {state_zmq_host} "
-        f"--state-zmq-port {config.state_zmq_port}"
+        f"--state-zmq-port {config.state_zmq_port} "
+        f"--inspire-hand-pose-config {shlex.quote(config.inspire_hand_pose_config)} "
+        f"--audio-cue-volume {config.audio_cue_volume} "
+        f"--runtime-log-file {shlex.quote(str(runtime_log_file))} "
+        f"--latency-log-file {shlex.quote(str(latency_raw_file))} "
+        f"--latency-log-interval {config.latency_sample_interval}"
     )
+    if config.quiet_data_exporter:
+        exporter_cmd += " --quiet-console"
     if config.profile_timing:
         exporter_cmd += f" --profile-timing --profile-interval {config.profile_interval}"
     if config.dataset_name:
@@ -649,11 +705,34 @@ def main(config: DataCollectionLaunchConfig):
         exporter_cmd += " --record-wrist-cameras"
     if config.overwrite_existing_dataset:
         exporter_cmd += " --overwrite-existing-dataset"
+    if config.left_hand_only:
+        exporter_cmd += " --left-hand-only"
     if not config.text_to_speech:
         exporter_cmd += " --no-text-to-speech"
 
     print("Starting data exporter (pane 1)...")
     _send_to_pane(2, exporter_cmd, wait=1.0)
+
+    # --- Separate tmux window: live latency curves ---
+    if config.latency_dashboard:
+        subprocess.run(
+            ["tmux", "new-window", "-d", "-t", SESSION_NAME, "-n", "latency"],
+            check=True,
+        )
+        latency_cmd = (
+            f"cd {repo_root} && "
+            f"source .venv_data_collection/bin/activate && "
+            f"python gear_sonic/scripts/run_latency_dashboard.py "
+            f"--latency-log-file {shlex.quote(str(latency_raw_file))} "
+            f"--combined-log-file {shlex.quote(str(latency_combined_file))} "
+            f"--g1-pane-target {shlex.quote(SESSION_NAME + ':data_collection.0')} "
+            f"--history-size {config.latency_history_size}"
+        )
+        subprocess.run(
+            ["tmux", "send-keys", "-t", f"{SESSION_NAME}:latency", latency_cmd, "C-m"],
+            check=True,
+        )
+        print("Starting latency dashboard (window: latency)...")
 
     # Select the data exporter pane so the user lands there for interactive input
     subprocess.run(
@@ -683,6 +762,9 @@ def main(config: DataCollectionLaunchConfig):
     print("    Pane 2 (top-right):    Data Exporter  <-- you are here")
     if config.camera_viewer:
         print("    Pane 3 (bottom-right): Camera Viewer")
+    if config.latency_dashboard:
+        print("  Window 'latency':")
+        print("    Live G1 / ThinkPad latency curves (Ctrl+b, n / p to switch)")
     print()
     print("  ** deploy.sh (pane 0) is waiting for confirmation --")
     print("     click on pane 0 and press Enter to proceed **")
