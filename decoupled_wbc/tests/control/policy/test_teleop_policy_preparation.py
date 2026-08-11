@@ -106,6 +106,7 @@ def test_paused_upper_body_does_not_zero_lower_body_navigation():
     streamer_output.data_collection_data = {}
     policy.teleop_streamer.get_streamer_data.return_value = streamer_output
     policy.check_activation = Mock()
+    policy.wait_for_activation = 5
     policy.is_active = False
     policy._teleop_state = "paused"
     policy._held_upper_body_pose = np.array([0.4, -0.3])
