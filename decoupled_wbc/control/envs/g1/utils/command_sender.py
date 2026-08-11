@@ -226,14 +226,16 @@ class UnitreeLocoArmCommandSender:
     def _ensure_system_service_enabled(self) -> None:
         """Start ai_sport when needed and deliberately never stop it."""
         status = self._get_system_service_status()
-        if status == 1:
+        # This firmware reports 0 for a running service and 1 for a stopped
+        # service.  The values are service-manager states, not booleans.
+        if status == 0:
             print(
                 f"Unitree {self._system_service_name} service is already enabled; "
                 "leaving it running",
                 flush=True,
             )
             return
-        if status != 0:
+        if status != 1:
             raise RuntimeError(
                 f"Unitree system service {self._system_service_name!r} has "
                 f"unsupported status {status}"
@@ -246,7 +248,7 @@ class UnitreeLocoArmCommandSender:
         deadline = time.monotonic() + self._system_service_start_timeout
         while True:
             status = self._get_system_service_status()
-            if status == 1:
+            if status == 0:
                 print(
                     f"Unitree {self._system_service_name} service enabled; "
                     "it will remain enabled after this process exits",

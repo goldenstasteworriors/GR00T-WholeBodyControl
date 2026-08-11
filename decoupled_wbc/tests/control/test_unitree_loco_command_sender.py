@@ -92,7 +92,7 @@ def test_startup_begins_with_damp_without_private_control_authority_rpc():
 
 def test_enabled_ai_sport_is_left_running_without_service_switch():
     sender = _make_sender()
-    sender.robot_state.ServiceList.return_value = (0, [_service_state(1)])
+    sender.robot_state.ServiceList.return_value = (0, [_service_state(0)])
 
     sender._ensure_system_service_enabled()
 
@@ -102,8 +102,8 @@ def test_enabled_ai_sport_is_left_running_without_service_switch():
 def test_disabled_ai_sport_is_enabled_once_and_never_stopped():
     sender = _make_sender()
     sender.robot_state.ServiceList.side_effect = [
-        (0, [_service_state(0)]),
         (0, [_service_state(1)]),
+        (0, [_service_state(0)]),
     ]
     sender.robot_state.ServiceSwitch.return_value = 0
 
@@ -114,7 +114,7 @@ def test_disabled_ai_sport_is_enabled_once_and_never_stopped():
 
 def test_missing_ai_sport_fails_without_switching_another_service():
     sender = _make_sender()
-    sender.robot_state.ServiceList.return_value = (0, [_service_state(1, "sport_mode")])
+    sender.robot_state.ServiceList.return_value = (0, [_service_state(0, "sport_mode")])
 
     try:
         sender._ensure_system_service_enabled()
