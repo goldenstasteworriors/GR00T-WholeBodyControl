@@ -564,7 +564,7 @@ class UnitreeLocoArmCommandSender:
             self._arm_preparing = False
             self._arm_preparation_complete = True
             print(
-                "Unitree arm_sdk dual-arm preparation pose ready; waist remains official",
+                "Unitree arm_sdk dual-arm preparation pose ready; waist is not updated by IK",
                 flush=True,
             )
             self._mark_active(now, fsm_id)
