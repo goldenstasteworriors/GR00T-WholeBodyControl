@@ -1,6 +1,8 @@
 import argparse
 import itertools
+import json
 import os
+from pathlib import Path
 import socket
 import struct
 import threading
@@ -30,6 +32,13 @@ REG_FORCE_ACT = 1582
 INSPIRE_HAND_DOF = 6
 THUMB_ROTATE_INDEX = 5
 DEFAULT_THUMB_ROTATE = 0.5
+DEFAULT_HAND_POSE_CONFIG = (
+    Path(__file__).resolve().parents[2]
+    / "gear_sonic"
+    / "config"
+    / "data_collection"
+    / "inspire_hand_pose.json"
+)
 
 
 class ModbusTcpError(RuntimeError):
@@ -44,28 +53,65 @@ class InspireModbusHand:
         self.device_id = device_id
         self.timeout = timeout
         self._transaction_ids = itertools.count(1)
+        self._io_lock = threading.RLock()
+        self._sock: socket.socket | None = None
+        self._configured_speed_force: tuple[int, int] | None = None
+
+    def close(self) -> None:
+        with self._io_lock:
+            if self._sock is not None:
+                try:
+                    self._sock.close()
+                finally:
+                    self._sock = None
+
+    def _connect_locked(self) -> socket.socket:
+        if self._sock is None:
+            self._sock = socket.create_connection(
+                (self.ip, self.port), timeout=self.timeout
+            )
+            self._sock.settimeout(self.timeout)
+        return self._sock
 
     def _request(self, function_code: int, payload: bytes) -> bytes:
-        transaction_id = next(self._transaction_ids) & 0xFFFF
-        pdu = struct.pack(">B", function_code) + payload
-        header = struct.pack(">HHHB", transaction_id, 0, len(pdu) + 1, self.device_id)
+        with self._io_lock:
+            last_error: Exception | None = None
+            for _attempt in range(2):
+                transaction_id = next(self._transaction_ids) & 0xFFFF
+                pdu = struct.pack(">B", function_code) + payload
+                header = struct.pack(
+                    ">HHHB", transaction_id, 0, len(pdu) + 1, self.device_id
+                )
+                try:
+                    sock = self._connect_locked()
+                    sock.sendall(header + pdu)
+                    response_header = self._recv_exact(sock, 7)
+                    rx_transaction_id, protocol_id, length, _unit_id = struct.unpack(
+                        ">HHHB", response_header
+                    )
+                    if rx_transaction_id != transaction_id or protocol_id != 0:
+                        raise ModbusTcpError(
+                            f"{self.side}: invalid Modbus response header"
+                        )
 
-        with socket.create_connection((self.ip, self.port), timeout=self.timeout) as sock:
-            sock.sendall(header + pdu)
-            response_header = self._recv_exact(sock, 7)
-            rx_transaction_id, protocol_id, length, _unit_id = struct.unpack(">HHHB", response_header)
-            if rx_transaction_id != transaction_id or protocol_id != 0:
-                raise ModbusTcpError(f"{self.side}: invalid Modbus response header")
-
-            response_pdu = self._recv_exact(sock, length - 1)
-            if not response_pdu:
-                raise ModbusTcpError(f"{self.side}: empty Modbus response")
-            if response_pdu[0] & 0x80:
-                code = response_pdu[1] if len(response_pdu) > 1 else -1
-                raise ModbusTcpError(f"{self.side}: Modbus exception code {code}")
-            if response_pdu[0] != function_code:
-                raise ModbusTcpError(f"{self.side}: unexpected function code {response_pdu[0]}")
-            return response_pdu[1:]
+                    response_pdu = self._recv_exact(sock, length - 1)
+                    if not response_pdu:
+                        raise ModbusTcpError(f"{self.side}: empty Modbus response")
+                    if response_pdu[0] & 0x80:
+                        code = response_pdu[1] if len(response_pdu) > 1 else -1
+                        raise ModbusTcpError(
+                            f"{self.side}: Modbus exception code {code}"
+                        )
+                    if response_pdu[0] != function_code:
+                        raise ModbusTcpError(
+                            f"{self.side}: unexpected function code {response_pdu[0]}"
+                        )
+                    return response_pdu[1:]
+                except (OSError, ModbusTcpError) as exc:
+                    last_error = exc
+                    self.close()
+            assert last_error is not None
+            raise last_error
 
     @staticmethod
     def _recv_exact(sock: socket.socket, size: int) -> bytes:
@@ -117,14 +163,24 @@ class InspireModbusHand:
         angle_values = [max(0, min(1000, int(v))) for v in values]
         if len(angle_values) != INSPIRE_HAND_DOF:
             raise ValueError(f"{self.side}: expected 6 angle values, got {len(angle_values)}")
+        speed_value = max(0, min(4000, int(speed)))
+        force_value = max(0, min(12000, int(force)))
 
-        self.write_register(REG_CLEAR_ERROR, 1)
-        time.sleep(0.02)
-        self.write_registers(REG_SPEED_SET, [max(0, min(4000, int(speed)))] * INSPIRE_HAND_DOF)
-        time.sleep(0.02)
-        self.write_registers(REG_FORCE_SET, [max(0, min(12000, int(force)))] * INSPIRE_HAND_DOF)
-        time.sleep(0.02)
-        self.write_registers(REG_ANGLE_SET, angle_values)
+        with self._io_lock:
+            speed_force = (speed_value, force_value)
+            if self._configured_speed_force != speed_force:
+                self.write_register(REG_CLEAR_ERROR, 1)
+                time.sleep(0.02)
+                self.write_registers(
+                    REG_SPEED_SET, [speed_value] * INSPIRE_HAND_DOF
+                )
+                time.sleep(0.02)
+                self.write_registers(
+                    REG_FORCE_SET, [force_value] * INSPIRE_HAND_DOF
+                )
+                time.sleep(0.02)
+                self._configured_speed_force = speed_force
+            self.write_registers(REG_ANGLE_SET, angle_values)
 
 
 def normalized_to_angle(values: Iterable[float], thumb_rotate_default: float = DEFAULT_THUMB_ROTATE) -> list[int]:
@@ -150,6 +206,38 @@ def normalized_to_task_angle(
 def task_command_angles(hand_task: str, command: str) -> list[int]:
     pose = resolve_hand_task_pose(hand_task, pressed=(command == "grasp"))
     return normalized_pose_to_modbus_angles(pose)
+
+
+def load_hand_pose_config(path: str) -> dict[str, np.ndarray]:
+    """Load physical six-motor open/grasp profiles for DDS bridge mode."""
+    with Path(path).expanduser().open("r", encoding="utf-8") as stream:
+        data = json.load(stream)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+
+    profiles = {}
+    for name, aliases in {"open": ("open",), "grasp": ("grasp", "closed")}.items():
+        values = next((data[key] for key in aliases if key in data), None)
+        arr = np.asarray(values, dtype=np.float64)
+        if arr.shape != (INSPIRE_HAND_DOF,):
+            raise ValueError(
+                f"{path}: {name} must have {INSPIRE_HAND_DOF} values, got {arr.shape}"
+            )
+        if np.any(arr < 0.0) or np.any(arr > 1.0):
+            raise ValueError(f"{path}: {name} values must be in [0.0, 1.0]")
+        profiles[name] = arr
+    return profiles
+
+
+def profile_pose_from_dds(values: Iterable[float], args) -> np.ndarray:
+    q = np.asarray(list(values), dtype=np.float64)
+    if q.shape != (INSPIRE_HAND_DOF,):
+        raise ValueError(f"DDS hand pose must have shape (6,), got {q.shape}")
+    if args.dds_pose_mode == "passthrough":
+        return np.clip(q, 0.0, 1.0)
+    finger_open_mean = float(np.mean(q[:4]))
+    profile = "grasp" if finger_open_mean < args.dds_profile_threshold else "open"
+    return args.hand_profiles[profile].copy()
 
 
 def send_to_target(hands: dict[str, InspireModbusHand], target: str, values: list[int], speed: int, force: int) -> None:
@@ -204,37 +292,54 @@ def _make_inspire_state_msg(
 def run_state_publisher(
     args,
     hands: dict[str, InspireModbusHand],
+    active_sides: list[str],
     stop_event: threading.Event,
     publisher: ChannelPublisher,
 ) -> None:
+    """Publish real active-hand state and synthetic open state for inactive hands."""
     period = 1.0 / max(float(args.state_publish_frequency), 1e-6)
-    last_right_q: np.ndarray | None = None
-    last_left_q: np.ndarray | None = None
+    last_q: dict[str, np.ndarray] = {}
     last_time: float | None = None
     last_log_time = 0.0
+    open_q = args.hand_profiles["open"]
 
     while not stop_event.is_set():
         loop_start = time.monotonic()
         try:
-            right_q = hands["right"].read_angle_normalized()
-            left_q = hands["left"].read_angle_normalized()
+            q = {
+                side: (
+                    hands[side].read_angle_normalized()
+                    if side in active_sides
+                    else open_q.copy()
+                )
+                for side in ("right", "left")
+            }
             now = time.monotonic()
-            if last_time is None or last_right_q is None or last_left_q is None:
-                right_dq = np.zeros(INSPIRE_HAND_DOF, dtype=np.float64)
-                left_dq = np.zeros(INSPIRE_HAND_DOF, dtype=np.float64)
-            else:
-                dt = max(now - last_time, 1e-6)
-                right_dq = (right_q - last_right_q) / dt
-                left_dq = (left_q - last_left_q) / dt
+            dq = {}
+            for side in ("right", "left"):
+                if last_time is None or side not in last_q or side not in active_sides:
+                    dq[side] = np.zeros(INSPIRE_HAND_DOF, dtype=np.float64)
+                else:
+                    dq[side] = (q[side] - last_q[side]) / max(
+                        now - last_time, 1e-6
+                    )
 
-            right_tau = left_tau = None
+            tau = {"right": None, "left": None}
             if args.read_force_state:
-                right_tau = hands["right"].read_force_normalized()
-                left_tau = hands["left"].read_force_normalized()
+                for side in active_sides:
+                    tau[side] = hands[side].read_force_normalized()
 
-            publisher.Write(_make_inspire_state_msg(right_q, left_q, right_dq, left_dq, right_tau, left_tau))
-            last_right_q = right_q
-            last_left_q = left_q
+            publisher.Write(
+                _make_inspire_state_msg(
+                    q["right"],
+                    q["left"],
+                    dq["right"],
+                    dq["left"],
+                    tau["right"],
+                    tau["left"],
+                )
+            )
+            last_q = q
             last_time = now
         except Exception as exc:
             now = time.monotonic()
@@ -250,6 +355,7 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
     last_command = None
     profile_samples = []
     last_profile_time = time.monotonic()
+    active_sides = ["left", "right"] if args.side == "both" else [args.side]
 
     def callback(msg: MotorCmds_) -> None:
         nonlocal last_command, last_profile_time
@@ -260,27 +366,35 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
 
         right_q = tuple(float(msg.cmds[i].q) for i in range(6))
         left_q = tuple(float(msg.cmds[i + 6].q) for i in range(6))
-        command_key = (right_q, left_q)
+        dds_q = {"left": left_q, "right": right_q}
+        command_key = tuple(dds_q[side] for side in active_sides)
         if command_key == last_command:
             return
-        last_command = command_key
 
         try:
-            right_angle = normalized_to_task_angle(
-                right_q, args.hand_task, args.thumb_rotate_default
-            )
-            left_angle = normalized_to_task_angle(
-                left_q, args.hand_task, args.thumb_rotate_default
-            )
-            right_start = time.perf_counter()
-            hands["right"].set_angle(right_angle, speed=args.speed, force=args.force)
-            right_ms = (time.perf_counter() - right_start) * 1000.0
-            left_start = time.perf_counter()
-            hands["left"].set_angle(left_angle, speed=args.speed, force=args.force)
-            left_ms = (time.perf_counter() - left_start) * 1000.0
+            angles = {
+                side: normalized_pose_to_modbus_angles(
+                    profile_pose_from_dds(dds_q[side], args).tolist()
+                )
+                for side in active_sides
+            }
+            side_ms = {"left": 0.0, "right": 0.0}
+            successful_sides = []
+            for side in active_sides:
+                side_start = time.perf_counter()
+                try:
+                    hands[side].set_angle(
+                        angles[side], speed=args.speed, force=args.force
+                    )
+                    successful_sides.append(side)
+                except Exception as exc:
+                    print(f"DDS -> Modbus {side} failed: {exc}")
+                finally:
+                    side_ms[side] = (time.perf_counter() - side_start) * 1000.0
+
             total_ms = (time.perf_counter() - callback_start) * 1000.0
             if args.profile_timing:
-                profile_samples.append((right_ms, left_ms, total_ms))
+                profile_samples.append((side_ms["right"], side_ms["left"], total_ms))
                 now = time.monotonic()
                 if now - last_profile_time >= args.profile_interval:
                     arr = np.asarray(profile_samples, dtype=np.float64)
@@ -294,7 +408,13 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
                     )
                     profile_samples.clear()
                     last_profile_time = now
-            print(f"DDS -> Modbus right={right_angle} left={left_angle}")
+            if successful_sides:
+                print(
+                    "DDS -> Modbus "
+                    + " ".join(f"{side}={angles[side]}" for side in successful_sides)
+                )
+            if len(successful_sides) == len(active_sides):
+                last_command = command_key
         except Exception as exc:
             print(f"DDS -> Modbus failed: {exc}")
 
@@ -317,7 +437,7 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
     if publisher is not None:
         state_thread = threading.Thread(
             target=run_state_publisher,
-            args=(args, hands, stop_event, publisher),
+            args=(args, hands, active_sides, stop_event, publisher),
             daemon=True,
         )
         state_thread.start()
@@ -326,12 +446,18 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
             f"at {args.state_publish_frequency:.1f} Hz."
         )
 
-    print("DDS -> Modbus bridge running on rt/inspire/cmd. Press Ctrl+C to stop.")
+    print(
+        "DDS -> Modbus bridge running on rt/inspire/cmd "
+        f"for {','.join(active_sides)}. Press Ctrl+C to stop."
+    )
+    print(f"Synthetic inactive-hand open q={args.hand_profiles['open'].tolist()}")
     try:
         while True:
             time.sleep(1.0)
     finally:
         stop_event.set()
+        for hand in hands.values():
+            hand.close()
 
 
 def parse_args():
@@ -356,6 +482,23 @@ def parse_args():
         "--hand-task-config",
         default="",
         help="Optional path to inspire_hand_tasks.json. Defaults to the project config.",
+    )
+    parser.add_argument(
+        "--hand-pose-config",
+        default=str(DEFAULT_HAND_POSE_CONFIG),
+        help="JSON file containing physical Inspire open and grasp six-motor poses.",
+    )
+    parser.add_argument(
+        "--dds-pose-mode",
+        choices=["profile", "passthrough"],
+        default="profile",
+        help="Map DDS commands to configured open/grasp profiles or pass them through.",
+    )
+    parser.add_argument(
+        "--dds-profile-threshold",
+        type=float,
+        default=0.5,
+        help="Mean first-four-finger threshold for selecting open versus grasp.",
     )
     parser.add_argument("--period", type=float, default=1.0)
     parser.add_argument("--count", type=int, default=10)
@@ -385,7 +528,9 @@ def parse_args():
         default=DEFAULT_THUMB_ROTATE,
         help="Default normalized thumb rotation in DDS mode, 0.0 closed to 1.0 open.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.hand_profiles = load_hand_pose_config(args.hand_pose_config)
+    return args
 
 
 def main():

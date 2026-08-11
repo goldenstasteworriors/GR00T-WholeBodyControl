@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -108,6 +109,10 @@ def _conda_prefix(repo_root: Path, env_name: str) -> str:
 
 def _default_hand_task_config(repo_root: Path) -> Path:
     return repo_root / "gear_sonic/config/data_collection/inspire_hand_tasks.json"
+
+
+def _default_inspire_hand_pose_config(repo_root: Path) -> Path:
+    return repo_root / "gear_sonic/config/data_collection/inspire_hand_pose.json"
 
 
 def _aarch64_control_runtime_prefix() -> str:
@@ -234,6 +239,28 @@ class DecoupledVLACollectionLaunchConfig:
 
     body_streamer_keyword: str = "foot"
     """Body streamer keyword for non-PICO devices; kept for config compatibility."""
+
+    # Inspire hand bridge
+    inspire_hand_bridge: bool = False
+    """Start the Inspire DDS-to-Modbus bridge for the physical hand."""
+
+    inspire_hand_network: str = "enp7s0"
+    """DDS network interface used by the Inspire bridge."""
+
+    inspire_left_ip: str = "192.168.123.210"
+    """Left Inspire hand Modbus TCP address."""
+
+    inspire_right_ip: str = "192.168.123.211"
+    """Right Inspire hand Modbus TCP address."""
+
+    inspire_hand_pose_config: str = ""
+    """Open/grasp profile JSON; defaults to the project Inspire pose config."""
+
+    inspire_hand_state_frequency: float = 50.0
+    """Modbus hand-state polling and DDS publishing frequency."""
+
+    left_hand_only: bool = False
+    """Drive only the left hand and synthesize open right-hand state/action data."""
 
     # Sim camera process
     sim_separate_process: bool = True
@@ -382,6 +409,31 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
     if not hand_task_config.exists():
         errors.append(f"hand task config missing: {hand_task_config}")
 
+    inspire_pose_config = (
+        Path(config.inspire_hand_pose_config).expanduser()
+        if config.inspire_hand_pose_config
+        else _default_inspire_hand_pose_config(repo_root)
+    )
+    if config.inspire_hand_bridge:
+        bridge_path = repo_root / "decoupled_wbc/scripts/inspire_modbus_hand.py"
+        if not bridge_path.exists():
+            errors.append(f"Inspire hand bridge missing: {bridge_path}")
+        available_interfaces = {name for _, name in socket.if_nameindex()}
+        if config.inspire_hand_network not in available_interfaces:
+            known = ", ".join(sorted(available_interfaces))
+            errors.append(
+                "--inspire-hand-network does not exist: "
+                f"{config.inspire_hand_network!r} (available: {known})"
+            )
+        if not (0.0 < config.inspire_hand_state_frequency <= 50.0):
+            errors.append("--inspire-hand-state-frequency must be in (0, 50]")
+        if not inspire_pose_config.exists():
+            errors.append(f"Inspire hand pose config missing: {inspire_pose_config}")
+    if config.left_hand_only and not config.inspire_hand_bridge:
+        errors.append("--left-hand-only requires --inspire-hand-bridge")
+    if config.inspire_hand_bridge and not config.with_hands:
+        errors.append("--inspire-hand-bridge requires --with-hands")
+
     if errors:
         print("ERROR: Prerequisites not met:\n")
         for error in errors:
@@ -487,6 +539,12 @@ def _build_teleop_args(config: DecoupledVLACollectionLaunchConfig, interface: st
 
 
 def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str]:
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    inspire_pose_config = (
+        Path(config.inspire_hand_pose_config).expanduser()
+        if config.inspire_hand_pose_config
+        else _default_inspire_hand_pose_config(repo_root)
+    )
     args = [
         "python",
         "gear_sonic/scripts/run_decoupled_vla_data_exporter.py",
@@ -506,6 +564,9 @@ def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str
         str(config.sonic_zmq_port),
         "--robot-config-timeout",
         "30",
+        "--inspire-hand-pose-config",
+        str(inspire_pose_config),
+        *_bool_arg("left-hand-only", config.left_hand_only),
         *_bool_arg("require-sonic-pose", config.require_sonic_pose),
         *_bool_arg("record-wrist-cameras", config.record_wrist_cameras),
         *_bool_arg("text-to-speech", config.text_to_speech),
@@ -599,6 +660,14 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         "  Hand config:   "
         f"{config.hand_task_config or _default_hand_task_config(repo_root)}"
     )
+    print(f"  Inspire bridge:{' enabled' if config.inspire_hand_bridge else ' disabled'}")
+    if config.inspire_hand_bridge:
+        print(f"  Inspire net:   {config.inspire_hand_network}")
+        print(f"  Inspire left:  {config.inspire_left_ip}")
+        print(
+            "  Hand data:     "
+            + ("left hardware + right synthetic open" if config.left_hand_only else "both hardware")
+        )
     print(f"  Export freq:   {config.data_exporter_frequency} Hz")
     print("=" * 72)
 
@@ -621,6 +690,39 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "sim"])
         sim_cmd = prefix + runtime_env + _shell_join(_build_sim_args(config, interface))
         _send_to_target(f"{SESSION_NAME}:sim", sim_cmd, wait=3.0)
+        subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
+
+    if config.inspire_hand_bridge and not config.sim:
+        subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "inspire_hand"])
+        inspire_pose_config = (
+            Path(config.inspire_hand_pose_config).expanduser()
+            if config.inspire_hand_pose_config
+            else _default_inspire_hand_pose_config(repo_root)
+        )
+        inspire_args = [
+            "python",
+            "-m",
+            "decoupled_wbc.scripts.inspire_modbus_hand",
+            "--mode",
+            "dds",
+            "--network",
+            config.inspire_hand_network,
+            "--left-ip",
+            config.inspire_left_ip,
+            "--right-ip",
+            config.inspire_right_ip,
+            "--hand-pose-config",
+            str(inspire_pose_config),
+            "--side",
+            "left" if config.left_hand_only else "both",
+            "--publish-state",
+            "--state-publish-frequency",
+            str(config.inspire_hand_state_frequency),
+            "--dds-pose-mode",
+            "profile",
+        ]
+        inspire_cmd = prefix + runtime_env + _shell_join(inspire_args)
+        _send_to_target(f"{SESSION_NAME}:inspire_hand", inspire_cmd, wait=1.0)
         subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
 
     control_cmd = (
@@ -678,6 +780,8 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         print("  sim window:            MuJoCo sim + image publisher")
     if config.pico_data_streamer:
         print("  pico_data window:      optional PICO SMPL/VR3PT streamer")
+    if config.inspire_hand_bridge and not config.sim:
+        print("  inspire_hand window:   Inspire DDS-to-Modbus bridge")
     if profile_log_dir is not None:
         print(f"  logs:                  {profile_log_dir}")
     print()
