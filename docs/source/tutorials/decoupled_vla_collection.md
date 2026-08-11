@@ -71,10 +71,16 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
 
 When `A+B+X+Y` requests startup, the official backend follows the G1 `sport`
 service API with a non-blocking `Damp (FSM 1) -> StandUp (FSM 4) -> Start
-(FSM 500) -> zero velocity` sequence. It waits for fresh low-state measurements,
-low leg velocity, and an upright torso before publishing the confirmed
-lower-body-active status. Firmware that accepts velocity directly from its
-standing FSM can opt out of the explicit Start transition with
+(FSM 501) -> zero velocity -> prepare arms` sequence. Before FSM 501 it waits
+for fresh low-state measurements, low leg velocity, and an upright torso. Once
+the dynamic locomotion FSM is active, it keeps sending zero velocity and checks
+fresh state plus torso tilt without requiring every leg joint's instantaneous
+velocity to fall below the locked-standing threshold. Only then does it blend
+motors 15--28 into `rt/arm_sdk`. As in `xr_teleoperate --motion`, the complete
+29-DOF arm-sdk packet is first seeded once from the measured pose, after which
+only the dual-arm targets at motors 15--28 are updated; the waist targets are
+not continuously rewritten by upper-body IK. Firmware that accepts velocity directly from its standing FSM can opt
+out of the explicit Start transition with
 `--unitree-loco-start-fsm-id -1`. `A+X` remains disabled until the complete
 sequence succeeds. A second `A+B+X+Y`, an RPC error, or a startup timeout
 releases the arm weight, commands zero velocity, and requests Damp.
@@ -114,7 +120,7 @@ python gear_sonic/scripts/launch_decoupled_vla_collection_onboard.py \
 ```
 
 Focus the tmux control pane before entering commands. `G` starts the non-blocking
-`Damp (FSM 1) -> StandUp (FSM 4) -> Start (FSM 500) -> zero velocity` sequence;
+`Damp (FSM 1) -> StandUp (FSM 4) -> Start (FSM 501) -> zero velocity -> prepare arms` sequence;
 pressing `G` again or pressing `Space` requests the safe emergency stop. Hold `W/S` for
 fixed +/-0.1 m/s forward/backward motion, `A/D` for fixed +/-0.1 m/s lateral
 motion, and `Q/E` for fixed +/-0.1 rad/s yaw. `Z` resets all velocity components

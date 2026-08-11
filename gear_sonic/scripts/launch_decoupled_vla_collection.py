@@ -224,13 +224,7 @@ class DecoupledVLACollectionLaunchConfig:
     """Allow nonzero lower-body velocity; leave disabled for initial FSM tests."""
 
     unitree_loco_arm_control_enabled: bool = True
-    """Hold the upper-body preparation pose through ``rt/arm_sdk`` before A+X."""
-
-    unitree_arm_waist_kp: float = 60.0
-    """Position gain for holding the measured waist pose while arm_sdk is active."""
-
-    unitree_arm_waist_kd: float = 1.5
-    """Velocity gain for holding the measured waist pose while arm_sdk is active."""
+    """Blend dual-arm targets through ``rt/arm_sdk`` after official loco starts."""
 
     unitree_loco_max_linear_velocity: float = 0.05
     """Maximum official-loco x/y speed after navigation is explicitly enabled."""
@@ -465,8 +459,6 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
             "--unitree-loco-max-torso-tilt": config.unitree_loco_max_torso_tilt,
             "--unitree-loco-max-linear-velocity": config.unitree_loco_max_linear_velocity,
             "--unitree-loco-max-angular-velocity": config.unitree_loco_max_angular_velocity,
-            "--unitree-arm-waist-kp": config.unitree_arm_waist_kp,
-            "--unitree-arm-waist-kd": config.unitree_arm_waist_kd,
         }
         errors.extend(f"{name} must be positive" for name, value in positive_values.items() if value <= 0.0)
         nonnegative_values = {
@@ -559,10 +551,6 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.unitree_loco_max_torso_tilt),
         *_bool_arg("unitree-loco-navigation-enabled", config.unitree_loco_navigation_enabled),
         *_bool_arg("unitree-loco-arm-control-enabled", config.unitree_loco_arm_control_enabled),
-        "--unitree-arm-waist-kp",
-        str(config.unitree_arm_waist_kp),
-        "--unitree-arm-waist-kd",
-        str(config.unitree_arm_waist_kd),
         "--unitree-loco-max-linear-velocity",
         str(config.unitree_loco_max_linear_velocity),
         "--unitree-loco-max-angular-velocity",
