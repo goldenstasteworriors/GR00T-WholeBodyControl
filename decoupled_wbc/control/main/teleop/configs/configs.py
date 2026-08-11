@@ -58,6 +58,8 @@ def override_wbc_config(
         "unitree_loco_damp_fsm_id": config.unitree_loco_damp_fsm_id,
         "unitree_loco_stand_fsm_id": config.unitree_loco_stand_fsm_id,
         "unitree_loco_service_name": config.unitree_loco_service_name,
+        "unitree_loco_system_service_name": config.unitree_loco_system_service_name,
+        "unitree_loco_service_start_timeout": config.unitree_loco_service_start_timeout,
         "unitree_loco_damp_duration": config.unitree_loco_damp_duration,
         "unitree_loco_stand_duration": config.unitree_loco_stand_duration,
         "unitree_loco_start_retry_interval": config.unitree_loco_start_retry_interval,
@@ -136,6 +138,12 @@ class BaseConfig(ArgsConfigTemplate):
 
     unitree_loco_service_name: str = "sport"
     """Official loco RPC service name (``sport`` for ai_sport >= 8.2)."""
+
+    unitree_loco_system_service_name: str = "ai_sport"
+    """Firmware system service kept enabled for official lower-body control."""
+
+    unitree_loco_service_start_timeout: float = 15.0
+    """Seconds to wait for ai_sport status and loco RPC readiness at startup."""
 
     unitree_loco_damp_duration: float = 1.0
     """Minimum seconds to remain in Damp before requesting StandUp."""
@@ -317,6 +325,7 @@ class BaseConfig(ArgsConfigTemplate):
                 "unitree_loco_command_frequency": self.unitree_loco_command_frequency,
                 "unitree_loco_start_retry_interval": self.unitree_loco_start_retry_interval,
                 "unitree_loco_activation_timeout": self.unitree_loco_activation_timeout,
+                "unitree_loco_service_start_timeout": self.unitree_loco_service_start_timeout,
                 "unitree_loco_state_timeout": self.unitree_loco_state_timeout,
                 "unitree_loco_max_leg_velocity": self.unitree_loco_max_leg_velocity,
                 "unitree_loco_max_torso_tilt": self.unitree_loco_max_torso_tilt,
@@ -324,6 +333,10 @@ class BaseConfig(ArgsConfigTemplate):
             invalid = [name for name, value in positive_values.items() if value <= 0.0]
             if invalid:
                 raise ValueError(f"unitree_loco values must be positive: {', '.join(invalid)}")
+            if not self.unitree_loco_system_service_name.strip():
+                raise ValueError("unitree_loco_system_service_name must not be empty")
+            if not self.unitree_loco_service_name.strip():
+                raise ValueError("unitree_loco_service_name must not be empty")
             nonnegative_values = {
                 "unitree_loco_damp_duration": self.unitree_loco_damp_duration,
                 "unitree_loco_stand_duration": self.unitree_loco_stand_duration,

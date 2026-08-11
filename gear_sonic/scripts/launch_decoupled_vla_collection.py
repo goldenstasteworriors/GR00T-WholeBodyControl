@@ -196,6 +196,12 @@ class DecoupledVLACollectionLaunchConfig:
     unitree_loco_service_name: str = "sport"
     """Official loco RPC service name."""
 
+    unitree_loco_system_service_name: str = "ai_sport"
+    """Firmware system service kept enabled for official lower-body control."""
+
+    unitree_loco_service_start_timeout: float = 15.0
+    """Seconds to wait for ai_sport status and loco RPC readiness at startup."""
+
     unitree_loco_damp_duration: float = 1.0
     """Minimum Damp hold time in seconds."""
 
@@ -454,6 +460,7 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
         positive_values = {
             "--unitree-loco-start-retry-interval": config.unitree_loco_start_retry_interval,
             "--unitree-loco-activation-timeout": config.unitree_loco_activation_timeout,
+            "--unitree-loco-service-start-timeout": config.unitree_loco_service_start_timeout,
             "--unitree-loco-state-timeout": config.unitree_loco_state_timeout,
             "--unitree-loco-max-leg-velocity": config.unitree_loco_max_leg_velocity,
             "--unitree-loco-max-torso-tilt": config.unitree_loco_max_torso_tilt,
@@ -533,6 +540,10 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.unitree_loco_stand_fsm_id),
         "--unitree-loco-service-name",
         config.unitree_loco_service_name,
+        "--unitree-loco-system-service-name",
+        config.unitree_loco_system_service_name,
+        "--unitree-loco-service-start-timeout",
+        str(config.unitree_loco_service_start_timeout),
         "--unitree-loco-damp-duration",
         str(config.unitree_loco_damp_duration),
         "--unitree-loco-stand-duration",
@@ -831,6 +842,10 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
             else f"motion (FSM {config.unitree_loco_start_fsm_id})"
         )
         print(f"    Unitree startup target: {target_mode}")
+        print(
+            f"    Unitree system service: keep {config.unitree_loco_system_service_name} "
+            "enabled across emergency stop and process exit"
+        )
         print("    PICO: click both thumbsticks = unconditional emergency Damp (FSM 1)")
         print("    PICO: A+B+X+Y starts; pressing it again also requests emergency Damp")
         print("    keyboard: Space in the control pane = unconditional emergency Damp")

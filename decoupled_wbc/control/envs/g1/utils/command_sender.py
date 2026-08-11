@@ -124,10 +124,21 @@ class UnitreeLocoArmCommandSender:
 
     def __init__(self, config: Dict):
         import unitree_sdk2py.g1.loco.g1_loco_client as g1_loco_client
+        from unitree_sdk2py.go2.robot_state.robot_state_client import RobotStateClient
         from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_
 
         self.config = config
+        self._system_service_name = str(
+            config.get("unitree_loco_system_service_name", "ai_sport")
+        )
+        self._system_service_start_timeout = float(
+            config.get("unitree_loco_service_start_timeout", 15.0)
+        )
+        self.robot_state = RobotStateClient()
+        self.robot_state.SetTimeout(5.0)
+        self.robot_state.Init()
+        self._ensure_system_service_enabled()
         self.low_cmd = unitree_hg_msg_dds__LowCmd_()
         self.crc = CRC()
         self.publisher = ChannelPublisher("rt/arm_sdk", LowCmd_)
@@ -141,6 +152,12 @@ class UnitreeLocoArmCommandSender:
         self.loco = g1_loco_client.LocoClient()
         self.loco.SetTimeout(5.0)
         self.loco.Init()
+        initial_fsm_id = self._wait_for_loco_rpc()
+        print(
+            f"Unitree {self._system_service_name} service is enabled and healthy "
+            f"(fsm_id={initial_fsm_id}); it will remain enabled after this process exits",
+            flush=True,
+        )
         self.active = False
         self._activation_requested = False
         self._activation_stage = "idle"
@@ -188,6 +205,78 @@ class UnitreeLocoArmCommandSender:
     def _check_rpc(name: str, code) -> None:
         if code not in (None, 0):
             raise RuntimeError(f"Unitree loco {name} failed with code {code}")
+
+    @staticmethod
+    def _check_robot_state_rpc(name: str, code) -> None:
+        if code not in (None, 0):
+            raise RuntimeError(f"Unitree robot_state {name} failed with code {code}")
+
+    def _get_system_service_status(self) -> int:
+        code, services = self.robot_state.ServiceList()
+        self._check_robot_state_rpc("ServiceList", code)
+        for service in services or ():
+            if service.name == self._system_service_name:
+                return int(service.status)
+        available = ", ".join(service.name for service in services or ()) or "<none>"
+        raise RuntimeError(
+            f"Unitree system service {self._system_service_name!r} was not found; "
+            f"available services: {available}"
+        )
+
+    def _ensure_system_service_enabled(self) -> None:
+        """Start ai_sport when needed and deliberately never stop it."""
+        status = self._get_system_service_status()
+        if status == 1:
+            print(
+                f"Unitree {self._system_service_name} service is already enabled; "
+                "leaving it running",
+                flush=True,
+            )
+            return
+        if status != 0:
+            raise RuntimeError(
+                f"Unitree system service {self._system_service_name!r} has "
+                f"unsupported status {status}"
+            )
+
+        self._check_robot_state_rpc(
+            f'ServiceSwitch("{self._system_service_name}", True)',
+            self.robot_state.ServiceSwitch(self._system_service_name, True),
+        )
+        deadline = time.monotonic() + self._system_service_start_timeout
+        while True:
+            status = self._get_system_service_status()
+            if status == 1:
+                print(
+                    f"Unitree {self._system_service_name} service enabled; "
+                    "it will remain enabled after this process exits",
+                    flush=True,
+                )
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Timed out after {self._system_service_start_timeout:.1f}s waiting "
+                    f"for Unitree {self._system_service_name} service to become enabled "
+                    f"(last status={status}); the service was not stopped"
+                )
+            time.sleep(0.2)
+
+    def _wait_for_loco_rpc(self) -> int:
+        deadline = time.monotonic() + self._system_service_start_timeout
+        last_error = None
+        while True:
+            try:
+                return self._query_fsm_id()
+            except Exception as exc:
+                last_error = exc
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Unitree {self._system_service_name} reports enabled, but the "
+                    f"{self.config.get('unitree_loco_service_name', 'sport')!r} loco RPC "
+                    f"did not become healthy within {self._system_service_start_timeout:.1f}s: "
+                    f"{last_error}. The service was left enabled; no FSM command was sent."
+                ) from last_error
+            time.sleep(0.2)
 
     def _set_fsm(self, fsm_id: int, name: str) -> None:
         self._check_rpc(name, self.loco.SetFsmId(int(fsm_id)))

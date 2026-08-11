@@ -11,6 +11,9 @@ def _make_sender() -> UnitreeLocoArmCommandSender:
     sender.loco = Mock()
     sender.loco.SetFsmId.return_value = 0
     sender.loco.SetVelocity.return_value = 0
+    sender.robot_state = Mock()
+    sender._system_service_name = "ai_sport"
+    sender._system_service_start_timeout = 15.0
     sender.active = False
     sender._activation_requested = False
     sender._activation_stage = "idle"
@@ -48,6 +51,10 @@ def _make_sender() -> UnitreeLocoArmCommandSender:
     return sender
 
 
+def _service_state(status: int, name: str = "ai_sport") -> SimpleNamespace:
+    return SimpleNamespace(name=name, status=status, protect=False)
+
+
 def _configure_upper_body_output(sender: UnitreeLocoArmCommandSender) -> None:
     sender.config = {
         "MOTOR2JOINT": list(range(29)),
@@ -81,6 +88,43 @@ def test_startup_begins_with_damp_without_private_control_authority_rpc():
     sender.loco.SetFsmId.assert_called_once_with(1)
     sender.loco._Call.assert_not_called()
     assert sender._activation_requested
+
+
+def test_enabled_ai_sport_is_left_running_without_service_switch():
+    sender = _make_sender()
+    sender.robot_state.ServiceList.return_value = (0, [_service_state(1)])
+
+    sender._ensure_system_service_enabled()
+
+    sender.robot_state.ServiceSwitch.assert_not_called()
+
+
+def test_disabled_ai_sport_is_enabled_once_and_never_stopped():
+    sender = _make_sender()
+    sender.robot_state.ServiceList.side_effect = [
+        (0, [_service_state(0)]),
+        (0, [_service_state(1)]),
+    ]
+    sender.robot_state.ServiceSwitch.return_value = 0
+
+    sender._ensure_system_service_enabled()
+
+    sender.robot_state.ServiceSwitch.assert_called_once_with("ai_sport", True)
+
+
+def test_missing_ai_sport_fails_without_switching_another_service():
+    sender = _make_sender()
+    sender.robot_state.ServiceList.return_value = (0, [_service_state(1, "sport_mode")])
+
+    try:
+        sender._ensure_system_service_enabled()
+    except RuntimeError as exc:
+        assert "ai_sport" in str(exc)
+        assert "sport_mode" in str(exc)
+    else:
+        raise AssertionError("missing ai_sport must fail")
+
+    sender.robot_state.ServiceSwitch.assert_not_called()
 
 
 def test_motion_fsm_is_retried_until_501_is_observed():
@@ -324,3 +368,4 @@ def test_emergency_stop_requests_damp_without_following_move():
     sender.loco.SetVelocity.assert_not_called()
     assert not sender.active
     assert not sender._activation_requested
+    sender.robot_state.ServiceSwitch.assert_not_called()
