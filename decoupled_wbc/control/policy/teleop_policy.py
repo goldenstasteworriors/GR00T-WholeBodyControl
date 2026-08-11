@@ -231,11 +231,6 @@ class TeleopPolicy(Policy):
             action["target_upper_body_pose"] = target
             self._last_safe_upper_target = target.copy()
 
-        if self._teleop_state in {"paused", "arming"}:
-            # A clutch operation must not preserve a joystick command that was
-            # held when A+X was pressed.
-            action["navigate_cmd"] = np.zeros(3)
-
         return action
 
     def close(self) -> bool:

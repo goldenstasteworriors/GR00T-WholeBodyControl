@@ -92,3 +92,29 @@ def test_ax_resume_recalibrates_pico_at_held_pose_before_following():
         policy.teleop_streamer.calibrate.call_args.kwargs["reference_body_q"],
         policy._held_body_q,
     )
+
+
+def test_paused_upper_body_does_not_zero_lower_body_navigation():
+    policy = TeleopPolicy.__new__(TeleopPolicy)
+    policy.teleop_streamer = Mock()
+    streamer_output = Mock()
+    streamer_output.teleop_data = {}
+    streamer_output.ik_data = None
+    streamer_output.control_data = {
+        "navigate_cmd": np.array([0.2, -0.1, 0.3]),
+    }
+    streamer_output.data_collection_data = {}
+    policy.teleop_streamer.get_streamer_data.return_value = streamer_output
+    policy.check_activation = Mock()
+    policy.is_active = False
+    policy._teleop_state = "paused"
+    policy._held_upper_body_pose = np.array([0.4, -0.3])
+    policy.latest_left_wrist_data = np.eye(4)
+    policy.latest_right_wrist_data = np.eye(4)
+    policy.latest_left_fingers_data = {"position": np.zeros((25, 4, 4))}
+    policy.latest_right_fingers_data = {"position": np.zeros((25, 4, 4))}
+
+    action = policy.get_action()
+
+    np.testing.assert_allclose(action["navigate_cmd"], [0.2, -0.1, 0.3])
+    np.testing.assert_allclose(action["target_upper_body_pose"], [0.4, -0.3])
