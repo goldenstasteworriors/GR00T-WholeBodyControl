@@ -1,6 +1,6 @@
 """Replay a collected SONIC LeRobot episode in MuJoCo.
 
-Two replay paths are supported:
+Three replay paths are supported:
 
 ``joint``
     Kinematic playback. Joint values from ``observation.state`` (or
@@ -14,6 +14,13 @@ Two replay paths are supported:
     consumes the tokens, builds observations from the live MuJoCo state, runs
     the local SONIC decoder, and sends its joint targets through the normal
     Unitree DDS/PD simulation path.
+
+``g1``
+    Closed-loop G1 encoder playback. The 29 body joints are extracted by
+    name from ``observation.state``, reordered into SONIC's IsaacLab G1 order,
+    and published through ZMQ protocol v1 along with finite-difference joint
+    velocities and the recorded root orientation. The local SONIC encoder
+    produces the 64D token; the normal decoder then controls MuJoCo.
 
 The token path can launch MuJoCo, C++ deploy, and this publisher in one tmux
 session. It is deliberately simulation-only.
@@ -93,11 +100,11 @@ class EpisodeData:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Replay SONIC LeRobot data in MuJoCo (joint angles or latent tokens)."
+        description="Replay SONIC LeRobot data in MuJoCo (kinematic, token, or G1 encoder)."
     )
     parser.add_argument("--dataset-path", type=Path, required=True)
     parser.add_argument("--episode-index", type=int, default=0)
-    parser.add_argument("--mode", choices=("joint", "token"), default="joint")
+    parser.add_argument("--mode", choices=("joint", "token", "g1"), default="joint")
     parser.add_argument("--start-frame", type=int, default=0)
     parser.add_argument("--end-frame", type=int, default=None)
     parser.add_argument(
@@ -130,6 +137,20 @@ def _build_parser() -> argparse.ArgumentParser:
         default=True,
     )
     joint_group.add_argument("--headless", action="store_true")
+
+    g1_group = parser.add_argument_group("G1 encoder replay")
+    g1_group.add_argument(
+        "--g1-joint-column",
+        choices=("observation.state", "action.wbc"),
+        default="observation.state",
+        help="43-DOF source vector; 29 G1 body joints are selected by metadata names.",
+    )
+    g1_group.add_argument(
+        "--g1-velocity-source",
+        choices=("finite_difference", "zeros"),
+        default="finite_difference",
+        help="Use timestamp-aware finite differences (default) or zero joint velocities.",
+    )
 
     token_group = parser.add_argument_group("token replay")
     token_group.add_argument(
@@ -216,7 +237,12 @@ def _load_episode(args: argparse.Namespace) -> EpisodeData:
         raise FileNotFoundError(f"Episode parquet not found: {parquet_path}")
     frame_table = pd.read_parquet(parquet_path)
 
-    required = [args.joint_column] if args.mode == "joint" else ["action.motion_token"]
+    if args.mode == "joint":
+        required = [args.joint_column]
+    elif args.mode == "token":
+        required = ["action.motion_token"]
+    else:
+        required = [args.g1_joint_column, "observation.root_orientation"]
     missing = [name for name in required if name not in frame_table.columns]
     if missing:
         raise ValueError(
@@ -554,6 +580,205 @@ def _run_token_publisher(args: argparse.Namespace, episode: EpisodeData) -> None
     print("Token replay complete; sent C++ stop command.")
 
 
+G1_ISAACLAB_ORDER = (
+    "left_hip_pitch_joint",
+    "right_hip_pitch_joint",
+    "waist_yaw_joint",
+    "left_hip_roll_joint",
+    "right_hip_roll_joint",
+    "waist_roll_joint",
+    "left_hip_yaw_joint",
+    "right_hip_yaw_joint",
+    "waist_pitch_joint",
+    "left_knee_joint",
+    "right_knee_joint",
+    "left_shoulder_pitch_joint",
+    "right_shoulder_pitch_joint",
+    "left_ankle_pitch_joint",
+    "right_ankle_pitch_joint",
+    "left_shoulder_roll_joint",
+    "right_shoulder_roll_joint",
+    "left_ankle_roll_joint",
+    "right_ankle_roll_joint",
+    "left_shoulder_yaw_joint",
+    "right_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "right_elbow_joint",
+    "left_wrist_roll_joint",
+    "right_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "right_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_wrist_yaw_joint",
+)
+
+
+def _g1_source_indices(args: argparse.Namespace, episode: EpisodeData) -> np.ndarray:
+    names = _joint_names_for_column(
+        argparse.Namespace(joint_column=args.g1_joint_column), episode
+    )
+    index_by_name = {name.removesuffix("_joint"): index for index, name in enumerate(names)}
+    missing = [
+        name for name in G1_ISAACLAB_ORDER if name.removesuffix("_joint") not in index_by_name
+    ]
+    if missing:
+        raise ValueError(
+            f"{args.g1_joint_column} is missing required G1 body joints: {missing}"
+        )
+    return np.asarray(
+        [index_by_name[name.removesuffix("_joint")] for name in G1_ISAACLAB_ORDER],
+        dtype=np.int64,
+    )
+
+
+def _g1_joint_trajectory(
+    args: argparse.Namespace, episode: EpisodeData
+) -> tuple[np.ndarray, np.ndarray]:
+    indices = _g1_source_indices(args, episode)
+    values = np.stack(
+        [
+            np.asarray(value, dtype=np.float32).reshape(-1)
+            for value in episode.frame_table[args.g1_joint_column]
+        ],
+        axis=0,
+    )
+    if values.shape[1] <= int(indices.max()):
+        raise ValueError(
+            f"{args.g1_joint_column} width {values.shape[1]} is incompatible with metadata indices"
+        )
+    joint_pos = values[:, indices]
+    if not np.all(np.isfinite(joint_pos)):
+        raise ValueError(f"{args.g1_joint_column} contains non-finite G1 joint values")
+
+    root_quat = np.stack(
+        [
+            np.asarray(value, dtype=np.float32).reshape(-1)
+            for value in episode.frame_table["observation.root_orientation"]
+        ],
+        axis=0,
+    )
+    if root_quat.shape != (len(episode.frame_table), 4) or not np.all(np.isfinite(root_quat)):
+        raise ValueError(
+            "observation.root_orientation must contain one finite quaternion per frame"
+        )
+    norms = np.linalg.norm(root_quat, axis=1, keepdims=True)
+    root_quat = np.where(
+        norms > 1e-8,
+        root_quat / np.maximum(norms, 1e-8),
+        np.array([1, 0, 0, 0], dtype=np.float32),
+    )
+    return joint_pos, root_quat.astype(np.float32)
+
+
+def _g1_joint_velocities(
+    args: argparse.Namespace, episode: EpisodeData, joint_pos: np.ndarray
+) -> np.ndarray:
+    if args.g1_velocity_source == "zeros":
+        return np.zeros_like(joint_pos)
+    timestamps = np.asarray(episode.frame_table["timestamp"], dtype=np.float64)
+    if timestamps.shape != (len(joint_pos),) or not np.all(np.isfinite(timestamps)):
+        raise ValueError("timestamp must contain one finite value per selected frame")
+    dt = np.diff(timestamps)
+    fallback_dt = 1.0 / episode.fps
+    dt = np.where(dt > 1e-8, dt, fallback_dt)
+    joint_vel = np.empty_like(joint_pos)
+    joint_vel[0] = (joint_pos[1] - joint_pos[0]) / dt[0] if len(joint_pos) > 1 else 0.0
+    if len(joint_pos) > 1:
+        joint_vel[1:] = (joint_pos[1:] - joint_pos[:-1]) / dt[:, None]
+    if not np.all(np.isfinite(joint_vel)):
+        raise ValueError("computed G1 joint velocities contain non-finite values")
+    return joint_vel.astype(np.float32)
+
+
+def _validate_g1_episode(args: argparse.Namespace, episode: EpisodeData) -> None:
+    joint_pos, _ = _g1_joint_trajectory(args, episode)
+    joint_vel = _g1_joint_velocities(args, episode, joint_pos)
+    print(
+        "Validation passed: selected and reordered 29 G1 joints into IsaacLab encoder order "
+        f"from {args.g1_joint_column}; velocity source={args.g1_velocity_source}, "
+        f"max_abs_velocity={np.abs(joint_vel).max():.4f}."
+    )
+
+
+def _pack_g1_message(
+    joint_pos: np.ndarray, joint_vel: np.ndarray, root_quat: np.ndarray, frame_index: int
+) -> bytes:
+    from gear_sonic.utils.teleop.zmq.zmq_planner_sender import pack_pose_message
+
+    pose_data = {
+        "joint_pos": np.asarray(joint_pos, dtype=np.float32).reshape(1, 29),
+        "joint_vel": np.asarray(joint_vel, dtype=np.float32).reshape(1, 29),
+        "body_quat_w": np.asarray(root_quat, dtype=np.float32).reshape(1, 4),
+        "frame_index": np.asarray([frame_index], dtype=np.int64),
+    }
+    return pack_pose_message(pose_data, topic="pose", version=1)
+
+
+def _run_g1_publisher(args: argparse.Namespace, episode: EpisodeData) -> None:
+    import zmq
+
+    joint_pos, root_quat = _g1_joint_trajectory(args, episode)
+    joint_vel = _g1_joint_velocities(args, episode, joint_pos)
+    if args.validate_only:
+        _validate_g1_episode(args, episode)
+        return
+
+    context = zmq.Context()
+    socket = context.socket(zmq.PUB)
+    socket.setsockopt(zmq.SNDHWM, 3)
+    socket.bind(args.zmq_bind)
+    print(f"G1 encoder publisher bound to {args.zmq_bind}")
+    print(f"Waiting {args.subscriber_settle_time:g}s for C++ subscribers...")
+    time.sleep(args.subscriber_settle_time)
+
+    frame_indices = np.asarray(episode.frame_table["frame_index"], dtype=np.int64)
+    first_message = _pack_g1_message(
+        joint_pos[0], joint_vel[0], root_quat[0], int(frame_indices[0])
+    )
+    warmup_period = 1.0 / episode.fps
+    for _ in range(args.warmup_frames):
+        socket.send(first_message)
+        time.sleep(warmup_period)
+    _send_command(socket, start=True)
+    print("G1_REPLAY_START_REQUESTED")
+    print("Sent C++ start command in streamed/G1 encoder mode.")
+    hold_deadline = time.monotonic() + args.start_hold_time
+    while time.monotonic() < hold_deadline:
+        socket.send(first_message)
+        time.sleep(warmup_period)
+
+    period = 1.0 / (episode.fps * args.speed)
+    try:
+        while True:
+            target_time = time.monotonic()
+            for frame_offset in range(len(joint_pos)):
+                socket.send(
+                    _pack_g1_message(
+                        joint_pos[frame_offset],
+                        joint_vel[frame_offset],
+                        root_quat[frame_offset],
+                        int(frame_indices[frame_offset]),
+                    )
+                )
+                if args.verbose and frame_offset % max(1, int(episode.fps)) == 0:
+                    print(f"G1 encoder replay frame {frame_offset}/{len(joint_pos) - 1}")
+                target_time += period
+                remaining = target_time - time.monotonic()
+                if remaining > 0:
+                    time.sleep(remaining)
+            if not args.loop:
+                break
+    except KeyboardInterrupt:
+        print("G1 encoder replay interrupted.")
+    finally:
+        try:
+            _send_command(socket, start=False)
+        finally:
+            socket.close(linger=0)
+            context.term()
+    print("G1 encoder replay complete; sent C++ stop command.")
+
+
 def _script_config(episode: EpisodeData) -> dict[str, Any]:
     config = episode.info.get("script_config", {})
     return config if isinstance(config, dict) else {}
@@ -630,7 +855,7 @@ def _wait_for_pane_text(target: str, needle: str, timeout: float) -> bool:
     return False
 
 
-def _create_token_session(args: argparse.Namespace, episode: EpisodeData) -> None:
+def _create_closed_loop_session(args: argparse.Namespace, episode: EpisodeData) -> None:
     if not shutil.which("tmux"):
         raise RuntimeError("tmux is required for --launch-stack")
     if not (REPO_ROOT / ".venv_sim" / "bin" / "python").exists():
@@ -716,7 +941,7 @@ def _create_token_session(args: argparse.Namespace, episode: EpisodeData) -> Non
         "--episode-index",
         str(args.episode_index),
         "--mode",
-        "token",
+        args.mode,
         "--start-frame",
         str(args.start_frame),
         "--speed",
@@ -737,6 +962,9 @@ def _create_token_session(args: argparse.Namespace, episode: EpisodeData) -> Non
         replay_args.extend(("--max-frames", str(args.max_frames)))
     replay_args.append("--loop" if args.loop else "--no-loop")
     replay_args.append("--send-hands" if args.send_hands else "--no-send-hands")
+    if args.mode == "g1":
+        replay_args.extend(("--g1-joint-column", args.g1_joint_column))
+        replay_args.extend(("--g1-velocity-source", args.g1_velocity_source))
     if args.verbose:
         replay_args.append("--verbose")
     replay_cmd = (
@@ -754,11 +982,12 @@ def _create_token_session(args: argparse.Namespace, episode: EpisodeData) -> Non
         + args.start_hold_time
         + 10.0,
     )
-    if not _wait_for_pane_text(
-        replay_target, "Sent C++ start command", publisher_timeout
-    ):
+    start_message = "Sent C++ start command in streamed/token mode."
+    if args.mode == "g1":
+        start_message = "G1_REPLAY_START_REQUESTED"
+    if not _wait_for_pane_text(replay_target, start_message, publisher_timeout):
         raise RuntimeError(
-            "Token publisher did not request streamed control in time. "
+            f"{args.mode} publisher did not request streamed control in time. "
             f"Inspect: tmux attach -t {SESSION_NAME}"
         )
     if not _wait_for_pane_text(deploy_target, "ZMQ streaming enabled", 10.0):
@@ -781,10 +1010,10 @@ def _create_token_session(args: argparse.Namespace, episode: EpisodeData) -> Non
     _tmux("select-pane", "-t", replay_target)
 
     print()
-    print("SONIC token replay stack is ready:")
+    print(f"SONIC {args.mode} replay stack is ready:")
     print(f"  tmux attach -t {SESSION_NAME}")
     print("  window replay, pane 0: C++ SONIC decoder")
-    print("  window replay, pane 1: dataset token publisher")
+    print(f"  window replay, pane 1: dataset {args.mode} publisher")
     print("  window sim: MuJoCo")
     print("  C++ SONIC policy state: CONTROL")
     print("  Ctrl+b then n/p switches windows; Ctrl+\\ terminates this replay session.")
@@ -803,9 +1032,24 @@ def _run_token_mode(args: argparse.Namespace, episode: EpisodeData) -> None:
         print("Validation passed: token replay data is compatible.")
         return
     if args.launch_stack:
-        _create_token_session(args, episode)
+        _create_closed_loop_session(args, episode)
     else:
         _run_token_publisher(args, episode)
+
+
+def _run_g1_mode(args: argparse.Namespace, episode: EpisodeData) -> None:
+    _validate_g1_episode(args, episode)
+    if args.validate_only:
+        if args.launch_stack:
+            checkpoint, obs_config, planner = _deploy_paths(args, episode)
+            print(f"Resolved checkpoint: {checkpoint}")
+            print(f"Resolved observation config: {obs_config}")
+            print(f"Resolved planner: {planner}")
+        return
+    if args.launch_stack:
+        _create_closed_loop_session(args, episode)
+    else:
+        _run_g1_publisher(args, episode)
 
 
 def main() -> None:
@@ -818,8 +1062,10 @@ def main() -> None:
     episode = _load_episode(args)
     if args.mode == "joint":
         _run_joint_replay(args, episode)
-    else:
+    elif args.mode == "token":
         _run_token_mode(args, episode)
+    else:
+        _run_g1_mode(args, episode)
 
 
 def _signal_handler(_signal: int, _frame: Any) -> None:
