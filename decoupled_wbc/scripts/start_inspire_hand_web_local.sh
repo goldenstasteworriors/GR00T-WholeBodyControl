@@ -17,7 +17,9 @@ fi
 
 echo "建立 SSH 隧道：$URL -> ${ROBOT_HOST}:127.0.0.1:${REMOTE_PORT}"
 echo "保持此终端运行；按 Ctrl+C 即关闭网页访问。"
-ssh -o ExitOnForwardFailure=yes -N \
+# SSH 配置中包含与本网页无关的 RemoteForward 10408；该远程转发失败
+# 不应影响本地 5001 -> 机器人 5000 的网页隧道。
+ssh -o ExitOnForwardFailure=no -N \
   -L "${LOCAL_PORT}:127.0.0.1:${REMOTE_PORT}" "$ROBOT_HOST" &
 SSH_PID=$!
 cleanup() { kill "$SSH_PID" 2>/dev/null || true; }
