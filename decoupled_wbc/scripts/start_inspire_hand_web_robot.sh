@@ -9,7 +9,6 @@ CONDA_SH="${CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}"
 CONDA_ENV="${CONDA_ENV:-decoupled_vla_collection}"
 HAND_SIDE="${HAND_SIDE:-left}"
 DDS_NETWORK="${DDS_NETWORK:-eth0}"
-HAND_TASK="${HAND_TASK:-open_door}"
 WEB_PORT="${WEB_PORT:-5000}"
 
 if [[ ! -f "$CONDA_SH" ]]; then
@@ -35,9 +34,9 @@ if [[ "$HAND_SIDE" != "left" && "$HAND_SIDE" != "right" && "$HAND_SIDE" != "both
   exit 1
 fi
 
-if pgrep -af 'decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds' >/dev/null; then
+if pgrep -af 'decoupled_wbc/scripts/inspire_.*hand.*bridge.py\|decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds' >/dev/null; then
   echo "检测到已有 DDS -> Modbus bridge；仅启动网页并复用该 bridge。"
-  pgrep -af 'decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds'
+  pgrep -af 'decoupled_wbc/scripts/inspire_.*hand.*bridge.py\|decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds'
   exec python decoupled_wbc/scripts/inspire_hand_web.py \
     --network "$DDS_NETWORK" --host 127.0.0.1 --port "$WEB_PORT"
 fi
@@ -54,7 +53,7 @@ fi
 
 echo "网页服务已启动；请在本机运行 start_inspire_hand_web_local.sh。"
 echo "DDS -> Modbus bridge 运行中；若它退出，网页服务会一并停止。"
-python decoupled_wbc/scripts/inspire_modbus_hand.py \
-  --mode dds --network "$DDS_NETWORK" \
+python decoupled_wbc/scripts/inspire_hand_web_bridge.py \
+  --network "$DDS_NETWORK" \
   --left-ip 192.168.123.210 --right-ip 192.168.123.211 \
-  --hand-task "$HAND_TASK" --side "$HAND_SIDE" --publish-state
+  --side "$HAND_SIDE"
