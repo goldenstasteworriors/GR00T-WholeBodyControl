@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROBOT_HOST="${ROBOT_HOST:-g1_bjutech_remote}"
-LOCAL_PORT="${LOCAL_PORT:-5000}"
+LOCAL_PORT="${LOCAL_PORT:-5001}"
 REMOTE_PORT="${REMOTE_PORT:-5000}"
 URL="http://127.0.0.1:${LOCAL_PORT}"
 
