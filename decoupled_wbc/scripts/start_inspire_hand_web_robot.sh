@@ -7,6 +7,7 @@ set -eo pipefail
 REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 CONDA_SH="${CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}"
 CONDA_ENV="${CONDA_ENV:-decoupled_vla_collection}"
+HAND_SIDE="${HAND_SIDE:-left}"
 DDS_NETWORK="${DDS_NETWORK:-eth0}"
 HAND_TASK="${HAND_TASK:-open_door}"
 WEB_PORT="${WEB_PORT:-5000}"
@@ -29,12 +30,19 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if pgrep -af 'decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds' >/dev/null; then
-  echo "已有 DDS -> Modbus bridge 正在运行。为避免两个 bridge 同时写手，停止本脚本并复用已有 bridge。" >&2
-  echo "请确认已有 bridge 使用 --side both；若不是，请先停止它再重试。" >&2
+if [[ "$HAND_SIDE" != "left" && "$HAND_SIDE" != "right" && "$HAND_SIDE" != "both" ]]; then
+  echo "HAND_SIDE 只能是 left、right 或 both，当前值：$HAND_SIDE" >&2
   exit 1
 fi
 
+if pgrep -af 'decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds' >/dev/null; then
+  echo "检测到已有 DDS -> Modbus bridge；仅启动网页并复用该 bridge。"
+  pgrep -af 'decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds'
+  exec python decoupled_wbc/scripts/inspire_hand_web.py \
+    --network "$DDS_NETWORK" --host 127.0.0.1 --port "$WEB_PORT"
+fi
+
+echo "未检测到 bridge；启动 $HAND_SIDE 手 DDS -> Modbus bridge。"
 python decoupled_wbc/scripts/inspire_hand_web.py \
   --network "$DDS_NETWORK" --host 127.0.0.1 --port "$WEB_PORT" &
 WEB_PID=$!
@@ -49,4 +57,4 @@ echo "DDS -> Modbus bridge 运行中；若它退出，网页服务会一并停�
 python decoupled_wbc/scripts/inspire_modbus_hand.py \
   --mode dds --network "$DDS_NETWORK" \
   --left-ip 192.168.123.210 --right-ip 192.168.123.211 \
-  --hand-task "$HAND_TASK" --side both --publish-state
+  --hand-task "$HAND_TASK" --side "$HAND_SIDE" --publish-state
