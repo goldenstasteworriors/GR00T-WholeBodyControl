@@ -572,9 +572,15 @@ class PicoStreamer(BaseStreamer):
         left_joystick,
         right_joystick,
     ) -> np.ndarray:
-        """Linearly map both PICO sticks to a symmetric x/y/yaw range."""
+        """Map PICO sticks to x/y/yaw, keeping only one left-stick axis."""
         fwd_bwd_input = np.clip(float(left_joystick[1]), -1.0, 1.0)
         strafe_input = np.clip(-float(left_joystick[0]), -1.0, 1.0)
+        # Do not send diagonal translation to the robot.  Select the dominant
+        # left-stick axis; a tie intentionally prefers forward/backward.
+        if abs(fwd_bwd_input) >= abs(strafe_input):
+            strafe_input = 0.0
+        else:
+            fwd_bwd_input = 0.0
         yaw_input = np.clip(-float(right_joystick[0]), -1.0, 1.0)
         return np.asarray(
             [fwd_bwd_input, strafe_input, yaw_input],

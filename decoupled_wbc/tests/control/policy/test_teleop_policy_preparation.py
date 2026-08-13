@@ -6,7 +6,7 @@ from decoupled_wbc.control.policy.teleop_policy import TeleopPolicy
 from decoupled_wbc.control.teleop.streamers.pico_streamer import PicoStreamer
 
 
-def test_pico_navigation_range_one_maps_all_axes_to_symmetric_unit_range():
+def test_pico_left_stick_tie_prefers_forward_backward_axis():
     streamer = PicoStreamer.__new__(PicoStreamer)
     streamer.navigation_range = 1.0
 
@@ -15,7 +15,7 @@ def test_pico_navigation_range_one_maps_all_axes_to_symmetric_unit_range():
         right_joystick=[-1.0, 0.0],
     )
 
-    np.testing.assert_allclose(command, [1.0, 1.0, 1.0])
+    np.testing.assert_allclose(command, [1.0, 0.0, 1.0])
 
 
 def test_pico_navigation_range_parameter_scales_and_clips_all_axes():
@@ -27,7 +27,19 @@ def test_pico_navigation_range_parameter_scales_and_clips_all_axes():
         right_joystick=[2.0, 0.0],
     )
 
-    np.testing.assert_allclose(command, [-0.4, -0.4, -0.4])
+    np.testing.assert_allclose(command, [-0.4, 0.0, -0.4])
+
+
+def test_pico_left_stick_uses_only_dominant_strafe_axis():
+    streamer = PicoStreamer.__new__(PicoStreamer)
+    streamer.navigation_range = 1.0
+
+    command = streamer._joystick_navigation_command(
+        left_joystick=[-0.9, -0.2],
+        right_joystick=[0.0, 0.0],
+    )
+
+    np.testing.assert_allclose(command, [0.0, 0.9, 0.0])
 
 
 def test_configured_preparation_pose_is_not_overwritten_by_startup_feedback():
