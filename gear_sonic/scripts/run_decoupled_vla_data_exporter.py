@@ -20,12 +20,13 @@ from __future__ import annotations
 import base64
 from dataclasses import asdict, dataclass
 from datetime import datetime
-import io
 import json
 import os
+from pathlib import Path
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -46,16 +47,27 @@ from decoupled_wbc.control.utils.ros_utils import ROSMsgSubscriber
 from gear_sonic.camera.composed_camera import ComposedCameraClientSensor
 from gear_sonic.data.exporter import Gr00tDataExporter
 from gear_sonic.data.features_sonic_vla import (
+    get_features_inspire_tactile,
     get_features_sonic_body29,
     get_features_sonic_inspire6,
     get_g1_robot_model,
+    get_modality_config_inspire_tactile,
     get_modality_config_sonic_body29,
     get_modality_config_sonic_inspire6,
     get_wrist_camera_features,
     get_wrist_camera_modality_config,
 )
 from gear_sonic.utils.data_collection.episode_state import EpisodeState
-from gear_sonic.utils.data_collection.inspire_hand_tasks import DEFAULT_HAND_TASK
+from gear_sonic.utils.data_collection.inspire_hand_tasks import (
+    DEFAULT_HAND_TASK,
+    resolve_hand_task_pose,
+)
+from gear_sonic.utils.data_collection.inspire_tactile import (
+    TACTILE_TOPIC,
+    empty_snapshot,
+    snapshot_frame_fields,
+    unpack_snapshot,
+)
 from gear_sonic.utils.data_collection.telemetry import Telemetry
 from gear_sonic.utils.data_collection.text_to_speech import TextToSpeech
 from gear_sonic.utils.data_collection.transforms import compute_projected_gravity, quat_to_rot6d
@@ -127,23 +139,83 @@ class DecoupledVLADataExporterConfig:
     with_hands: bool = True
     """Record native Inspire hand state/action fields when hand control is enabled."""
 
+    left_hand_only: bool = False
+    """Record the right Inspire state/action as the task's synthetic open pose."""
+
+    collect_tactile: bool = False
+    """Record latest-value left RH56DFTP tactile snapshots without blocking exporter FPS."""
+
+    tactile_zmq_host: str = "127.0.0.1"
+    """Host of the Inspire bridge tactile publisher."""
+
+    tactile_zmq_port: int = 5558
+    """Port of the Inspire bridge tactile publisher."""
+
+    tactile_full_refresh_hz: float = 2.0
+    """Requested physical full-refresh rate, stored in dataset metadata."""
+
+    tactile_metrics_log: str = ""
+    """Project-local Modbus metrics JSONL path, stored in dataset metadata."""
+
     text_to_speech: bool = False
-    """Use optional text-to-speech voice feedback; local tone cues are separate."""
+    """Use optional host text-to-speech in addition to the prompt backend."""
 
     audio_cues: bool = True
-    """Use local tone cues for start, stop and discard events."""
+    """Use audible prompts for start, stop and discard events."""
+
+    audio_cue_backend: str = "unitree_tts"
+    """Prompt backend: unitree_tts for the G1 speaker, or local for host WAV playback."""
+
+    unitree_audio_network: str = "real"
+    """Unitree DDS interface or the alias 'real' used by the G1 audio service."""
+
+    unitree_audio_volume: int = 85
+    """G1 speaker volume in [0, 100] when using unitree_tts."""
 
     audio_cue_volume: float = 0.35
     """Volume for start/stop tone cues."""
 
+    audio_cue_cache_dir: str = "logs/audio_cues"
+    """Project-local directory for generated cue WAV files."""
+
     discard_audio_cue_volume: float = 0.9
     """Volume for the discard tone cue."""
+
+    quiet_console: bool = False
+    """Show only recording start/stop episode status in the interactive pane."""
+
+    runtime_log_file: str = ""
+    """Full exporter log used when quiet_console is enabled."""
 
     profile_timing: bool = False
     """Print periodic timing breakdown."""
 
     profile_interval: float = 1.0
     """Seconds between timing profile log lines."""
+
+
+class RuntimeOutput:
+    """Route verbose exporter output to a log and keep the pane status-only."""
+
+    def __init__(self, quiet: bool, log_file: str):
+        self.quiet = quiet
+        self._pane_stream = sys.stdout
+        self._log_stream = None
+
+        if quiet:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_stream = log_path.open("a", encoding="utf-8", buffering=1)
+            sys.stdout = self._log_stream
+            sys.stderr = self._log_stream
+            print(f"\n[{datetime.now().isoformat()}] Decoupled VLA exporter started")
+            print(f"[RuntimeOutput] Full log: {log_path.resolve()}")
+
+    def status(self, message: str) -> None:
+        print(message, flush=True)
+        if self.quiet:
+            self._pane_stream.write(message + "\n")
+            self._pane_stream.flush()
 
 
 class TimeDeltaException(Exception):
@@ -154,79 +226,149 @@ class TimeDeltaException(Exception):
 
 
 class AudioCue:
-    """Serialize local tone cues so one state change cannot cut off another."""
+    """Serialize G1 speech prompts with local WAV playback as a fallback."""
 
-    def __init__(self, volume: float = 0.35, sample_rate: int = 44100):
-        self.volume = volume
+    def __init__(
+        self,
+        volume: float = 0.35,
+        sample_rate: int = 44100,
+        cache_dir: str = "logs/audio_cues",
+        backend: str = "unitree_tts",
+        unitree_network: str = "real",
+        unitree_volume: int = 85,
+    ):
+        if backend not in {"unitree_tts", "local"}:
+            raise ValueError("audio cue backend must be 'unitree_tts' or 'local'")
+        if not 0 <= unitree_volume <= 100:
+            raise ValueError("unitree audio volume must be in [0, 100]")
+
+        self.volume = max(0.0, min(1.0, float(volume)))
         self.sample_rate = sample_rate
-        self._audio_cmd = None
-        try:
-            import sounddevice as sd
-        except Exception as exc:
-            self._sd = None
-            # Prefer the native PipeWire client on the collection laptop.
-            if shutil.which("pw-play"):
-                self._audio_cmd = ["pw-play", "-"]
-            elif shutil.which("paplay"):
-                self._audio_cmd = ["paplay", "-"]
-            elif shutil.which("aplay"):
-                self._audio_cmd = ["aplay", "-q", "-"]
-            if self._audio_cmd is None:
-                print(f"[AudioCue] disabled: sounddevice unavailable ({exc}); no aplay/paplay fallback")
-        else:
-            self._sd = sd
+        self.backend = backend
+        self.unitree_network = unitree_network
+        self.unitree_volume = int(unitree_volume)
+        self._unitree_client = None
+        self._player = self._find_player()
+        self._cache_dir = Path(cache_dir)
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        if self._player is None:
+            print(
+                "[AudioCue] no local pw-play/paplay/aplay/play fallback; "
+                "terminal bell will be used"
+            )
 
         self.patterns = {
-            "start": [(880, 0.08), (1175, 0.10)],
-            "stop": [(1175, 0.08), (880, 0.12)],
-            "discard": [(260, 0.18), (0, 0.04), (180, 0.24), (0, 0.04), (140, 0.28)],
+            "start": [(660, 0.12), (880, 0.12), (1175, 0.18)],
+            "stop": [(1175, 0.12), (880, 0.12), (660, 0.20)],
+            "discard": [
+                (260, 0.18),
+                (0, 0.04),
+                (180, 0.24),
+                (0, 0.04),
+                (140, 0.28),
+            ],
         }
-        self._playback_queue: queue.Queue[tuple[list[tuple[int, float]], float]] = queue.Queue()
-        self._playback_worker = threading.Thread(target=self._run_playback_worker, daemon=True)
+        self._playback_queue: queue.Queue[tuple[str, float]] = queue.Queue()
+        self._playback_worker = threading.Thread(
+            target=self._run_playback_worker,
+            daemon=True,
+        )
         self._playback_worker.start()
 
+    @staticmethod
+    def _find_player() -> str | None:
+        for player in ("pw-play", "paplay", "aplay", "play"):
+            path = shutil.which(player)
+            if path is not None:
+                return path
+        return None
+
     def play(self, cue: str, *, volume: float | None = None) -> None:
-        pattern = self.patterns.get(cue)
-        if pattern is None:
+        if cue not in self.patterns:
             return
-        self._playback_queue.put((pattern, self.volume if volume is None else volume))
+        cue_volume = (
+            self.volume if volume is None else max(0.0, min(1.0, float(volume)))
+        )
+        self._playback_queue.put((cue, cue_volume))
 
     def _run_playback_worker(self) -> None:
         while True:
-            pattern, volume = self._playback_queue.get()
+            cue, volume = self._playback_queue.get()
             try:
-                self._play_pattern(pattern, volume)
+                if self.backend == "unitree_tts":
+                    try:
+                        self._speak_with_unitree(cue)
+                        continue
+                    except Exception as exc:
+                        print(
+                            f"[AudioCue] G1 speaker failed ({exc}); using local fallback",
+                            flush=True,
+                        )
+                self._play_local(cue, volume)
             finally:
                 self._playback_queue.task_done()
 
-    def _play_pattern(self, pattern: list[tuple[int, float]], volume: float) -> None:
+    def _speak_with_unitree(self, cue: str) -> None:
+        if self._unitree_client is None:
+            from decoupled_wbc.control.utils.network_utils import resolve_interface
+            from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+            from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient
+
+            network, env_type = resolve_interface(self.unitree_network)
+            if env_type != "real":
+                raise RuntimeError(
+                    f"Unitree audio requires a real-robot interface, got {network!r}"
+                )
+            ChannelFactoryInitialize(0, network)
+            client = AudioClient()
+            client.SetTimeout(3.0)
+            client.Init()
+            volume_result = client.SetVolume(self.unitree_volume)
+            if volume_result != 0:
+                print(
+                    f"[AudioCue] G1 SetVolume returned {volume_result}; continuing",
+                    flush=True,
+                )
+            self._unitree_client = client
+
+        text = "开始记录" if cue == "start" else "停止记录"
+        result = self._unitree_client.TtsMaker(text, 0)
+        if result != 0:
+            raise RuntimeError(f"G1 TtsMaker returned {result}")
+
+    def _play_local(self, cue: str, volume: float) -> None:
+        if self._player is None:
+            print("\a", end="", flush=True)
+            return
+
         try:
+            pattern = self.patterns[cue]
             samples = self._make_samples(pattern, volume)
-            if self._sd is not None:
-                # sounddevice has one shared output stream. Blocking inside the
-                # dedicated worker keeps a later cue from interrupting this one.
-                self._sd.play(samples, self.sample_rate, blocking=True)
-            elif self._audio_cmd is not None:
-                wav_data = self._samples_to_wav(samples)
-                last_error = "unknown playback error"
-                for _ in range(2):
-                    result = subprocess.run(
-                        self._audio_cmd,
-                        input=wav_data,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE,
-                        timeout=3.0,
-                    )
-                    if result.returncode == 0:
-                        return
-                    last_error = result.stderr.decode(errors="replace").strip() or (
-                        f"exit code {result.returncode}"
-                    )
-                raise RuntimeError(f"{' '.join(self._audio_cmd)}: {last_error}")
+            wav_path = self._cache_dir / f"{cue}.wav"
+            self._write_wav(wav_path, samples)
+            cmd = [self._player, str(wav_path)]
+            player_name = Path(self._player).name
+            if player_name in {"aplay", "play"}:
+                cmd = [self._player, "-q", str(wav_path)]
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=3.0,
+            )
+            if result.returncode != 0:
+                error = result.stderr.decode(errors="replace").strip() or (
+                    f"exit code {result.returncode}"
+                )
+                raise RuntimeError(f"{' '.join(cmd)}: {error}")
         except Exception as exc:
             print(f"[AudioCue] failed to play cue: {exc}")
 
-    def _make_samples(self, pattern: list[tuple[int, float]], volume: float) -> np.ndarray:
+    def _make_samples(
+        self,
+        pattern: list[tuple[int, float]],
+        volume: float,
+    ) -> np.ndarray:
         chunks = []
         for freq, duration in pattern:
             n_samples = max(1, int(self.sample_rate * duration))
@@ -234,18 +376,18 @@ class AudioCue:
                 chunks.append(np.zeros(n_samples, dtype=np.float32))
                 continue
             t = np.linspace(0.0, duration, n_samples, endpoint=False)
-            chunks.append((np.sin(2.0 * np.pi * freq * t) * volume).astype(np.float32))
+            chunks.append(
+                (np.sin(2.0 * np.pi * freq * t) * volume).astype(np.float32)
+            )
         return np.concatenate(chunks)
 
-    def _samples_to_wav(self, samples: np.ndarray) -> bytes:
+    def _write_wav(self, path: Path, samples: np.ndarray) -> None:
         pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
-        buf = io.BytesIO()
-        with wave.open(buf, "wb") as wav_file:
+        with wave.open(str(path), "wb") as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(self.sample_rate)
             wav_file.writeframes(pcm.tobytes())
-        return buf.getvalue()
 
 
 class TimingThresholdMonitor:
@@ -430,6 +572,7 @@ class DecoupledVLADataCollector:
         robot_model,
         text_to_speech: TextToSpeech | None = None,
         audio_cue: AudioCue | None = None,
+        status_callback=None,
     ):
         self.node = node
         self.config = config
@@ -437,8 +580,16 @@ class DecoupledVLADataCollector:
         self.robot_model = robot_model
         self.text_to_speech = text_to_speech
         self.audio_cue = audio_cue
+        self.status_callback = status_callback
         self.frequency = config.data_collection_frequency
         self.loop_period = 1.0 / self.frequency
+        self._inspire_open_q = np.asarray(
+            resolve_hand_task_pose(
+                os.environ.get("SONIC_HAND_TASK", DEFAULT_HAND_TASK),
+                pressed=False,
+            ),
+            dtype=np.float64,
+        )
 
         self._episode_state = EpisodeState()
         self._keyboard_listener = KeyboardListenerSubscriber()
@@ -452,6 +603,7 @@ class DecoupledVLADataCollector:
         self.latest_image_msg: dict | None = None
         self.latest_sonic_msg: dict | None = None
         self.latest_planner_msg: dict | None = None
+        self.latest_tactile_msg = empty_snapshot()
         self.current_stream_mode = 0
         self._manager_toggle_dc = False
         self._manager_toggle_da = False
@@ -468,6 +620,17 @@ class DecoupledVLADataCollector:
         self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "planner")
         self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "manager_state")
 
+        self._tactile_zmq_socket = None
+        if config.collect_tactile:
+            self._tactile_zmq_socket = self._sonic_zmq_ctx.socket(zmq.SUB)
+            self._tactile_zmq_socket.connect(
+                f"tcp://{config.tactile_zmq_host}:{config.tactile_zmq_port}"
+            )
+            self._tactile_zmq_socket.setsockopt(zmq.RCVTIMEO, 0)
+            self._tactile_zmq_socket.setsockopt(zmq.CONFLATE, 1)
+            self._tactile_zmq_socket.setsockopt(zmq.RCVHWM, 1)
+            self._tactile_zmq_socket.setsockopt(zmq.SUBSCRIBE, TACTILE_TOPIC)
+
         self.telemetry = Telemetry(window_size=100)
         self.sonic_timing_monitor = TimingThresholdMonitor(
             max_failures=3,
@@ -478,6 +641,7 @@ class DecoupledVLADataCollector:
         self._last_profile_log_time = time.monotonic()
         self._initial_yaw: float | None = None
         self._episode_init_base_quat: np.ndarray | None = None
+        self._active_episode_index: int | None = None
 
         self._left_wrist_indices = _body_state_joint_indices(
             self.robot_model,
@@ -512,6 +676,23 @@ class DecoupledVLADataCollector:
         volume = self.config.discard_audio_cue_volume if cue == "discard" else None
         self.audio_cue.play(cue, volume=volume)
 
+    def _announce_recording_event(self, event: str, episode_index: int) -> None:
+        self._play_audio_cue(event)
+        log_message = {
+            "start": f"Started recording episode {episode_index}",
+            "stop": f"Stopped recording episode {episode_index}",
+            "discard": f"Discarded recording episode {episode_index}",
+        }[event]
+        self._print_and_say(log_message)
+
+        if self.status_callback is not None:
+            pane_message = (
+                f"开始记录 episode {episode_index}"
+                if event == "start"
+                else f"停止记录 episode {episode_index}"
+            )
+            self.status_callback(pane_message)
+
     def _poll_state_ros(self) -> None:
         msg = self._state_subscriber.get_msg()
         if msg is None:
@@ -536,6 +717,20 @@ class DecoupledVLADataCollector:
                 self._handle_planner_message(raw)
             elif raw.startswith(b"pose"):
                 self._handle_pose_message(raw)
+
+    def _poll_tactile_zmq(self) -> None:
+        """Replace the cached snapshot with the newest complete bridge message."""
+        if self._tactile_zmq_socket is None:
+            return
+        while True:
+            try:
+                raw = self._tactile_zmq_socket.recv(zmq.NOBLOCK)
+            except zmq.Again:
+                return
+            try:
+                self.latest_tactile_msg = unpack_snapshot(raw)
+            except Exception as exc:
+                print(f"[Tactile] Ignoring invalid bridge message: {exc}")
 
     def _handle_manager_state(self, raw: bytes) -> None:
         try:
@@ -707,21 +902,30 @@ class DecoupledVLADataCollector:
             if self._episode_state.get_state() == self._episode_state.RECORDING:
                 self._initial_yaw = None
                 self._episode_init_base_quat = None
-                self._play_audio_cue("start")
-                self._print_and_say(f"Started recording {self.current_episode_index}")
+                self._active_episode_index = int(self.current_episode_index)
+                self._announce_recording_event("start", self._active_episode_index)
             elif self._episode_state.get_state() == self._episode_state.NEED_TO_SAVE:
-                self._play_audio_cue("stop")
-                self._print_and_say("Stopping recording, preparing to save")
+                episode_index = (
+                    self._active_episode_index
+                    if self._active_episode_index is not None
+                    else int(self.current_episode_index)
+                )
+                self._announce_recording_event("stop", episode_index)
             elif self._episode_state.get_state() == self._episode_state.IDLE:
                 pass
         elif key == "x":
             if self._episode_state.get_state() == self._episode_state.RECORDING:
+                episode_index = (
+                    self._active_episode_index
+                    if self._active_episode_index is not None
+                    else int(self.current_episode_index)
+                )
                 self.data_exporter.save_episode_as_discarded()
                 self._episode_state.reset_state()
                 self._initial_yaw = None
                 self._episode_init_base_quat = None
-                self._play_audio_cue("discard")
-                self._print_and_say("Discarded current recording")
+                self._announce_recording_event("discard", episode_index)
+                self._active_episode_index = None
 
     def _normalise_full_q(
         self,
@@ -762,11 +966,16 @@ class DecoupledVLADataCollector:
         body_indices = self.robot_model.get_body_actuated_joint_indices()
         if not self.config.with_hands:
             return np.ascontiguousarray(kinematic_state[body_indices], dtype=np.float64)
+        right_hand_q = (
+            self._inspire_open_q.copy()
+            if self.config.left_hand_only
+            else self._get_inspire_hand_state(proprio, "right")
+        )
         return np.concatenate(
             [
                 kinematic_state[body_indices],
                 self._get_inspire_hand_state(proprio, "left"),
-                self._get_inspire_hand_state(proprio, "right"),
+                right_hand_q,
             ]
         ).astype(np.float64, copy=False)
 
@@ -782,11 +991,18 @@ class DecoupledVLADataCollector:
                     )
                 left_indices = self.robot_model.get_hand_actuated_joint_indices("left")
                 right_indices = self.robot_model.get_hand_actuated_joint_indices("right")
+                right_hand_action = (
+                    self._inspire_open_q.copy()
+                    if self.config.left_hand_only
+                    else self._legacy_hand_action_to_inspire(
+                        legacy_action[right_indices], hand_task
+                    )
+                )
                 return np.concatenate(
                     [
                         legacy_action[body_indices],
                         self._legacy_hand_action_to_inspire(legacy_action[left_indices], hand_task),
-                        self._legacy_hand_action_to_inspire(legacy_action[right_indices], hand_task),
+                        right_hand_action,
                     ]
                 ).astype(np.float64, copy=False)
         return observation_state.copy()
@@ -1093,6 +1309,7 @@ class DecoupledVLADataCollector:
                 self._initial_yaw = None
                 self._episode_init_base_quat = None
             self._episode_state.change_state()
+            self._active_episode_index = None
         return True
 
     def _add_data_frame(self) -> bool:
@@ -1124,6 +1341,8 @@ class DecoupledVLADataCollector:
 
         self._add_robot_state_features(frame_data, proprio, base_quat)
         self._add_teleop_features(frame_data, observation_state)
+        if self.config.collect_tactile:
+            frame_data.update(snapshot_frame_fields(self.latest_tactile_msg))
         self._add_images_to_frame_data(frame_data)
 
         self.data_exporter.add_frame(frame_data)
@@ -1138,6 +1357,8 @@ class DecoupledVLADataCollector:
             self._print_and_say(f"Error saving episode: {exc}", blocking=True)
 
         try:
+            if self._tactile_zmq_socket is not None:
+                self._tactile_zmq_socket.close(linger=0)
             self._sonic_zmq_socket.close()
             self._sonic_zmq_ctx.term()
         except Exception:
@@ -1153,6 +1374,9 @@ class DecoupledVLADataCollector:
 
                     with self.telemetry.timer("poll_pico"):
                         self._poll_sonic_zmq_messages()
+
+                    with self.telemetry.timer("poll_tactile"):
+                        self._poll_tactile_zmq()
 
                     with self.telemetry.timer("poll_image"):
                         img_msg = self._image_subscriber.read()
@@ -1177,9 +1401,15 @@ class DecoupledVLADataCollector:
             self.save_and_cleanup()
 
 
-def main(config: DecoupledVLADataExporterConfig) -> None:
+def main(config: DecoupledVLADataExporterConfig, runtime_output: RuntimeOutput) -> None:
     if config.dataset_name is None:
         config.dataset_name = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    if config.left_hand_only and not config.with_hands:
+        raise ValueError("--left-hand-only requires --with-hands")
+    if config.collect_tactile and not config.with_hands:
+        raise ValueError("--collect-tactile requires --with-hands")
+    if config.collect_tactile and config.tactile_full_refresh_hz <= 0.0:
+        raise ValueError("--tactile-full-refresh-hz must be positive")
 
     rclpy.init(args=None)
     robot_config = poll_robot_config_ros(
@@ -1203,6 +1433,11 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
             modality_config = get_modality_config_sonic_body29(robot_model)
             schema_compatibility = "g1_body_29dof"
 
+        if config.collect_tactile:
+            dataset_features.update(get_features_inspire_tactile())
+            modality_config["state"].update(get_modality_config_inspire_tactile())
+            schema_compatibility += "_left_tactile_v1"
+
         if config.record_wrist_cameras:
             dataset_features.update(get_wrist_camera_features())
             wrist_modality = get_wrist_camera_modality_config()
@@ -1210,7 +1445,17 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
                 modality_config.setdefault(key, {}).update(value)
 
         text_to_speech = TextToSpeech() if config.text_to_speech else None
-        audio_cue = AudioCue(volume=config.audio_cue_volume) if config.audio_cues else None
+        audio_cue = (
+            AudioCue(
+                volume=config.audio_cue_volume,
+                cache_dir=config.audio_cue_cache_dir,
+                backend=config.audio_cue_backend,
+                unitree_network=config.unitree_audio_network,
+                unitree_volume=config.unitree_audio_volume,
+            )
+            if config.audio_cues
+            else None
+        )
         script_config = {
             **robot_config,
             "decoupled_vla_exporter": asdict(config),
@@ -1218,12 +1463,33 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
                 "robot_state": "decoupled_ros",
                 "pico_pose": "optional_sonic_zmq",
                 "camera": "gear_sonic_composed_camera",
+                "left_tactile": (
+                    "inspire_modbus_latest_value_cache"
+                    if config.collect_tactile
+                    else "disabled"
+                ),
             },
             "schema_compatibility": schema_compatibility,
+            "hand_data_mode": "left_only" if config.left_hand_only else "both",
+            "active_hands": ["left"] if config.left_hand_only else ["left", "right"],
+            "right_hand_data": {
+                "source": "synthetic" if config.left_hand_only else "hardware",
+                "default_pose": "open" if config.left_hand_only else None,
+                "default_inspire_6d": (
+                    resolve_hand_task_pose(
+                        os.environ.get("SONIC_HAND_TASK", DEFAULT_HAND_TASK),
+                        pressed=False,
+                    )
+                    if config.left_hand_only
+                    else None
+                ),
+            },
         }
 
+        dataset_root = f"{config.root_output_dir}/{config.dataset_name}"
+        print(f"[DataExporter] Initializing local dataset: {dataset_root}", flush=True)
         data_exporter = Gr00tDataExporter.create(
-            save_root=f"{config.root_output_dir}/{config.dataset_name}",
+            save_root=dataset_root,
             fps=config.data_collection_frequency,
             features=dataset_features,
             modality_config=modality_config,
@@ -1231,6 +1497,7 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
             script_config=script_config,
             overwrite_existing=config.overwrite_existing_dataset,
         )
+        print("[DataExporter] Local dataset and video writers are ready", flush=True)
 
         collector = DecoupledVLADataCollector(
             node=node,
@@ -1239,6 +1506,11 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
             robot_model=robot_model,
             text_to_speech=text_to_speech,
             audio_cue=audio_cue,
+            status_callback=runtime_output.status,
+        )
+        print(
+            "[DataExporter] READY: listening for PICO/keyboard recording commands",
+            flush=True,
         )
         collector.run()
     finally:
@@ -1248,4 +1520,9 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(DecoupledVLADataExporterConfig))
+    config = tyro.cli(DecoupledVLADataExporterConfig)
+    runtime_log_file = config.runtime_log_file or (
+        f"logs/decoupled_vla_exporter_{config.dataset_name or 'session'}.log"
+    )
+    runtime_output = RuntimeOutput(config.quiet_console, runtime_log_file)
+    main(config, runtime_output)

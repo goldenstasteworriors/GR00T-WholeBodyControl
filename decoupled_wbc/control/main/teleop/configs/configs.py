@@ -74,6 +74,7 @@ def override_wbc_config(
         "unitree_loco_max_linear_velocity": config.unitree_loco_max_linear_velocity,
         "unitree_loco_max_angular_velocity": config.unitree_loco_max_angular_velocity,
         "unitree_arm_weight_ramp_duration": config.unitree_arm_weight_ramp_duration,
+        "unitree_arm_handoff_max_velocity": config.unitree_arm_handoff_max_velocity,
     }
 
     if missed_keys_only:
@@ -176,16 +177,19 @@ class BaseConfig(ArgsConfigTemplate):
     """Allow nonzero navigation commands; disabled for initial FSM/stop tests."""
 
     unitree_loco_arm_control_enabled: bool = True
-    """Hold a preparation pose through ``rt/arm_sdk`` before A+X teleoperation."""
+    """Enable ``rt/arm_sdk`` for Pico upper-body teleoperation."""
 
-    unitree_loco_max_linear_velocity: float = 0.05
+    unitree_loco_max_linear_velocity: float = 1.0
     """Absolute official-loco x/y velocity limit in m/s."""
 
-    unitree_loco_max_angular_velocity: float = 0.1
+    unitree_loco_max_angular_velocity: float = 1.0
     """Absolute official-loco yaw-rate limit in rad/s."""
 
     unitree_arm_weight_ramp_duration: float = 2.0
     """Seconds used to blend from official arm control to ``rt/arm_sdk``."""
+
+    unitree_arm_handoff_max_velocity: float = 0.5
+    """Maximum arm speed while joining the measured takeover pose to the policy target."""
 
     # System Configuration
     interface: str = "sim"
@@ -238,8 +242,8 @@ class BaseConfig(ArgsConfigTemplate):
     startup_final_pose_duration: float = 4.0
     """Seconds to move all remaining joints to the normal initial pose."""
 
-    startup_final_elbow_angle: float = 0.0
-    """Elbow angle used only for the upper-body startup target."""
+    startup_final_elbow_angle: float = -0.2617993877991494
+    """Elbow target used only for the arm_sdk startup pose; -15 degrees raises both arms."""
 
     env_name: str = "default"
     """Environment name."""
@@ -283,6 +287,12 @@ class BaseConfig(ArgsConfigTemplate):
 
     pico_vis_smpl: bool = False
     """Display PICO full-body tracking with the Main collection visualizer."""
+
+    pico_navigation_range: float = 1.0
+    """Symmetric PICO navigation range; 1.0 maps all three axes to [-1, 1]."""
+
+    pico_fixed_side: Literal["left", "right", "none"] = "right"
+    """Upper-body side held at the measured A+X activation pose; none moves both sides."""
 
     enable_real_device: bool = True
     """Whether to enable real device."""
@@ -329,6 +339,7 @@ class BaseConfig(ArgsConfigTemplate):
                 "unitree_loco_state_timeout": self.unitree_loco_state_timeout,
                 "unitree_loco_max_leg_velocity": self.unitree_loco_max_leg_velocity,
                 "unitree_loco_max_torso_tilt": self.unitree_loco_max_torso_tilt,
+                "unitree_arm_handoff_max_velocity": self.unitree_arm_handoff_max_velocity,
             }
             invalid = [name for name, value in positive_values.items() if value <= 0.0]
             if invalid:

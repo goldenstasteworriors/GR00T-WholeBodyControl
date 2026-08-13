@@ -15,6 +15,13 @@ import copy
 from typing import Literal
 
 from gear_sonic.data.robot_model import RobotModel
+from gear_sonic.utils.data_collection.inspire_tactile import (
+    MODBUS_METRIC_NAMES,
+    TACTILE_FORCE_COUNT,
+    TACTILE_REGION_COUNT,
+    TACTILE_REGIONS,
+    TACTILE_TAXEL_COUNT,
+)
 
 EGO_VIEW_HEIGHT: int = 480
 EGO_VIEW_WIDTH: int = 640
@@ -424,6 +431,104 @@ def get_modality_config_sonic_inspire6(robot_model: RobotModel) -> dict:
     for side in ("left", "right"):
         modality["action"][f"{side}_hand_joints"]["end"] = 6
     return modality
+
+
+def get_features_inspire_tactile() -> dict:
+    """Return fixed-shape left RH56DFTP tactile and Modbus telemetry fields."""
+    taxel_names = [
+        f"{region.name}_{index}"
+        for region in TACTILE_REGIONS
+        for index in range(region.size)
+    ]
+    region_names = [region.name for region in TACTILE_REGIONS]
+    return {
+        "observation.tactile.left_values": {
+            "dtype": "uint16",
+            "shape": (TACTILE_TAXEL_COUNT,),
+            "names": taxel_names,
+        },
+        "observation.tactile.left_valid": {
+            "dtype": "bool",
+            "shape": (TACTILE_REGION_COUNT,),
+            "names": region_names,
+        },
+        "observation.tactile.left_age_ms": {
+            "dtype": "float32",
+            "shape": (TACTILE_REGION_COUNT,),
+            "names": region_names,
+        },
+        "observation.tactile.left_update_sequence": {
+            "dtype": "int64",
+            "shape": (TACTILE_REGION_COUNT,),
+            "names": region_names,
+        },
+        "observation.tactile.left_force_act_g": {
+            "dtype": "int16",
+            "shape": (TACTILE_FORCE_COUNT,),
+            "names": ["little", "ring", "middle", "index", "thumb_bend", "thumb_rotate"],
+        },
+        "observation.tactile.left_force_valid": {
+            "dtype": "bool",
+            "shape": (1,),
+            "names": ["force_valid"],
+        },
+        "observation.tactile.left_force_age_ms": {
+            "dtype": "float32",
+            "shape": (1,),
+            "names": ["force_age_ms"],
+        },
+        "observation.tactile.modbus_metrics": {
+            "dtype": "float32",
+            "shape": (len(MODBUS_METRIC_NAMES),),
+            "names": list(MODBUS_METRIC_NAMES),
+        },
+    }
+
+
+def get_modality_config_inspire_tactile() -> dict:
+    """Expose tactile arrays as independent state modalities."""
+    return {
+        "left_tactile_values": {
+            "start": 0,
+            "end": TACTILE_TAXEL_COUNT,
+            "original_key": "observation.tactile.left_values",
+        },
+        "left_tactile_valid": {
+            "start": 0,
+            "end": TACTILE_REGION_COUNT,
+            "original_key": "observation.tactile.left_valid",
+        },
+        "left_tactile_age_ms": {
+            "start": 0,
+            "end": TACTILE_REGION_COUNT,
+            "original_key": "observation.tactile.left_age_ms",
+        },
+        "left_tactile_update_sequence": {
+            "start": 0,
+            "end": TACTILE_REGION_COUNT,
+            "original_key": "observation.tactile.left_update_sequence",
+        },
+        "left_tactile_force_act_g": {
+            "start": 0,
+            "end": TACTILE_FORCE_COUNT,
+            "original_key": "observation.tactile.left_force_act_g",
+        },
+        "left_tactile_force_valid": {
+            "start": 0,
+            "end": 1,
+            "original_key": "observation.tactile.left_force_valid",
+        },
+        "left_tactile_force_age_ms": {
+            "start": 0,
+            "end": 1,
+            "original_key": "observation.tactile.left_force_age_ms",
+        },
+        "tactile_modbus_metrics": {
+            "start": 0,
+            "end": len(MODBUS_METRIC_NAMES),
+            "original_key": "observation.tactile.modbus_metrics",
+        },
+    }
 
 
 def get_features_sonic_body29(robot_model: RobotModel) -> dict:

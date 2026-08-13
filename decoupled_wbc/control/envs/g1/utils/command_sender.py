@@ -121,6 +121,8 @@ class UnitreeLocoArmCommandSender:
     ARM_WEIGHT_INDEX = 29
     LEG_JOINT_COUNT = 12
     BODY_JOINT_COUNT = 29
+    RPC_ERR_CLIENT_API_TIMEOUT = 3104
+    MAX_CONSECUTIVE_VELOCITY_TIMEOUTS = 3
 
     def __init__(self, config: Dict):
         import unitree_sdk2py.g1.loco.g1_loco_client as g1_loco_client
@@ -166,6 +168,7 @@ class UnitreeLocoArmCommandSender:
         self._last_fsm_query = 0.0
         self._last_fsm_id = None
         self._last_velocity_send = 0.0
+        self._consecutive_velocity_timeouts = 0
         self._last_start_request = 0.0
         self._latest_body_q = None
         self._latest_leg_dq = None
@@ -189,17 +192,23 @@ class UnitreeLocoArmCommandSender:
         self._state_timeout = float(config.get("unitree_loco_state_timeout", 0.5))
         self._max_leg_velocity = float(config.get("unitree_loco_max_leg_velocity", 0.35))
         self._max_torso_tilt = float(config.get("unitree_loco_max_torso_tilt", 0.35))
-        self._max_linear_velocity = float(config.get("unitree_loco_max_linear_velocity", 0.05))
-        self._max_angular_velocity = float(config.get("unitree_loco_max_angular_velocity", 0.1))
+        self._max_linear_velocity = float(config.get("unitree_loco_max_linear_velocity", 1.0))
+        self._max_angular_velocity = float(config.get("unitree_loco_max_angular_velocity", 1.0))
         self._navigation_enabled = bool(config.get("unitree_loco_navigation_enabled", False))
         self._arm_control_enabled = bool(
             config.get("unitree_loco_arm_control_enabled", False)
         )
         self._weight_ramp_duration = float(config.get("unitree_arm_weight_ramp_duration", 2.0))
+        handoff_velocity = float(config.get("unitree_arm_handoff_max_velocity", 0.5))
+        self._arm_handoff_max_delta = handoff_velocity * float(
+            config.get("REWARD_DT", 0.02)
+        )
         self._activation_time = 0.0
         self._arm_preparing = False
         self._arm_preparation_started = 0.0
         self._arm_preparation_complete = False
+        self._arm_handoff_active = False
+        self._arm_handoff_q = None
 
     @staticmethod
     def _check_rpc(name: str, code) -> None:
@@ -379,6 +388,7 @@ class UnitreeLocoArmCommandSender:
 
     def _reset_activation(self) -> None:
         self.active = False
+        self._consecutive_velocity_timeouts = 0
         self._activation_requested = False
         self._activation_stage = "idle"
         self._activation_deadline = 0.0
@@ -388,9 +398,11 @@ class UnitreeLocoArmCommandSender:
         self._arm_preparing = False
         self._arm_preparation_started = 0.0
         self._arm_preparation_complete = False
+        self._arm_handoff_active = False
+        self._arm_handoff_q = None
 
     def operator_ready(self) -> bool:
-        """Return true after locomotion and the optional arm preparation are ready."""
+        """Return true after locomotion and measured-pose arm takeover are ready."""
         if not self.active:
             return False
         return not self._arm_control_enabled or self._arm_preparation_complete
@@ -428,6 +440,8 @@ class UnitreeLocoArmCommandSender:
         self._arm_preparing = True
         self._arm_preparation_started = now
         self._arm_preparation_complete = False
+        self._arm_handoff_active = False
+        self._arm_handoff_q = self._latest_body_q.copy()
         self._set_activation_stage("prepare_arms", now)
         source = (
             f"FSM {self._stand_fsm_id} locked standing"
@@ -541,7 +555,7 @@ class UnitreeLocoArmCommandSender:
             else:
                 startup_path += f" -> Start({self._start_fsm_id})"
             if self._arm_control_enabled:
-                startup_path += " -> prepare arms"
+                startup_path += " -> smoothly raise arms"
             print(
                 f"Unitree official loco startup requested: {startup_path}",
                 flush=True,
@@ -629,7 +643,7 @@ class UnitreeLocoArmCommandSender:
                 self._stable_since = None
                 self._log_waiting(
                     now,
-                    f"holding for arm preparation in fsm_id={expected_fsm_id}, current={fsm_id}",
+                    f"raising arms in fsm_id={expected_fsm_id}, current={fsm_id}",
                 )
                 return
             if self._start_fsm_id is not None and (
@@ -641,7 +655,7 @@ class UnitreeLocoArmCommandSender:
                 self._stable_since = None
                 self._log_waiting(
                     now,
-                    "preparing arms "
+                    "smoothly raising arms from the measured pose "
                     f"({preparation_time:.2f}/{self._weight_ramp_duration:.2f}s)",
                 )
                 return
@@ -654,8 +668,10 @@ class UnitreeLocoArmCommandSender:
                 return
             self._arm_preparing = False
             self._arm_preparation_complete = True
+            self._arm_handoff_active = self._arm_handoff_q is not None
             print(
-                "Unitree arm_sdk dual-arm preparation pose ready; waist is not updated by IK",
+                "Unitree arm_sdk preparation pose ready; smoothly finishing the policy "
+                "target handoff if needed; waist is not updated by IK",
                 flush=True,
             )
             self._mark_active(now, fsm_id)
@@ -710,20 +726,77 @@ class UnitreeLocoArmCommandSender:
         vx = float(np.clip(velocity[0], -self._max_linear_velocity, self._max_linear_velocity))
         vy = float(np.clip(velocity[1], -self._max_linear_velocity, self._max_linear_velocity))
         wz = float(np.clip(velocity[2], -self._max_angular_velocity, self._max_angular_velocity))
-        self._check_rpc("SetVelocity", self.loco.SetVelocity(vx, vy, wz, 0.25))
-        self._last_velocity_send = now
+        code = self.loco.SetVelocity(vx, vy, wz, 0.25)
+        # A response timeout does not establish whether the short-duration
+        # command reached the robot.  Treat an isolated timeout as transient,
+        # keep the normal rate limit, and let the next control cycle refresh
+        # the command.  Persistent timeouts remain fatal so cleanup requests
+        # Damp instead of silently losing navigation control.
+        self._last_velocity_send = time.monotonic()
+        if code == self.RPC_ERR_CLIENT_API_TIMEOUT:
+            self._consecutive_velocity_timeouts += 1
+            if (
+                self._consecutive_velocity_timeouts
+                >= self.MAX_CONSECUTIVE_VELOCITY_TIMEOUTS
+            ):
+                self._check_rpc("SetVelocity", code)
+            print(
+                "Unitree loco SetVelocity response timeout "
+                f"({self._consecutive_velocity_timeouts}/"
+                f"{self.MAX_CONSECUTIVE_VELOCITY_TIMEOUTS}); "
+                "the next rate-limited cycle will refresh the command",
+                flush=True,
+            )
+            return
+        self._check_rpc("SetVelocity", code)
+        self._consecutive_velocity_timeouts = 0
 
     def send_command(self, cmd_q: np.ndarray, cmd_dq: np.ndarray, cmd_tau: np.ndarray):
         if not self._arm_output_active():
             return
+        handoff_complete = self._arm_handoff_active
         for motor_index in self.ARM_MOTOR_INDICES:
             joint_index = self.config["MOTOR2JOINT"][motor_index]
             motor = self.low_cmd.motor_cmd[motor_index]
-            motor.q = float(cmd_q[joint_index])
-            motor.dq = float(cmd_dq[joint_index])
-            motor.tau = float(cmd_tau[joint_index])
+            if self._arm_preparing:
+                # Start from the measured pose and rate-limit the configured
+                # preparation target while arm_sdk authority is blended in.
+                target_q = float(cmd_q[joint_index])
+                previous_q = float(self._arm_handoff_q[joint_index])
+                motor.q = float(
+                    np.clip(
+                        target_q,
+                        previous_q - self._arm_handoff_max_delta,
+                        previous_q + self._arm_handoff_max_delta,
+                    )
+                )
+                motor.dq = 0.0
+                motor.tau = 0.0
+                self._arm_handoff_q[joint_index] = motor.q
+            elif self._arm_handoff_active:
+                target_q = float(cmd_q[joint_index])
+                previous_q = float(self._arm_handoff_q[joint_index])
+                motor.q = float(
+                    np.clip(
+                        target_q,
+                        previous_q - self._arm_handoff_max_delta,
+                        previous_q + self._arm_handoff_max_delta,
+                    )
+                )
+                motor.dq = 0.0
+                motor.tau = 0.0
+                self._arm_handoff_q[joint_index] = motor.q
+                if not np.isclose(motor.q, target_q, atol=1e-9, rtol=0.0):
+                    handoff_complete = False
+            else:
+                motor.q = float(cmd_q[joint_index])
+                motor.dq = float(cmd_dq[joint_index])
+                motor.tau = float(cmd_tau[joint_index])
             motor.kp = float(self.config["MOTOR_KP"][motor_index])
             motor.kd = float(self.config["MOTOR_KD"][motor_index])
+        if self._arm_handoff_active and handoff_complete:
+            self._arm_handoff_active = False
+            print("Unitree arm_sdk policy-target handoff complete", flush=True)
         if self._arm_preparation_complete or self._weight_ramp_duration <= 0.0:
             weight = 1.0
         else:

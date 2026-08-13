@@ -81,6 +81,8 @@ def main(config: TeleopConfig):
             enable_real_device=config.enable_real_device,
             replay_data_path=config.teleop_replay_path,
             pico_vis_smpl=config.pico_vis_smpl,
+            pico_navigation_range=config.pico_navigation_range,
+            pico_fixed_side=config.pico_fixed_side,
             pre_activation_upper_body_pose=pre_activation_upper_body_pose,
         )
 
@@ -92,7 +94,7 @@ def main(config: TeleopConfig):
     # Create rate controller
     rate = node.create_rate(config.teleop_frequency)
     iteration = 0
-    time_to_get_to_initial_pose = 2  # seconds
+    startup_hold_duration = 2  # seconds
 
     telemetry = Telemetry(window_size=100)
     pending_policy_action = None
@@ -148,9 +150,9 @@ def main(config: TeleopConfig):
                 t_now = time.monotonic()
                 data["timestamp"] = t_now
 
-                # Set target completion time - longer for initial pose, then match control frequency.
+                # Hold the measured startup pose briefly, then match control frequency.
                 if iteration == 0:
-                    data["target_time"] = t_now + time_to_get_to_initial_pose
+                    data["target_time"] = t_now + startup_hold_duration
                 else:
                     data["target_time"] = t_now + (1 / config.teleop_frequency)
 
@@ -158,10 +160,10 @@ def main(config: TeleopConfig):
                 with telemetry.timer("publish_teleop_command"):
                     control_publisher.publish(data)
 
-                # For the initial pose, wait the full duration before continuing
+                # Let the measured-pose hold reach the control loop before continuing.
                 if iteration == 0:
-                    print(f"Moving to initial pose for {time_to_get_to_initial_pose} seconds")
-                    time.sleep(time_to_get_to_initial_pose)
+                    print(f"Holding measured startup pose for {startup_hold_duration} seconds")
+                    time.sleep(startup_hold_duration)
                 iteration += 1
             end_time = time.monotonic()
             if config.verbose_timing and (end_time - t_start) > (1 / config.teleop_frequency):
