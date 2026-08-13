@@ -121,6 +121,8 @@ class UnitreeLocoArmCommandSender:
     ARM_WEIGHT_INDEX = 29
     LEG_JOINT_COUNT = 12
     BODY_JOINT_COUNT = 29
+    RPC_ERR_CLIENT_API_TIMEOUT = 3104
+    MAX_CONSECUTIVE_VELOCITY_TIMEOUTS = 3
 
     def __init__(self, config: Dict):
         import unitree_sdk2py.g1.loco.g1_loco_client as g1_loco_client
@@ -166,6 +168,7 @@ class UnitreeLocoArmCommandSender:
         self._last_fsm_query = 0.0
         self._last_fsm_id = None
         self._last_velocity_send = 0.0
+        self._consecutive_velocity_timeouts = 0
         self._last_start_request = 0.0
         self._latest_body_q = None
         self._latest_leg_dq = None
@@ -722,8 +725,30 @@ class UnitreeLocoArmCommandSender:
         vx = float(np.clip(velocity[0], -self._max_linear_velocity, self._max_linear_velocity))
         vy = float(np.clip(velocity[1], -self._max_linear_velocity, self._max_linear_velocity))
         wz = float(np.clip(velocity[2], -self._max_angular_velocity, self._max_angular_velocity))
-        self._check_rpc("SetVelocity", self.loco.SetVelocity(vx, vy, wz, 0.25))
-        self._last_velocity_send = now
+        code = self.loco.SetVelocity(vx, vy, wz, 0.25)
+        # A response timeout does not establish whether the short-duration
+        # command reached the robot.  Treat an isolated timeout as transient,
+        # keep the normal rate limit, and let the next control cycle refresh
+        # the command.  Persistent timeouts remain fatal so cleanup requests
+        # Damp instead of silently losing navigation control.
+        self._last_velocity_send = time.monotonic()
+        if code == self.RPC_ERR_CLIENT_API_TIMEOUT:
+            self._consecutive_velocity_timeouts += 1
+            if (
+                self._consecutive_velocity_timeouts
+                >= self.MAX_CONSECUTIVE_VELOCITY_TIMEOUTS
+            ):
+                self._check_rpc("SetVelocity", code)
+            print(
+                "Unitree loco SetVelocity response timeout "
+                f"({self._consecutive_velocity_timeouts}/"
+                f"{self.MAX_CONSECUTIVE_VELOCITY_TIMEOUTS}); "
+                "the next rate-limited cycle will refresh the command",
+                flush=True,
+            )
+            return
+        self._check_rpc("SetVelocity", code)
+        self._consecutive_velocity_timeouts = 0
 
     def send_command(self, cmd_q: np.ndarray, cmd_dq: np.ndarray, cmd_tau: np.ndarray):
         if not self._arm_output_active():

@@ -40,6 +40,7 @@ def _make_sender() -> UnitreeLocoArmCommandSender:
     sender._release_arms = Mock()
     sender._velocity_period = 0.1
     sender._last_velocity_send = 0.0
+    sender._consecutive_velocity_timeouts = 0
     sender._max_linear_velocity = 0.05
     sender._max_angular_velocity = 0.1
     sender._navigation_enabled = False
@@ -48,6 +49,9 @@ def _make_sender() -> UnitreeLocoArmCommandSender:
     sender._arm_preparing = False
     sender._arm_preparation_started = 0.0
     sender._arm_preparation_complete = False
+    sender._arm_handoff_active = False
+    sender._arm_handoff_q = None
+    sender._arm_handoff_max_delta = 0.01
     return sender
 
 
@@ -176,6 +180,43 @@ def test_navigation_range_one_reaches_set_velocity_without_additional_clipping()
     sender.loco.SetVelocity.assert_called_once_with(1.0, -1.0, 1.0, 0.25)
 
 
+def test_single_set_velocity_timeout_is_retried_by_the_next_control_cycle():
+    sender = _make_sender()
+    sender.active = True
+    sender._navigation_enabled = True
+    sender.loco.SetVelocity.side_effect = [3104, 0]
+
+    with patch(
+        "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
+        side_effect=[10.0, 10.01, 11.0, 11.01],
+    ):
+        sender.send_velocity(np.array([0.1, 0.0, 0.0]))
+        sender.send_velocity(np.array([0.1, 0.0, 0.0]))
+
+    assert sender.loco.SetVelocity.call_count == 2
+    assert sender._consecutive_velocity_timeouts == 0
+
+
+def test_repeated_set_velocity_timeouts_remain_fatal():
+    sender = _make_sender()
+    sender.active = True
+    sender._navigation_enabled = True
+    sender.loco.SetVelocity.return_value = 3104
+
+    try:
+        with patch(
+            "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
+            side_effect=[10.0, 10.01, 11.0, 11.01, 12.0, 12.01],
+        ):
+            sender.send_velocity(np.array([0.1, 0.0, 0.0]))
+            sender.send_velocity(np.array([0.1, 0.0, 0.0]))
+            sender.send_velocity(np.array([0.1, 0.0, 0.0]))
+    except RuntimeError as exc:
+        assert "3104" in str(exc)
+    else:
+        raise AssertionError("three consecutive SetVelocity timeouts must fail")
+
+
 def test_locked_standing_mode_never_sends_velocity():
     sender = _make_sender()
     sender.active = True
@@ -226,6 +267,8 @@ def test_arm_sdk_updates_only_dual_arms_after_full_pose_seed():
     cmd_q = np.arange(29, dtype=np.float64) / 100.0
     cmd_dq = np.zeros(29)
     cmd_tau = np.zeros(29)
+    sender._latest_body_q = cmd_q.copy()
+    sender._arm_handoff_q = cmd_q.copy()
 
     with patch(
         "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
