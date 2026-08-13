@@ -420,6 +420,27 @@ class DecoupledVLACollectionLaunchConfig:
     inspire_hand_state_frequency: float = 50.0
     """Frequency for publishing native Inspire state on DDS."""
 
+    collect_tactile: bool = False
+    """Record left RH56DFTP tactile data through a non-blocking latest-value cache."""
+
+    tactile_full_refresh_hz: float = 2.0
+    """Conservative target physical refresh rate for all left tactile regions."""
+
+    tactile_zmq_host: str = "127.0.0.1"
+    """Loopback bind/connect host for bridge-to-exporter tactile snapshots."""
+
+    tactile_zmq_port: int = 5558
+    """Loopback port for bridge-to-exporter tactile snapshots."""
+
+    tactile_state_guard_ms: float = 6.0
+    """Reserve this much time before each 50 Hz Inspire state deadline."""
+
+    tactile_metrics_interval: float = 5.0
+    """Interval for printing and persisting Modbus headroom metrics."""
+
+    tactile_metrics_log: str = ""
+    """JSONL metrics path; empty selects a dataset-specific project log."""
+
     left_hand_only: bool = False
     """Drive/record only the left hand; synthesize the right hand as open."""
 
@@ -573,6 +594,19 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
             )
         if not (0.0 < config.inspire_hand_state_frequency <= 50.0):
             errors.append("--inspire-hand-state-frequency must be in (0, 50]")
+    if config.collect_tactile:
+        if not config.inspire_hand_bridge:
+            errors.append("--collect-tactile requires --inspire-hand-bridge")
+        if not config.with_hands:
+            errors.append("--collect-tactile requires --with-hands")
+        if config.sim:
+            errors.append("--collect-tactile is only valid on the real robot")
+        if config.tactile_full_refresh_hz <= 0.0:
+            errors.append("--tactile-full-refresh-hz must be positive")
+        if config.tactile_state_guard_ms < 0.0:
+            errors.append("--tactile-state-guard-ms must be nonnegative")
+        if config.tactile_metrics_interval <= 0.0:
+            errors.append("--tactile-metrics-interval must be positive")
     if config.inspire_hand_test_count < 0:
         errors.append("--inspire-hand-test-count must be nonnegative")
     if config.inspire_hand_test_count:
@@ -809,6 +843,18 @@ def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str
         *_bool_arg("record-wrist-cameras", config.record_wrist_cameras),
         *_bool_arg("with-hands", config.with_hands),
         *_bool_arg("left-hand-only", config.left_hand_only),
+        *_bool_arg("collect-tactile", config.collect_tactile),
+        "--tactile-zmq-host",
+        config.tactile_zmq_host,
+        "--tactile-zmq-port",
+        str(config.tactile_zmq_port),
+        "--tactile-full-refresh-hz",
+        str(config.tactile_full_refresh_hz),
+        "--tactile-metrics-log",
+        config.tactile_metrics_log or (
+            "logs/tactile_modbus_"
+            f"{_sanitize_log_name(config.dataset_name or config.task_prompt)}.jsonl"
+        ),
         *_bool_arg("text-to-speech", config.text_to_speech),
         *_bool_arg("audio-cues", config.audio_cues),
         "--audio-cue-backend",
@@ -907,6 +953,22 @@ def _build_inspire_hand_args(
         str(config.inspire_hand_state_frequency),
         "--side",
         "left" if config.left_hand_only else "both",
+        *_bool_arg("collect-tactile", config.collect_tactile),
+        "--tactile-full-refresh-hz",
+        str(config.tactile_full_refresh_hz),
+        "--tactile-publish-host",
+        config.tactile_zmq_host,
+        "--tactile-publish-port",
+        str(config.tactile_zmq_port),
+        "--tactile-state-guard-ms",
+        str(config.tactile_state_guard_ms),
+        "--tactile-metrics-interval",
+        str(config.tactile_metrics_interval),
+        "--tactile-metrics-log",
+        config.tactile_metrics_log or (
+            "logs/tactile_modbus_"
+            f"{_sanitize_log_name(config.dataset_name or config.task_prompt)}.jsonl"
+        ),
     ]
     if config.hand_task_config:
         args += ["--hand-task-config", config.hand_task_config]
@@ -972,6 +1034,21 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
                 f"{config.inspire_hand_test_count} transitions, "
                 f"{config.inspire_hand_test_period:.1f}s interval"
             )
+    print(
+        "  Left tactile:  "
+        + (
+            f"enabled, {config.tactile_full_refresh_hz:.2f} Hz physical / "
+            f"{config.data_exporter_frequency} Hz dataset snapshots"
+            if config.collect_tactile
+            else "disabled"
+        )
+    )
+    if config.collect_tactile:
+        tactile_log = config.tactile_metrics_log or (
+            "logs/tactile_modbus_"
+            f"{_sanitize_log_name(config.dataset_name or config.task_prompt)}.jsonl"
+        )
+        print(f"  Modbus metrics:{tactile_log}")
     print(f"  Export freq:   {config.data_exporter_frequency} Hz")
     print("=" * 72)
 
