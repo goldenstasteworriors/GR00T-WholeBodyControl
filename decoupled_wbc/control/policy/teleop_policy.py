@@ -30,6 +30,8 @@ class TeleopPolicy(Policy):
         replay_data_path: Optional[str] = None,
         replay_speed: float = 1.0,
         pico_vis_smpl: bool = False,
+        pico_navigation_range: float = 1.0,
+        pico_fixed_side: str = "right",
         wait_for_activation: int = 5,
         activate_keyboard_listener: bool = True,
         activation_hold_duration: float = 0.5,
@@ -55,9 +57,25 @@ class TeleopPolicy(Policy):
             replay_data_path=replay_data_path,
             replay_speed=replay_speed,
             pico_vis_smpl=pico_vis_smpl,
+            pico_navigation_range=pico_navigation_range,
         )
         self.robot_model = robot_model
         self.retargeting_ik = retargeting_ik
+        if pico_fixed_side not in {"left", "right", "none"}:
+            raise ValueError("pico_fixed_side must be one of: left, right, none")
+        self.pico_fixed_side = pico_fixed_side
+        upper_indices = robot_model.get_joint_group_indices("upper_body")
+        self._fixed_upper_positions = np.array(
+            [
+                position
+                for position, joint_index in enumerate(upper_indices)
+                if pico_fixed_side != "none"
+                and robot_model.joint_names[joint_index].startswith(
+                    f"{pico_fixed_side}_"
+                )
+            ],
+            dtype=np.int64,
+        )
         self.is_active = False
         self.activation_hold_duration = activation_hold_duration
         self.resume_max_joint_delta = resume_max_joint_delta
@@ -127,6 +145,14 @@ class TeleopPolicy(Policy):
         was_active = self._lower_body_policy_active
         self._lower_body_policy_active = active
         self.teleop_streamer.set_lower_body_policy_active(active)
+
+        if active and not was_active and self._latest_robot_q is not None:
+            upper_indices = self.robot_model.get_joint_group_indices("upper_body")
+            self._held_body_q = self._latest_robot_q.copy()
+            self._held_upper_body_pose = self._held_body_q[upper_indices].copy()
+            self._last_safe_upper_target = self._held_upper_body_pose.copy()
+            self.retargeting_ik.reset(reference_full_q=self._held_body_q)
+            print("Teleop hold synchronized at the measured official-loco pose")
 
         if was_active and not active and self._teleop_state in {"active", "arming"}:
             self.is_active = False
@@ -206,7 +232,13 @@ class TeleopPolicy(Policy):
         else:
             if "ik_data" in action:
                 self.retargeting_ik.set_goal(action["ik_data"])
-            raw_target = self.retargeting_ik.get_action()
+            raw_target = np.asarray(
+                self.retargeting_ik.get_action(), dtype=np.float64
+            ).copy()
+            if self._fixed_upper_positions.size:
+                raw_target[self._fixed_upper_positions] = self._held_upper_body_pose[
+                    self._fixed_upper_positions
+                ]
             target = raw_target
             if self._resume_ramp_deadline is not None:
                 target = np.clip(
@@ -257,7 +289,13 @@ class TeleopPolicy(Policy):
                 self.is_active = True
                 self._activation_deadline = None
                 self._resume_ramp_deadline = now + self.activation_hold_duration
-                print("Teleop policy active")
+                if self.pico_fixed_side == "none":
+                    controlled = "both sides"
+                elif self.pico_fixed_side == "left":
+                    controlled = "right side only"
+                else:
+                    controlled = "left side only"
+                print(f"Teleop policy active: Pico controls {controlled}")
             return
 
         # A+B+X+Y sends an explicit set_active=False together with the

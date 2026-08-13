@@ -21,14 +21,7 @@ def get_wbc_policy(
     wbc_config,
     init_time=time.monotonic(),
 ):
-    # This target is used only before live teleoperation goals arrive. Keep the
-    # adjustment here rather than in robot defaults or teleop retargeting so it
-    # cannot affect subsequent operator commands.
-    startup_body_pose = robot_model.initial_body_pose.copy()
-    startup_elbow_angle = wbc_config.get("startup_final_elbow_angle", 0.0)
-    startup_body_pose[robot_model.dof_index("left_elbow_joint")] = startup_elbow_angle
-    startup_body_pose[robot_model.dof_index("right_elbow_joint")] = startup_elbow_angle
-    current_upper_body_pose = startup_body_pose[
+    current_upper_body_pose = robot_model.initial_body_pose[
         robot_model.get_joint_group_indices("upper_body")
     ]
 

@@ -36,6 +36,84 @@ from gear_sonic.data.video_writer import VideoWriter
 disable_progress_bars()
 
 
+_LOCAL_RESUME_METADATA_FILES = (
+    Path("meta/tasks.jsonl"),
+    Path("meta/episodes.jsonl"),
+    Path("meta/episodes_stats.jsonl"),
+)
+
+
+def _prepare_local_dataset_resume(save_root: str | Path) -> bool:
+    """Validate local metadata without falling back to Hugging Face.
+
+    LeRobot creates the three JSONL metadata files lazily when the first
+    episode is saved. If collection is stopped before that point, reopening
+    the dataset raises ``FileNotFoundError`` inside ``LeRobotDatasetMetadata``.
+    Upstream interprets that as a missing cached repository and calls
+    ``snapshot_download`` for our placeholder repo id, which can block an
+    offline onboard collector indefinitely.
+
+    A dataset with no episodes, frames, videos, or parquet files is safe to
+    reinitialize using the current collection schema. Missing metadata in a
+    non-empty dataset is treated as corruption and fails locally instead of
+    attempting any network access.
+
+    Returns ``True`` only when the directory is an empty interrupted session
+    that is safe for the caller to recreate.
+    """
+    root = Path(save_root)
+    info_path = root / "meta/info.json"
+    modality_path = root / Gr00tDatasetMetadata.MODALITY_CONFIG_REL_PATH
+
+    missing_required = [
+        path for path in (info_path, modality_path) if not path.is_file()
+    ]
+    if missing_required:
+        missing = ", ".join(str(path.relative_to(root)) for path in missing_required)
+        raise ValueError(
+            f"Cannot resume local dataset at {root}: missing required metadata: {missing}"
+        )
+
+    with info_path.open("r", encoding="utf-8") as stream:
+        info = json.load(stream)
+
+    missing_jsonl = [
+        path for path in _LOCAL_RESUME_METADATA_FILES if not (root / path).is_file()
+    ]
+    total_episodes = int(info.get("total_episodes", 0))
+    total_frames = int(info.get("total_frames", 0))
+    total_videos = int(info.get("total_videos", 0))
+    if total_episodes == 0 and total_frames == 0 and total_videos == 0:
+        allowed_empty_files = {
+            Path("meta/info.json"),
+            Gr00tDatasetMetadata.MODALITY_CONFIG_REL_PATH,
+            *_LOCAL_RESUME_METADATA_FILES,
+        }
+        unexpected_files = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            relative_path = path.relative_to(root)
+            if relative_path not in allowed_empty_files or (
+                relative_path in _LOCAL_RESUME_METADATA_FILES and path.stat().st_size > 0
+            ):
+                unexpected_files.append(relative_path)
+        if unexpected_files:
+            unexpected = ", ".join(str(path) for path in unexpected_files)
+            raise ValueError(
+                f"Cannot recreate zero-count dataset at {root}: found data files: {unexpected}"
+            )
+        return True
+
+    if missing_jsonl:
+        missing = ", ".join(str(path) for path in missing_jsonl)
+        raise ValueError(
+            f"Cannot resume non-empty local dataset at {root}: missing metadata: {missing}. "
+            "Check the dataset locally; the onboard exporter will not download metadata."
+        )
+    return False
+
+
 # ---------------------------------------------------------------------------
 # ArgsConfig (inlined from decoupled_wbc.control.main.config_template)
 # ---------------------------------------------------------------------------
@@ -200,6 +278,16 @@ class Gr00tDataExporter(LeRobotDataset):
                 "Cleaning up this directory since overwrite_existing is True.",
             )
             shutil.rmtree(save_root)
+
+        if (Path(save_root)).exists():
+            recreate_empty_dataset = _prepare_local_dataset_resume(save_root)
+            if recreate_empty_dataset:
+                print(
+                    f"[DataExporter] Recreating empty interrupted dataset at {save_root} "
+                    "with the current schema",
+                    flush=True,
+                )
+                shutil.rmtree(save_root)
 
         if (Path(save_root)).exists():
             try:

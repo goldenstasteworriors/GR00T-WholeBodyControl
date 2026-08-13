@@ -9,12 +9,14 @@ and optionally a PICO pose streamer for SMPL/VR3PT metadata.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib.util
 from pathlib import Path
 import os
 import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -116,6 +118,11 @@ def _aarch64_control_runtime_prefix() -> str:
         'if [ "$(uname -m)" = aarch64 ]; then '
         'if [ -f "$HOME/cyclonedds/install/lib/libddsc.so" ]; then '
         'export CYCLONEDDS_HOME="$HOME/cyclonedds/install"; '
+        # The conda CycloneDDS extension has a DT_RPATH to the environment's
+        # older libddsc, so LD_LIBRARY_PATH cannot override it.  Preloading the
+        # robot's matching runtime keeps Unitree SDK imports ABI-compatible.
+        'export LD_PRELOAD="$HOME/cyclonedds/install/lib/libddsc.so'
+        '${LD_PRELOAD:+:$LD_PRELOAD}"; '
         "fi; "
         'SONIC_TORCH_LIBGOMP="$(find "$CONDA_PREFIX/lib" '
         "-path '*/torch.libs/libgomp*.so*' -print -quit)\"; "
@@ -232,11 +239,14 @@ class DecoupledVLACollectionLaunchConfig:
     unitree_loco_arm_control_enabled: bool = True
     """Blend dual-arm targets through ``rt/arm_sdk`` after official loco starts."""
 
-    unitree_loco_max_linear_velocity: float = 0.05
+    unitree_loco_max_linear_velocity: float = 1.0
     """Maximum official-loco x/y speed after navigation is explicitly enabled."""
 
-    unitree_loco_max_angular_velocity: float = 0.1
+    unitree_loco_max_angular_velocity: float = 1.0
     """Maximum official-loco yaw speed after navigation is explicitly enabled."""
+
+    unitree_arm_handoff_max_velocity: float = 0.5
+    """Maximum arm speed while joining measured takeover pose to the policy target."""
 
     wbc_model_path: str = (
         "policy/GR00T-WholeBodyControl-Balance.onnx,"
@@ -268,9 +278,6 @@ class DecoupledVLACollectionLaunchConfig:
     startup_final_pose_duration: float = 4.0
     """Seconds to move all remaining joints to the normal initial pose."""
 
-    startup_final_elbow_angle: float = -0.34906585
-    """Final startup elbow angle; raises both elbows 20 degrees from zero."""
-
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher type for control loop."""
 
@@ -282,6 +289,12 @@ class DecoupledVLACollectionLaunchConfig:
 
     body_control_device: str = "pico"
     """Decoupled body teleop device."""
+
+    pico_navigation_range: float = 1.0
+    """Symmetric PICO x/y/yaw command range; 1.0 produces values in [-1, 1]."""
+
+    pico_fixed_side: str = "right"
+    """Upper-body side held at its measured A+X activation pose: left, right, or none."""
 
     hand_control_device: str = "pico"
     """Decoupled hand teleop device."""
@@ -334,16 +347,34 @@ class DecoupledVLACollectionLaunchConfig:
     """Record wrist camera streams if provided by the camera server."""
 
     text_to_speech: bool = False
-    """Enable optional voice feedback in the exporter; tone cues remain enabled by default."""
+    """Enable optional host TTS in addition to the recording prompt backend."""
 
     audio_cues: bool = True
-    """Enable local tone cues in the exporter."""
+    """Enable audible recording prompts in the exporter."""
+
+    audio_cue_backend: str = "unitree_tts"
+    """Prompt backend: unitree_tts for the G1 speaker, or local for host WAV playback."""
+
+    unitree_audio_network: str = "real"
+    """Unitree DDS interface or 'real' auto-detection used by the G1 speaker."""
+
+    unitree_audio_volume: int = 85
+    """G1 speaker volume in [0, 100]."""
 
     audio_cue_volume: float = 0.35
     """Volume for exporter start/stop tone cues."""
 
+    audio_cue_cache_dir: str = "logs/audio_cues"
+    """Project-local directory for generated exporter cue WAV files."""
+
     discard_audio_cue_volume: float = 0.9
     """Volume for exporter discard tone cue."""
+
+    quiet_data_exporter: bool = True
+    """Show only recording start/stop episode status in the exporter pane."""
+
+    data_exporter_runtime_log_file: str = ""
+    """Full exporter log path; empty selects a dataset-specific file under logs/."""
 
     camera_host: str = "localhost"
     """Camera server host."""
@@ -369,6 +400,40 @@ class DecoupledVLACollectionLaunchConfig:
 
     hand_task_config: str = ""
     """Optional inspire_hand_tasks.json path passed to pico_manager_thread_server.py."""
+
+    # Robot-onboard Inspire hand bridge
+    inspire_hand_bridge: bool = False
+    """Start the onboard DDS-to-Modbus bridge for the physical Inspire hand."""
+
+    restart_inspire_hand_bridge: bool = True
+    """Stop a stale standalone Inspire DDS bridge before starting this run."""
+
+    inspire_hand_network: str = "eth0"
+    """Robot-side DDS interface used by the Inspire hand bridge."""
+
+    inspire_left_ip: str = "192.168.123.210"
+    """Left Inspire hand Modbus TCP address reachable from the robot."""
+
+    inspire_right_ip: str = "192.168.123.211"
+    """Right Inspire hand Modbus TCP address reachable from the robot."""
+
+    inspire_hand_state_frequency: float = 50.0
+    """Frequency for publishing native Inspire state on DDS."""
+
+    left_hand_only: bool = False
+    """Drive/record only the left hand; synthesize the right hand as open."""
+
+    inspire_hand_test_count: int = 0
+    """Run this many left-hand open/grasp transitions before enabling Pico control."""
+
+    inspire_hand_test_period: float = 5.0
+    """Seconds between optional startup hand-test transitions."""
+
+    inspire_hand_test_speed: int = 1000
+    """Modbus speed used only by the optional startup hand test."""
+
+    inspire_hand_test_force: int = 3000
+    """Modbus force used only by the optional startup hand test."""
 
     pico_vis_vr3pt: bool = False
     """Enable VR3PT visualization in the PICO metadata streamer."""
@@ -427,6 +492,7 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
     required_files = [
         repo_root / "decoupled_wbc/control/main/teleop/run_g1_control_loop.py",
         repo_root / "decoupled_wbc/control/main/teleop/run_teleop_policy_loop.py",
+        repo_root / "decoupled_wbc/scripts/inspire_modbus_hand.py",
         repo_root / "gear_sonic/scripts/run_decoupled_vla_data_exporter.py",
     ]
     for path in required_files:
@@ -440,9 +506,15 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
 
     if config.pico_input_source not in {"xrt", "isaac-teleop"}:
         errors.append("--pico-input-source must be xrt or isaac-teleop")
+    if config.pico_navigation_range <= 0.0:
+        errors.append("--pico-navigation-range must be positive")
+    if config.pico_fixed_side not in {"left", "right", "none"}:
+        errors.append("--pico-fixed-side must be left, right, or none")
 
     if config.lower_body_controller not in {"decoupled", "unitree_loco"}:
         errors.append("--lower-body-controller must be decoupled or unitree_loco")
+    if config.unitree_arm_handoff_max_velocity <= 0.0:
+        errors.append("--unitree-arm-handoff-max-velocity must be positive")
     if config.lower_body_controller == "unitree_loco" and config.sim:
         errors.append("--lower-body-controller unitree_loco is only available on the real robot")
     if config.lower_body_controller == "unitree_loco" and config.enable_waist:
@@ -483,6 +555,66 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
     if not hand_task_config.exists():
         errors.append(f"hand task config missing: {hand_task_config}")
 
+    if config.left_hand_only and not config.with_hands:
+        errors.append("--left-hand-only requires --with-hands")
+    if config.left_hand_only and not config.inspire_hand_bridge and not config.sim:
+        errors.append("--left-hand-only on the real robot requires --inspire-hand-bridge")
+    if config.inspire_hand_bridge:
+        if config.sim:
+            errors.append("--inspire-hand-bridge is only valid on the real robot")
+        if not config.with_hands:
+            errors.append("--inspire-hand-bridge requires --with-hands")
+        available_interfaces = {name for _, name in socket.if_nameindex()}
+        if config.inspire_hand_network not in available_interfaces:
+            known = ", ".join(sorted(available_interfaces))
+            errors.append(
+                "--inspire-hand-network does not exist: "
+                f"{config.inspire_hand_network!r} (available: {known})"
+            )
+        if not (0.0 < config.inspire_hand_state_frequency <= 50.0):
+            errors.append("--inspire-hand-state-frequency must be in (0, 50]")
+    if config.inspire_hand_test_count < 0:
+        errors.append("--inspire-hand-test-count must be nonnegative")
+    if config.inspire_hand_test_count:
+        if not config.inspire_hand_bridge:
+            errors.append("--inspire-hand-test-count requires --inspire-hand-bridge")
+        if config.inspire_hand_test_count % 2:
+            errors.append(
+                "--inspire-hand-test-count must be even so the test finishes open"
+            )
+        if config.inspire_hand_test_period <= 0.0:
+            errors.append("--inspire-hand-test-period must be positive")
+        if not (0 <= config.inspire_hand_test_speed <= 4000):
+            errors.append("--inspire-hand-test-speed must be in [0, 4000]")
+        if not (0 <= config.inspire_hand_test_force <= 12000):
+            errors.append("--inspire-hand-test-force must be in [0, 12000]")
+    if config.audio_cue_backend not in {"unitree_tts", "local"}:
+        errors.append("--audio-cue-backend must be unitree_tts or local")
+    if not (0 <= config.unitree_audio_volume <= 100):
+        errors.append("--unitree-audio-volume must be in [0, 100]")
+    if (
+        config.audio_cues
+        and config.audio_cue_backend == "unitree_tts"
+        and not config.sim
+        and importlib.util.find_spec("unitree_sdk2py") is None
+    ):
+        errors.append(
+            "unitree_sdk2py is required for G1 speaker prompts; "
+            "run install_scripts/install_decoupled_vla_collection.sh"
+        )
+    if (
+        config.audio_cues
+        and config.audio_cue_backend == "unitree_tts"
+        and config.unitree_audio_network != "real"
+    ):
+        available_interfaces = {name for _, name in socket.if_nameindex()}
+        if config.unitree_audio_network not in available_interfaces:
+            known = ", ".join(sorted(available_interfaces))
+            errors.append(
+                "--unitree-audio-network does not exist: "
+                f"{config.unitree_audio_network!r} (available: {known})"
+            )
+
     if errors:
         print("ERROR: Prerequisites not met:\n")
         for error in errors:
@@ -493,6 +625,17 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
 
 def _kill_existing_session() -> None:
     subprocess.run(["tmux", "kill-session", "-t", SESSION_NAME], capture_output=True)
+
+
+def _kill_existing_inspire_hand_bridge() -> None:
+    subprocess.run(
+        [
+            "pkill",
+            "-f",
+            "decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds",
+        ],
+        capture_output=True,
+    )
 
 
 def _create_tmux_session() -> None:
@@ -566,6 +709,8 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.unitree_loco_max_linear_velocity),
         "--unitree-loco-max-angular-velocity",
         str(config.unitree_loco_max_angular_velocity),
+        "--unitree-arm-handoff-max-velocity",
+        str(config.unitree_arm_handoff_max_velocity),
         "--wbc-model-path",
         config.wbc_model_path,
         "--control-frequency",
@@ -579,8 +724,6 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.startup_elbow_pose_duration),
         "--startup-final-pose-duration",
         str(config.startup_final_pose_duration),
-        "--startup-final-elbow-angle",
-        str(config.startup_final_elbow_angle),
         "--keyboard-dispatcher-type",
         config.keyboard_dispatcher_type,
         *_bool_arg("keyboard-lower-body-control", config.keyboard_lower_body_control),
@@ -609,10 +752,12 @@ def _build_teleop_args(config: DecoupledVLACollectionLaunchConfig, interface: st
         "--lower-body-controller",
         config.lower_body_controller,
         *_bool_arg("unitree-loco-arm-control-enabled", config.unitree_loco_arm_control_enabled),
-        "--startup-final-elbow-angle",
-        str(config.startup_final_elbow_angle),
         "--body-control-device",
         config.body_control_device,
+        "--pico-navigation-range",
+        str(config.pico_navigation_range),
+        "--pico-fixed-side",
+        config.pico_fixed_side,
         "--hand-control-device",
         config.hand_control_device,
         "--body-streamer-ip",
@@ -632,6 +777,15 @@ def _build_teleop_args(config: DecoupledVLACollectionLaunchConfig, interface: st
 
 
 def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str]:
+    log_tag = _sanitize_log_name(config.dataset_name or config.task_prompt)
+    runtime_log_file = config.data_exporter_runtime_log_file or (
+        f"logs/decoupled_vla_exporter_{log_tag}.log"
+    )
+    audio_cue_backend = (
+        "local"
+        if config.sim and config.audio_cue_backend == "unitree_tts"
+        else config.audio_cue_backend
+    )
     args = [
         "python",
         "gear_sonic/scripts/run_decoupled_vla_data_exporter.py",
@@ -654,12 +808,24 @@ def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str
         *_bool_arg("require-sonic-pose", config.require_sonic_pose),
         *_bool_arg("record-wrist-cameras", config.record_wrist_cameras),
         *_bool_arg("with-hands", config.with_hands),
+        *_bool_arg("left-hand-only", config.left_hand_only),
         *_bool_arg("text-to-speech", config.text_to_speech),
         *_bool_arg("audio-cues", config.audio_cues),
+        "--audio-cue-backend",
+        audio_cue_backend,
+        "--unitree-audio-network",
+        config.unitree_audio_network,
+        "--unitree-audio-volume",
+        str(config.unitree_audio_volume),
         "--audio-cue-volume",
         str(config.audio_cue_volume),
+        "--audio-cue-cache-dir",
+        config.audio_cue_cache_dir,
         "--discard-audio-cue-volume",
         str(config.discard_audio_cue_volume),
+        *_bool_arg("quiet-console", config.quiet_data_exporter),
+        "--runtime-log-file",
+        runtime_log_file,
         *_bool_arg("overwrite-existing-dataset", config.overwrite_existing_dataset),
         *_bool_arg("profile-timing", config.profile_timing),
         "--profile-interval",
@@ -719,6 +885,50 @@ def _build_pico_data_args(config: DecoupledVLACollectionLaunchConfig) -> list[st
     return args
 
 
+def _build_inspire_hand_args(
+    config: DecoupledVLACollectionLaunchConfig,
+    *,
+    mode: str,
+) -> list[str]:
+    args = [
+        "python",
+        "decoupled_wbc/scripts/inspire_modbus_hand.py",
+        "--mode",
+        mode,
+        "--network",
+        config.inspire_hand_network,
+        "--left-ip",
+        config.inspire_left_ip,
+        "--right-ip",
+        config.inspire_right_ip,
+        "--hand-task",
+        config.hand_task,
+        "--state-publish-frequency",
+        str(config.inspire_hand_state_frequency),
+        "--side",
+        "left" if config.left_hand_only else "both",
+    ]
+    if config.hand_task_config:
+        args += ["--hand-task-config", config.hand_task_config]
+    if mode == "command":
+        args += [
+            "--command",
+            "toggle",
+            "--count",
+            str(config.inspire_hand_test_count),
+            "--period",
+            str(config.inspire_hand_test_period),
+            "--speed",
+            str(config.inspire_hand_test_speed),
+            "--force",
+            str(config.inspire_hand_test_force),
+            "--no-publish-state",
+        ]
+    else:
+        args += ["--publish-state"]
+    return args
+
+
 def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     repo_root = Path(__file__).resolve().parent.parent.parent
     interface = config.interface or ("sim" if config.sim else "real")
@@ -745,11 +955,23 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print(f"  Camera:        {config.camera_host}:{config.camera_port}")
     print(f"  PICO fields:   {'streamer window enabled' if config.pico_data_streamer else 'disabled'}")
     print(f"  PICO ZMQ:      {config.sonic_zmq_host}:{config.sonic_zmq_port}")
+    print(f"  PICO nav range:[-{config.pico_navigation_range}, {config.pico_navigation_range}]")
+    print(f"  PICO fixed side:{config.pico_fixed_side}")
     print(f"  Hand task:     {config.hand_task}")
     print(
         "  Hand config:   "
         f"{config.hand_task_config or _default_hand_task_config(repo_root)}"
     )
+    print(f"  Inspire bridge:{' enabled' if config.inspire_hand_bridge else ' disabled'}")
+    if config.inspire_hand_bridge:
+        print(f"  Hand DDS net:  {config.inspire_hand_network}")
+        print(f"  Hand data:     {'left-only; right=open' if config.left_hand_only else 'both'}")
+        if config.inspire_hand_test_count:
+            print(
+                "  Hand test:     "
+                f"{config.inspire_hand_test_count} transitions, "
+                f"{config.inspire_hand_test_period:.1f}s interval"
+            )
     print(f"  Export freq:   {config.data_exporter_frequency} Hz")
     print("=" * 72)
 
@@ -774,6 +996,19 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         _send_to_target(f"{SESSION_NAME}:sim", sim_cmd, wait=3.0)
         subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
 
+    if config.inspire_hand_bridge:
+        if config.restart_inspire_hand_bridge:
+            _kill_existing_inspire_hand_bridge()
+            time.sleep(0.5)
+        subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "inspire_hand"])
+        bridge_cmd = _shell_join(_build_inspire_hand_args(config, mode="dds"))
+        if config.inspire_hand_test_count:
+            test_cmd = _shell_join(_build_inspire_hand_args(config, mode="command"))
+            bridge_cmd = f"{test_cmd} && exec {bridge_cmd}"
+        hand_cmd = prefix + runtime_env + _aarch64_control_runtime_prefix() + bridge_cmd
+        _send_to_target(f"{SESSION_NAME}:inspire_hand", hand_cmd, wait=1.0)
+        subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
+
     control_cmd = (
         prefix
         + runtime_env
@@ -781,7 +1016,13 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         + _shell_join(_build_control_args(config, interface))
     )
     teleop_cmd = prefix + runtime_env + _shell_join(_build_teleop_args(config, interface))
-    exporter_cmd = prefix + runtime_env + _shell_join(_build_exporter_args(config))
+    exporter_cmd = (
+        prefix
+        + runtime_env
+        + _aarch64_control_runtime_prefix()
+        + "clear && "
+        + _shell_join(_build_exporter_args(config))
+    )
     viewer_cmd = (
         prefix
         + runtime_env
@@ -831,6 +1072,8 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         print("  sim window:            MuJoCo sim + image publisher")
     if config.pico_data_streamer:
         print("  pico_data window:      optional PICO SMPL/VR3PT streamer")
+    if config.inspire_hand_bridge:
+        print("  inspire_hand window:   onboard Inspire DDS -> Modbus bridge")
     if profile_log_dir is not None:
         print(f"  logs:                  {profile_log_dir}")
     print()

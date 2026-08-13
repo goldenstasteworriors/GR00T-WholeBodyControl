@@ -160,6 +160,22 @@ def test_motion_mode_sends_only_zero_when_navigation_is_disabled():
     sender.loco.SetVelocity.assert_called_once_with(0.0, 0.0, 0.0, 0.25)
 
 
+def test_navigation_range_one_reaches_set_velocity_without_additional_clipping():
+    sender = _make_sender()
+    sender.active = True
+    sender._navigation_enabled = True
+    sender._max_linear_velocity = 1.0
+    sender._max_angular_velocity = 1.0
+
+    with patch(
+        "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
+        return_value=10.0,
+    ):
+        sender.send_velocity(np.array([1.0, -1.0, 1.0]))
+
+    sender.loco.SetVelocity.assert_called_once_with(1.0, -1.0, 1.0, 0.25)
+
+
 def test_locked_standing_mode_never_sends_velocity():
     sender = _make_sender()
     sender.active = True
