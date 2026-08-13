@@ -669,12 +669,23 @@ def generate_finger_data(hand: str, trigger: float, grip: float) -> np.ndarray:
     """
     fingertips = np.zeros([25, 4, 4])
 
-    thumb = 0
-    middle = 10
-    # Control thumb based on shoulder button state (index 4 is thumb tip)
-    fingertips[4 + thumb, 0, 3] = 1.0  # open thumb
-    if trigger > 0.5:
-        fingertips[4 + middle, 0, 3] = 1.0  # close middle
+    # Encode the four left-hand controller states into the established
+    # G1-hand gesture channel. The downstream Inspire bridge recognizes
+    # these index/middle/ring gesture patterns and selects the corresponding
+    # optional task pose. Right grip remains the modifier for the left hand;
+    # this deliberately does not use left grip, which is reserved for the
+    # collection-control shortcuts.
+    thumb_tip = 4
+    index_tip = 9
+    middle_tip = 14
+    ring_tip = 19
+    fingertips[thumb_tip, 0, 3] = 1.0
+    if grip > 0.5 and trigger > 0.5:
+        fingertips[middle_tip, 0, 3] = 1.0  # grip_pressed
+    elif grip > 0.5:
+        fingertips[ring_tip, 0, 3] = 1.0  # grip
+    elif trigger > 0.5:
+        fingertips[index_tip, 0, 3] = 1.0  # pressed
 
     return fingertips
 

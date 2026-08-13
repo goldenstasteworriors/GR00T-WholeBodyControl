@@ -915,8 +915,33 @@ class InspireHandCommandSender:
 
     @staticmethod
     def legacy_dex3_to_inspire(cmd: np.ndarray, hand_task: str = "pick_up_pipette") -> np.ndarray:
-        """Map the existing 7-DOF Dex3 command shape to binary Inspire open/grasp."""
-        grasp = np.max(np.abs(cmd)) > 0.05
-        if not grasp:
+        """Map legacy 7-DOF commands to optional four-state Inspire poses.
+
+        Pico collection encodes trigger-only, right-grip-only, and both-held
+        as the index, ring, and middle G1 hand gestures respectively. Other
+        legacy hand commands keep the original binary nonzero=open/grasp
+        interpretation so policy inference remains backward compatible.
+        """
+        q = np.asarray(cmd, dtype=np.float64)
+        if q.shape != (INSPIRE_LEGACY_HAND_DOF,):
+            raise ValueError(
+                f"expected {INSPIRE_LEGACY_HAND_DOF} legacy hand values, got {q.shape}"
+            )
+        if np.max(np.abs(q)) <= 0.05:
             return np.asarray(resolve_hand_task_pose(hand_task, pressed=False), dtype=np.float64)
+
+        # The gesture solver emits these distinctive first-joint amplitudes.
+        # Keep thresholds narrow enough that arbitrary learned-policy commands
+        # continue through the historical binary path below.
+        if q[0] <= -0.45:  # index: left trigger only
+            return np.asarray(resolve_hand_task_pose(hand_task, pressed=True), dtype=np.float64)
+        if q[0] >= 0.45:  # ring: right grip only
+            return np.asarray(
+                resolve_hand_task_pose(hand_task, pressed=False, grip=True), dtype=np.float64
+            )
+        if abs(q[0]) <= 0.05 and q[3] <= -0.95 and q[5] <= -0.95:  # middle: both held
+            return np.asarray(
+                resolve_hand_task_pose(hand_task, pressed=True, grip=True), dtype=np.float64
+            )
+
         return np.asarray(resolve_hand_task_pose(hand_task, pressed=True), dtype=np.float64)
