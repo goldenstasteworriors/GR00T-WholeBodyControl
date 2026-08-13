@@ -179,6 +179,42 @@ on the robot under:
 /home/unitree/data_collection/GR00T-WholeBodyControl/outputs/onboard/<dataset-name>
 ```
 
+#### Low-priority Inspire tactile collection
+
+For a left RH56DFTP hand, add `--collect-tactile` to the normal onboard launch.
+The conservative default reads 11 taxel batches plus one six-channel force
+batch, targeting two complete physical refreshes per second. The exporter is
+still 50 Hz: each dataset frame copies the newest complete cache without
+waiting for Modbus. A failed batch keeps the previous values and advances the
+per-region age instead of replacing the region with zeros.
+The default 16 ms state-deadline guard was selected from onboard read-only
+measurements so the existing Inspire state loop retains priority.
+
+```bash
+python gear_sonic/scripts/launch_decoupled_vla_collection_onboard.py \
+  --task-prompt "grab the beaker and shake" \
+  --dataset-name 8_12_shake_beaker_1 \
+  --hand-task open_door \
+  --no-pico-data-streamer \
+  --with-hands \
+  --inspire-hand-bridge \
+  --left-hand-only \
+  --collect-tactile \
+  --unitree-loco-navigation-enabled \
+  --pico-navigation-range 1 \
+  --pico-fixed-side right
+```
+
+The dataset adds raw taxels, per-region validity/age/update counters, force
+feedback, and rolling Modbus metrics under `observation.tactile.*`. The bridge
+also appends a project-local JSONL record to
+`logs/tactile_modbus_<dataset-name>.jsonl` every five seconds. In particular,
+inspect `state_cycle_hz`, `state_deadline_miss_ratio`, `modbus_busy_ratio`,
+`tactile_io_p95_ms`, and `estimated_safe_max_full_refresh_hz` before increasing
+`--tactile-full-refresh-hz`. The estimate reserves 40 percent of the measured
+Modbus time as safety headroom; do not increase the rate while the 50 Hz state
+loop has deadline misses.
+
 The collection launcher runs in its own `decoupled_vla_collection` tmux
 session. Detach with `Ctrl+b`, then `d`, and reattach with:
 

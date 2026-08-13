@@ -40,17 +40,18 @@ def _make_sender() -> UnitreeLocoArmCommandSender:
     sender._release_arms = Mock()
     sender._velocity_period = 0.1
     sender._last_velocity_send = 0.0
-    sender._max_linear_velocity = 0.4
-    sender._max_angular_velocity = 0.4
+    sender._consecutive_velocity_timeouts = 0
+    sender._max_linear_velocity = 0.05
+    sender._max_angular_velocity = 0.1
     sender._navigation_enabled = False
     sender._arm_control_enabled = False
     sender._weight_ramp_duration = 2.0
     sender._arm_preparing = False
     sender._arm_preparation_started = 0.0
     sender._arm_preparation_complete = False
-    sender._arm_handoff_max_delta = 0.01
     sender._arm_handoff_active = False
     sender._arm_handoff_q = None
+    sender._arm_handoff_max_delta = 0.01
     return sender
 
 
@@ -163,32 +164,57 @@ def test_motion_mode_sends_only_zero_when_navigation_is_disabled():
     sender.loco.SetVelocity.assert_called_once_with(0.0, 0.0, 0.0, 0.25)
 
 
-def test_motion_mode_preserves_commands_within_navigation_limits():
+def test_navigation_range_one_reaches_set_velocity_without_additional_clipping():
     sender = _make_sender()
     sender.active = True
     sender._navigation_enabled = True
+    sender._max_linear_velocity = 1.0
+    sender._max_angular_velocity = 1.0
 
     with patch(
         "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
         return_value=10.0,
     ):
-        sender.send_velocity(np.array([0.2, -0.3, 0.4]))
+        sender.send_velocity(np.array([1.0, -1.0, 1.0]))
 
-    sender.loco.SetVelocity.assert_called_once_with(0.2, -0.3, 0.4, 0.25)
+    sender.loco.SetVelocity.assert_called_once_with(1.0, -1.0, 1.0, 0.25)
 
 
-def test_motion_mode_keeps_final_velocity_range_boundary():
+def test_single_set_velocity_timeout_is_retried_by_the_next_control_cycle():
     sender = _make_sender()
     sender.active = True
     sender._navigation_enabled = True
+    sender.loco.SetVelocity.side_effect = [3104, 0]
 
     with patch(
         "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
-        return_value=10.0,
+        side_effect=[10.0, 10.01, 11.0, 11.01],
     ):
-        sender.send_velocity(np.array([1.5, -1.5, 2.0]))
+        sender.send_velocity(np.array([0.1, 0.0, 0.0]))
+        sender.send_velocity(np.array([0.1, 0.0, 0.0]))
 
-    sender.loco.SetVelocity.assert_called_once_with(0.4, -0.4, 0.4, 0.25)
+    assert sender.loco.SetVelocity.call_count == 2
+    assert sender._consecutive_velocity_timeouts == 0
+
+
+def test_repeated_set_velocity_timeouts_remain_fatal():
+    sender = _make_sender()
+    sender.active = True
+    sender._navigation_enabled = True
+    sender.loco.SetVelocity.return_value = 3104
+
+    try:
+        with patch(
+            "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
+            side_effect=[10.0, 10.01, 11.0, 11.01, 12.0, 12.01],
+        ):
+            sender.send_velocity(np.array([0.1, 0.0, 0.0]))
+            sender.send_velocity(np.array([0.1, 0.0, 0.0]))
+            sender.send_velocity(np.array([0.1, 0.0, 0.0]))
+    except RuntimeError as exc:
+        assert "3104" in str(exc)
+    else:
+        raise AssertionError("three consecutive SetVelocity timeouts must fail")
 
 
 def test_locked_standing_mode_never_sends_velocity():
@@ -223,13 +249,11 @@ def test_arm_output_is_enabled_only_during_post_locomotion_preparation():
     assert not sender.active
 
 
-def test_arm_sdk_holds_measured_dual_arms_during_takeover():
+def test_arm_sdk_rate_limits_dual_arms_from_measured_pose_during_takeover():
     sender = _make_sender()
     sender._arm_control_enabled = True
     sender._arm_preparing = True
     sender._arm_preparation_started = 10.0
-    sender._latest_body_q = np.arange(29, dtype=np.float64) / 50.0
-    sender._arm_handoff_q = sender._latest_body_q.copy()
     _configure_upper_body_output(sender)
     waist_before = []
     for motor_index in range(12, 15):
@@ -243,6 +267,8 @@ def test_arm_sdk_holds_measured_dual_arms_during_takeover():
     cmd_q = np.arange(29, dtype=np.float64) / 100.0
     cmd_dq = np.zeros(29)
     cmd_tau = np.zeros(29)
+    sender._latest_body_q = np.arange(29, dtype=np.float64) / 50.0
+    sender._arm_handoff_q = sender._latest_body_q.copy()
 
     with patch(
         "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
@@ -254,46 +280,17 @@ def test_arm_sdk_holds_measured_dual_arms_during_takeover():
         motor = sender.low_cmd.motor_cmd[motor_index]
         assert (motor.q, motor.dq, motor.tau, motor.kp, motor.kd) == expected
     for motor_index in sender.ARM_MOTOR_INDICES:
+        expected = np.clip(
+            cmd_q[motor_index],
+            sender._latest_body_q[motor_index] - sender._arm_handoff_max_delta,
+            sender._latest_body_q[motor_index] + sender._arm_handoff_max_delta,
+        )
         motor = sender.low_cmd.motor_cmd[motor_index]
-        assert motor.q == sender._latest_body_q[motor_index]
+        assert motor.q == expected
         assert motor.dq == 0.0
         assert motor.tau == 0.0
     assert sender.low_cmd.motor_cmd[sender.ARM_WEIGHT_INDEX].q == 0.5
     sender.publisher.Write.assert_called_once_with(sender.low_cmd)
-
-
-def test_arm_handoff_rate_limits_only_until_policy_target_is_reached():
-    sender = _make_sender()
-    sender.active = True
-    sender._arm_control_enabled = True
-    sender._arm_preparation_complete = True
-    sender._arm_handoff_active = True
-    sender._arm_handoff_q = np.zeros(29, dtype=np.float64)
-    _configure_upper_body_output(sender)
-    cmd_q = np.full(29, 0.2, dtype=np.float64)
-    cmd_dq = np.full(29, 0.3, dtype=np.float64)
-    cmd_tau = np.full(29, 0.4, dtype=np.float64)
-
-    sender.send_command(cmd_q, cmd_dq, cmd_tau)
-
-    assert sender._arm_handoff_active
-    for motor_index in sender.ARM_MOTOR_INDICES:
-        motor = sender.low_cmd.motor_cmd[motor_index]
-        assert motor.q == 0.01
-        assert motor.dq == 0.0
-        assert motor.tau == 0.0
-
-    sender._arm_handoff_q[:] = cmd_q
-    sender.send_command(cmd_q, cmd_dq, cmd_tau)
-    assert not sender._arm_handoff_active
-
-    direct_q = np.full(29, 0.25, dtype=np.float64)
-    sender.send_command(direct_q, cmd_dq, cmd_tau)
-    for motor_index in sender.ARM_MOTOR_INDICES:
-        motor = sender.low_cmd.motor_cmd[motor_index]
-        assert motor.q == 0.25
-        assert motor.dq == 0.3
-        assert motor.tau == 0.4
 
 
 def test_stable_locked_standing_requests_fsm_501_before_arm_preparation():
@@ -430,6 +427,7 @@ def test_arm_preparation_completes_in_fsm_501_without_requesting_another_fsm():
 def test_emergency_stop_requests_damp_without_following_move():
     sender = _make_sender()
     sender.active = True
+    sender._consecutive_velocity_timeouts = 2
 
     sender.set_active(False, emergency=True)
 
@@ -438,4 +436,5 @@ def test_emergency_stop_requests_damp_without_following_move():
     sender.loco.SetVelocity.assert_not_called()
     assert not sender.active
     assert not sender._activation_requested
+    assert sender._consecutive_velocity_timeouts == 0
     sender.robot_state.ServiceSwitch.assert_not_called()

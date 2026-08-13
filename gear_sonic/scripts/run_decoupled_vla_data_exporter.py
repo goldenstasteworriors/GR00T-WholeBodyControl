@@ -47,9 +47,11 @@ from decoupled_wbc.control.utils.ros_utils import ROSMsgSubscriber
 from gear_sonic.camera.composed_camera import ComposedCameraClientSensor
 from gear_sonic.data.exporter import Gr00tDataExporter
 from gear_sonic.data.features_sonic_vla import (
+    get_features_inspire_tactile,
     get_features_sonic_body29,
     get_features_sonic_inspire6,
     get_g1_robot_model,
+    get_modality_config_inspire_tactile,
     get_modality_config_sonic_body29,
     get_modality_config_sonic_inspire6,
     get_wrist_camera_features,
@@ -59,6 +61,12 @@ from gear_sonic.utils.data_collection.episode_state import EpisodeState
 from gear_sonic.utils.data_collection.inspire_hand_tasks import (
     DEFAULT_HAND_TASK,
     resolve_hand_task_pose,
+)
+from gear_sonic.utils.data_collection.inspire_tactile import (
+    TACTILE_TOPIC,
+    empty_snapshot,
+    snapshot_frame_fields,
+    unpack_snapshot,
 )
 from gear_sonic.utils.data_collection.telemetry import Telemetry
 from gear_sonic.utils.data_collection.text_to_speech import TextToSpeech
@@ -133,6 +141,21 @@ class DecoupledVLADataExporterConfig:
 
     left_hand_only: bool = False
     """Record the right Inspire state/action as the task's synthetic open pose."""
+
+    collect_tactile: bool = False
+    """Record latest-value left RH56DFTP tactile snapshots without blocking exporter FPS."""
+
+    tactile_zmq_host: str = "127.0.0.1"
+    """Host of the Inspire bridge tactile publisher."""
+
+    tactile_zmq_port: int = 5558
+    """Port of the Inspire bridge tactile publisher."""
+
+    tactile_full_refresh_hz: float = 2.0
+    """Requested physical full-refresh rate, stored in dataset metadata."""
+
+    tactile_metrics_log: str = ""
+    """Project-local Modbus metrics JSONL path, stored in dataset metadata."""
 
     text_to_speech: bool = False
     """Use optional host text-to-speech in addition to the prompt backend."""
@@ -580,6 +603,7 @@ class DecoupledVLADataCollector:
         self.latest_image_msg: dict | None = None
         self.latest_sonic_msg: dict | None = None
         self.latest_planner_msg: dict | None = None
+        self.latest_tactile_msg = empty_snapshot()
         self.current_stream_mode = 0
         self._manager_toggle_dc = False
         self._manager_toggle_da = False
@@ -595,6 +619,17 @@ class DecoupledVLADataCollector:
         self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "pose")
         self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "planner")
         self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "manager_state")
+
+        self._tactile_zmq_socket = None
+        if config.collect_tactile:
+            self._tactile_zmq_socket = self._sonic_zmq_ctx.socket(zmq.SUB)
+            self._tactile_zmq_socket.connect(
+                f"tcp://{config.tactile_zmq_host}:{config.tactile_zmq_port}"
+            )
+            self._tactile_zmq_socket.setsockopt(zmq.RCVTIMEO, 0)
+            self._tactile_zmq_socket.setsockopt(zmq.CONFLATE, 1)
+            self._tactile_zmq_socket.setsockopt(zmq.RCVHWM, 1)
+            self._tactile_zmq_socket.setsockopt(zmq.SUBSCRIBE, TACTILE_TOPIC)
 
         self.telemetry = Telemetry(window_size=100)
         self.sonic_timing_monitor = TimingThresholdMonitor(
@@ -682,6 +717,20 @@ class DecoupledVLADataCollector:
                 self._handle_planner_message(raw)
             elif raw.startswith(b"pose"):
                 self._handle_pose_message(raw)
+
+    def _poll_tactile_zmq(self) -> None:
+        """Replace the cached snapshot with the newest complete bridge message."""
+        if self._tactile_zmq_socket is None:
+            return
+        while True:
+            try:
+                raw = self._tactile_zmq_socket.recv(zmq.NOBLOCK)
+            except zmq.Again:
+                return
+            try:
+                self.latest_tactile_msg = unpack_snapshot(raw)
+            except Exception as exc:
+                print(f"[Tactile] Ignoring invalid bridge message: {exc}")
 
     def _handle_manager_state(self, raw: bytes) -> None:
         try:
@@ -1292,6 +1341,8 @@ class DecoupledVLADataCollector:
 
         self._add_robot_state_features(frame_data, proprio, base_quat)
         self._add_teleop_features(frame_data, observation_state)
+        if self.config.collect_tactile:
+            frame_data.update(snapshot_frame_fields(self.latest_tactile_msg))
         self._add_images_to_frame_data(frame_data)
 
         self.data_exporter.add_frame(frame_data)
@@ -1306,6 +1357,8 @@ class DecoupledVLADataCollector:
             self._print_and_say(f"Error saving episode: {exc}", blocking=True)
 
         try:
+            if self._tactile_zmq_socket is not None:
+                self._tactile_zmq_socket.close(linger=0)
             self._sonic_zmq_socket.close()
             self._sonic_zmq_ctx.term()
         except Exception:
@@ -1321,6 +1374,9 @@ class DecoupledVLADataCollector:
 
                     with self.telemetry.timer("poll_pico"):
                         self._poll_sonic_zmq_messages()
+
+                    with self.telemetry.timer("poll_tactile"):
+                        self._poll_tactile_zmq()
 
                     with self.telemetry.timer("poll_image"):
                         img_msg = self._image_subscriber.read()
@@ -1350,6 +1406,10 @@ def main(config: DecoupledVLADataExporterConfig, runtime_output: RuntimeOutput) 
         config.dataset_name = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     if config.left_hand_only and not config.with_hands:
         raise ValueError("--left-hand-only requires --with-hands")
+    if config.collect_tactile and not config.with_hands:
+        raise ValueError("--collect-tactile requires --with-hands")
+    if config.collect_tactile and config.tactile_full_refresh_hz <= 0.0:
+        raise ValueError("--tactile-full-refresh-hz must be positive")
 
     rclpy.init(args=None)
     robot_config = poll_robot_config_ros(
@@ -1372,6 +1432,11 @@ def main(config: DecoupledVLADataExporterConfig, runtime_output: RuntimeOutput) 
             dataset_features = get_features_sonic_body29(robot_model)
             modality_config = get_modality_config_sonic_body29(robot_model)
             schema_compatibility = "g1_body_29dof"
+
+        if config.collect_tactile:
+            dataset_features.update(get_features_inspire_tactile())
+            modality_config["state"].update(get_modality_config_inspire_tactile())
+            schema_compatibility += "_left_tactile_v1"
 
         if config.record_wrist_cameras:
             dataset_features.update(get_wrist_camera_features())
@@ -1398,6 +1463,11 @@ def main(config: DecoupledVLADataExporterConfig, runtime_output: RuntimeOutput) 
                 "robot_state": "decoupled_ros",
                 "pico_pose": "optional_sonic_zmq",
                 "camera": "gear_sonic_composed_camera",
+                "left_tactile": (
+                    "inspire_modbus_latest_value_cache"
+                    if config.collect_tactile
+                    else "disabled"
+                ),
             },
             "schema_compatibility": schema_compatibility,
             "hand_data_mode": "left_only" if config.left_hand_only else "both",
