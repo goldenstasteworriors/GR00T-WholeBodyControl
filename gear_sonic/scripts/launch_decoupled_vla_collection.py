@@ -104,6 +104,10 @@ def _conda_prefix(repo_root: Path, env_name: str) -> str:
         f"conda activate {shlex.quote(env_name)} && "
         'if [ -f "$CONDA_PREFIX/setup.bash" ]; then source "$CONDA_PREFIX/setup.bash"; fi && '
         f"cd {shlex.quote(str(repo_root))} && "
+        # The robot environment may contain an editable install pointing at a
+        # different worktree.  Always load project packages from the worktree
+        # that owns this launcher.
+        f"export PYTHONPATH={shlex.quote(str(repo_root))}${{PYTHONPATH:+:$PYTHONPATH}} && "
         "export PYTHONUNBUFFERED=1 && "
     )
 
