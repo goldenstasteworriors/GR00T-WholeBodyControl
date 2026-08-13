@@ -821,7 +821,7 @@ def parse_args():
     parser.add_argument(
         "--tactile-state-guard-ms",
         type=float,
-        default=6.0,
+        default=16.0,
         help="Do not begin a tactile batch this close to the next 50 Hz state deadline.",
     )
     parser.add_argument("--tactile-metrics-interval", type=float, default=5.0)

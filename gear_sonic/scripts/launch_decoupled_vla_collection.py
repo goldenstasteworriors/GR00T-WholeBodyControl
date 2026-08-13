@@ -432,7 +432,7 @@ class DecoupledVLACollectionLaunchConfig:
     tactile_zmq_port: int = 5558
     """Loopback port for bridge-to-exporter tactile snapshots."""
 
-    tactile_state_guard_ms: float = 6.0
+    tactile_state_guard_ms: float = 16.0
     """Reserve this much time before each 50 Hz Inspire state deadline."""
 
     tactile_metrics_interval: float = 5.0

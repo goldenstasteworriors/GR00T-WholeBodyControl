@@ -187,6 +187,8 @@ batch, targeting two complete physical refreshes per second. The exporter is
 still 50 Hz: each dataset frame copies the newest complete cache without
 waiting for Modbus. A failed batch keeps the previous values and advances the
 per-region age instead of replacing the region with zeros.
+The default 16 ms state-deadline guard was selected from onboard read-only
+measurements so the existing Inspire state loop retains priority.
 
 ```bash
 python gear_sonic/scripts/launch_decoupled_vla_collection_onboard.py \
