@@ -40,6 +40,8 @@ class _YawAccumulator:
 
 
 class _RobotModel:
+    num_joints = 43
+    q_zero = np.zeros(43, dtype=np.float64)
     _dof_indices = {
         "left_wrist_roll_joint": 19,
         "left_wrist_pitch_joint": 20,
@@ -51,6 +53,9 @@ class _RobotModel:
 
     def get_body_actuated_joint_indices(self):
         return list(range(22)) + list(range(29, 36))
+
+    def get_hand_actuated_joint_indices(self, side):
+        return list(range(22, 29)) if side == "left" else list(range(36, 43))
 
     def dof_index(self, name):
         return self._dof_indices[name]
@@ -147,6 +152,7 @@ def test_exporter_keeps_vr3pt_when_pose_message_has_no_smpl():
         planner_max_age=1.0,
         use_sonic_pose_when_stream_off=True,
         default_stream_mode_when_pose_available=1,
+        with_hands=True,
     )
     collector._left_wrist_indices = [22, 24, 26]
     collector._right_wrist_indices = [23, 25, 27]
@@ -179,3 +185,32 @@ def test_exporter_keeps_vr3pt_when_pose_message_has_no_smpl():
     np.testing.assert_array_equal(frame_data["teleop.smpl_pose"], np.zeros(63))
     np.testing.assert_array_equal(frame_data["teleop.smpl_frame_index"], [0])
     np.testing.assert_array_equal(frame_data["teleop.stream_mode"], [1])
+
+
+def test_left_hand_only_exporter_synthesizes_open_right_state_and_action():
+    collector = DecoupledVLADataCollector.__new__(DecoupledVLADataCollector)
+    collector.config = SimpleNamespace(with_hands=True, left_hand_only=True)
+    collector.robot_model = _RobotModel()
+    collector._inspire_open_q = np.array(
+        [0.7, 0.7, 0.7, 0.7, 1.0, 1.0],
+        dtype=np.float64,
+    )
+    collector._legacy_hand_action_to_inspire = (
+        lambda legacy_action, _hand_task: np.asarray(legacy_action[:6], dtype=np.float64)
+    )
+
+    kinematic_state = np.arange(43, dtype=np.float64)
+    proprio = {
+        "left_hand_inspire_q": np.arange(6, dtype=np.float64) / 10.0,
+        "right_hand_inspire_q": np.full(6, 0.2, dtype=np.float64),
+        "action": kinematic_state.copy(),
+    }
+    observation = collector._get_observation_state(proprio, kinematic_state)
+    action = collector._get_action_wbc(proprio, observation)
+
+    assert observation.shape == (41,)
+    assert action.shape == (41,)
+    np.testing.assert_allclose(observation[-12:-6], proprio["left_hand_inspire_q"])
+    np.testing.assert_allclose(observation[-6:], collector._inspire_open_q)
+    np.testing.assert_allclose(action[-12:-6], kinematic_state[22:28])
+    np.testing.assert_allclose(action[-6:], collector._inspire_open_q)

@@ -67,7 +67,14 @@ def _run_main_smpl_visualizer(frame_queue, stop_event):
 
 
 class PicoStreamer(BaseStreamer):
-    def __init__(self, enable_smpl_visualization: bool = False):
+    def __init__(
+        self,
+        enable_smpl_visualization: bool = False,
+        navigation_range: float = 1.0,
+    ):
+        if navigation_range <= 0.0:
+            raise ValueError("PICO navigation range must be positive")
+        self.navigation_range = float(navigation_range)
         self.run_pico_service()
         self.xr_client = XrClient()
         self._xr_lock = threading.Lock()
@@ -379,17 +386,10 @@ class PicoStreamer(BaseStreamer):
         right_controller_T = self._process_xr_pose(pico_data["right_pose"], pico_data["head_pose"])
 
         # Get navigation commands
-        DEAD_ZONE = 0.1
-        MAX_LINEAR_VEL = 0.5  # m/s
-        MAX_ANGULAR_VEL = 1.0  # rad/s
-
-        fwd_bwd_input = pico_data["left_joystick"][1]
-        strafe_input = -pico_data["left_joystick"][0]
-        yaw_input = -pico_data["right_joystick"][0]
-
-        lin_vel_x = self._apply_dead_zone(fwd_bwd_input, DEAD_ZONE) * MAX_LINEAR_VEL
-        lin_vel_y = self._apply_dead_zone(strafe_input, DEAD_ZONE) * MAX_LINEAR_VEL
-        ang_vel_z = self._apply_dead_zone(yaw_input, DEAD_ZONE) * MAX_ANGULAR_VEL
+        lin_vel_x, lin_vel_y, ang_vel_z = self._joystick_navigation_command(
+            pico_data["left_joystick"],
+            pico_data["right_joystick"],
+        )
 
         button_events = self._button_sampler.consume_events()
         for event in button_events:
@@ -567,13 +567,19 @@ class PicoStreamer(BaseStreamer):
         xr_pose_T[:3, 3] = xr_pose_xyz_delta_compensated
         return xr_pose_T
 
-    def _apply_dead_zone(self, value, dead_zone):
-        """Apply dead zone and normalize."""
-        if abs(value) < dead_zone:
-            return 0.0
-        sign = 1 if value > 0 else -1
-        # Normalize the output to be between -1 and 1 after dead zone
-        return sign * (abs(value) - dead_zone) / (1.0 - dead_zone)
+    def _joystick_navigation_command(
+        self,
+        left_joystick,
+        right_joystick,
+    ) -> np.ndarray:
+        """Linearly map both PICO sticks to a symmetric x/y/yaw range."""
+        fwd_bwd_input = np.clip(float(left_joystick[1]), -1.0, 1.0)
+        strafe_input = np.clip(-float(left_joystick[0]), -1.0, 1.0)
+        yaw_input = np.clip(-float(right_joystick[0]), -1.0, 1.0)
+        return np.asarray(
+            [fwd_bwd_input, strafe_input, yaw_input],
+            dtype=np.float64,
+        ) * self.navigation_range
 
     def _generate_finger_data(self, pico_data, hand):
         """Generate finger position data.
