@@ -419,6 +419,7 @@ def test_arm_preparation_completes_in_fsm_501_without_requesting_another_fsm():
 def test_emergency_stop_requests_damp_without_following_move():
     sender = _make_sender()
     sender.active = True
+    sender._consecutive_velocity_timeouts = 2
 
     sender.set_active(False, emergency=True)
 
@@ -427,4 +428,5 @@ def test_emergency_stop_requests_damp_without_following_move():
     sender.loco.SetVelocity.assert_not_called()
     assert not sender.active
     assert not sender._activation_requested
+    assert sender._consecutive_velocity_timeouts == 0
     sender.robot_state.ServiceSwitch.assert_not_called()

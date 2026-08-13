@@ -388,6 +388,7 @@ class UnitreeLocoArmCommandSender:
 
     def _reset_activation(self) -> None:
         self.active = False
+        self._consecutive_velocity_timeouts = 0
         self._activation_requested = False
         self._activation_stage = "idle"
         self._activation_deadline = 0.0
