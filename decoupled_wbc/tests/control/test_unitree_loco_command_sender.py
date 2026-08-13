@@ -249,7 +249,7 @@ def test_arm_output_is_enabled_only_during_post_locomotion_preparation():
     assert not sender.active
 
 
-def test_arm_sdk_updates_only_dual_arms_after_full_pose_seed():
+def test_arm_sdk_rate_limits_dual_arms_from_measured_pose_during_takeover():
     sender = _make_sender()
     sender._arm_control_enabled = True
     sender._arm_preparing = True
@@ -267,8 +267,8 @@ def test_arm_sdk_updates_only_dual_arms_after_full_pose_seed():
     cmd_q = np.arange(29, dtype=np.float64) / 100.0
     cmd_dq = np.zeros(29)
     cmd_tau = np.zeros(29)
-    sender._latest_body_q = cmd_q.copy()
-    sender._arm_handoff_q = cmd_q.copy()
+    sender._latest_body_q = np.arange(29, dtype=np.float64) / 50.0
+    sender._arm_handoff_q = sender._latest_body_q.copy()
 
     with patch(
         "decoupled_wbc.control.envs.g1.utils.command_sender.time.monotonic",
@@ -280,7 +280,15 @@ def test_arm_sdk_updates_only_dual_arms_after_full_pose_seed():
         motor = sender.low_cmd.motor_cmd[motor_index]
         assert (motor.q, motor.dq, motor.tau, motor.kp, motor.kd) == expected
     for motor_index in sender.ARM_MOTOR_INDICES:
-        assert sender.low_cmd.motor_cmd[motor_index].q == cmd_q[motor_index]
+        expected = np.clip(
+            cmd_q[motor_index],
+            sender._latest_body_q[motor_index] - sender._arm_handoff_max_delta,
+            sender._latest_body_q[motor_index] + sender._arm_handoff_max_delta,
+        )
+        motor = sender.low_cmd.motor_cmd[motor_index]
+        assert motor.q == expected
+        assert motor.dq == 0.0
+        assert motor.tau == 0.0
     assert sender.low_cmd.motor_cmd[sender.ARM_WEIGHT_INDEX].q == 0.5
     sender.publisher.Write.assert_called_once_with(sender.low_cmd)
 

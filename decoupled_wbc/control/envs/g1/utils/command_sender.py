@@ -555,7 +555,7 @@ class UnitreeLocoArmCommandSender:
             else:
                 startup_path += f" -> Start({self._start_fsm_id})"
             if self._arm_control_enabled:
-                startup_path += " -> hold measured arms"
+                startup_path += " -> smoothly raise arms"
             print(
                 f"Unitree official loco startup requested: {startup_path}",
                 flush=True,
@@ -643,7 +643,7 @@ class UnitreeLocoArmCommandSender:
                 self._stable_since = None
                 self._log_waiting(
                     now,
-                    f"holding measured arms in fsm_id={expected_fsm_id}, current={fsm_id}",
+                    f"raising arms in fsm_id={expected_fsm_id}, current={fsm_id}",
                 )
                 return
             if self._start_fsm_id is not None and (
@@ -655,7 +655,7 @@ class UnitreeLocoArmCommandSender:
                 self._stable_since = None
                 self._log_waiting(
                     now,
-                    "taking over arms at measured pose "
+                    "smoothly raising arms from the measured pose "
                     f"({preparation_time:.2f}/{self._weight_ramp_duration:.2f}s)",
                 )
                 return
@@ -670,8 +670,8 @@ class UnitreeLocoArmCommandSender:
             self._arm_preparation_complete = True
             self._arm_handoff_active = self._arm_handoff_q is not None
             print(
-                "Unitree arm_sdk measured-pose takeover ready; smoothly joining the policy "
-                "target; waist is not updated by IK",
+                "Unitree arm_sdk preparation pose ready; smoothly finishing the policy "
+                "target handoff if needed; waist is not updated by IK",
                 flush=True,
             )
             self._mark_active(now, fsm_id)
@@ -759,9 +759,17 @@ class UnitreeLocoArmCommandSender:
             joint_index = self.config["MOTOR2JOINT"][motor_index]
             motor = self.low_cmd.motor_cmd[motor_index]
             if self._arm_preparing:
-                # Gain arm_sdk authority without moving to a configured pose.
-                # Pico IK takes over only after this measured-pose ramp finishes.
-                motor.q = float(self._latest_body_q[joint_index])
+                # Start from the measured pose and rate-limit the configured
+                # preparation target while arm_sdk authority is blended in.
+                target_q = float(cmd_q[joint_index])
+                previous_q = float(self._arm_handoff_q[joint_index])
+                motor.q = float(
+                    np.clip(
+                        target_q,
+                        previous_q - self._arm_handoff_max_delta,
+                        previous_q + self._arm_handoff_max_delta,
+                    )
+                )
                 motor.dq = 0.0
                 motor.tau = 0.0
                 self._arm_handoff_q[joint_index] = motor.q

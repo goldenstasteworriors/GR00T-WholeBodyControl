@@ -282,6 +282,9 @@ class DecoupledVLACollectionLaunchConfig:
     startup_final_pose_duration: float = 4.0
     """Seconds to move all remaining joints to the normal initial pose."""
 
+    startup_final_elbow_angle: float = -0.2617993877991494
+    """arm_sdk startup target for both elbows; -15 degrees raises both arms."""
+
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher type for control loop."""
 
@@ -762,6 +765,8 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.startup_elbow_pose_duration),
         "--startup-final-pose-duration",
         str(config.startup_final_pose_duration),
+        "--startup-final-elbow-angle",
+        str(config.startup_final_elbow_angle),
         "--keyboard-dispatcher-type",
         config.keyboard_dispatcher_type,
         *_bool_arg("keyboard-lower-body-control", config.keyboard_lower_body_control),
@@ -790,6 +795,8 @@ def _build_teleop_args(config: DecoupledVLACollectionLaunchConfig, interface: st
         "--lower-body-controller",
         config.lower_body_controller,
         *_bool_arg("unitree-loco-arm-control-enabled", config.unitree_loco_arm_control_enabled),
+        "--startup-final-elbow-angle",
+        str(config.startup_final_elbow_angle),
         "--body-control-device",
         config.body_control_device,
         "--pico-navigation-range",
