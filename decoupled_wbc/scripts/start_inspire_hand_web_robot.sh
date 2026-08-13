@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 在机器人端启动：DDS -> Modbus bridge 与仅本机可访问的网页控制服务。
-set -euo pipefail
+# Conda 的机器人环境激活钩子会读取未定义的 CONDA_BUILD；不能启用
+# nounset（-u），否则 conda activate 会在钩子执行前失败。
+set -eo pipefail
 
 REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 CONDA_SH="${CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}"
