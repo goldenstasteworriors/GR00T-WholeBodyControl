@@ -25,7 +25,7 @@ conda activate "$CONDA_ENV"
 cd "$REPO_ROOT"
 
 cleanup() {
-  [[ -n "${BRIDGE_PID:-}" ]] && kill "$BRIDGE_PID" 2>/dev/null || true
+  [[ -n "${WEB_PID:-}" ]] && kill "$WEB_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -35,17 +35,18 @@ if pgrep -af 'decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds' >/dev/nu
   exit 1
 fi
 
-python decoupled_wbc/scripts/inspire_modbus_hand.py \
-  --mode dds --network "$DDS_NETWORK" \
-  --left-ip 192.168.123.210 --right-ip 192.168.123.211 \
-  --hand-task "$HAND_TASK" --side both --publish-state &
-BRIDGE_PID=$!
+python decoupled_wbc/scripts/inspire_hand_web.py \
+  --network "$DDS_NETWORK" --host 127.0.0.1 --port "$WEB_PORT" &
+WEB_PID=$!
 sleep 1
-if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
-  echo "DDS -> Modbus bridge 启动失败。" >&2
+if ! kill -0 "$WEB_PID" 2>/dev/null; then
+  echo "网页服务启动失败。" >&2
   exit 1
 fi
 
 echo "网页服务已启动；请在本机运行 start_inspire_hand_web_local.sh。"
-python decoupled_wbc/scripts/inspire_hand_web.py \
-  --network "$DDS_NETWORK" --host 127.0.0.1 --port "$WEB_PORT"
+echo "DDS -> Modbus bridge 运行中；若它退出，网页服务会一并停止。"
+python decoupled_wbc/scripts/inspire_modbus_hand.py \
+  --mode dds --network "$DDS_NETWORK" \
+  --left-ip 192.168.123.210 --right-ip 192.168.123.211 \
+  --hand-task "$HAND_TASK" --side both --publish-state
