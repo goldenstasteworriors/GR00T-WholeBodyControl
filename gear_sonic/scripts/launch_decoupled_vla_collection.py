@@ -674,14 +674,12 @@ def _kill_existing_session() -> None:
 
 
 def _kill_existing_inspire_hand_bridge() -> None:
-    subprocess.run(
-        [
-            "pkill",
-            "-f",
-            "decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds",
-        ],
-        capture_output=True,
+    bridge_patterns = (
+        "decoupled_wbc/scripts/inspire_modbus_hand.py.*--mode dds",
+        "decoupled_wbc/scripts/inspire_hand_web_bridge.py",
     )
+    for pattern in bridge_patterns:
+        subprocess.run(["pkill", "-f", pattern], capture_output=True)
 
 
 def _create_tmux_session() -> None:
