@@ -692,8 +692,9 @@ def run_state_publisher(
                     last_metrics_log = wall_now
             next_cycle_start += period
             now = time.monotonic()
-            if next_cycle_start < now:
-                # Do not pile up stale state cycles after an overrun.
+            if now - next_cycle_start > period:
+                # Drop only a full stale cycle (for example the one-time hand
+                # configuration); catch up sub-period jitter on the next loop.
                 next_cycle_start = now
             stop_event.wait(max(0.0, next_cycle_start - now))
     finally:
