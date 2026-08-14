@@ -694,6 +694,36 @@ def generate_finger_data(hand: str, trigger: float, grip: float) -> np.ndarray:
 JOYSTICK_DEADZONE = 0.15
 
 
+HAND_STATE_DEBOUNCE_S = 0.1
+
+
+class HandStateDebouncer:
+    """Require a left-trigger/right-grip hand state to remain stable before use."""
+
+    def __init__(self, stable_for_s: float = HAND_STATE_DEBOUNCE_S):
+        self.stable_for_s = float(stable_for_s)
+        self._confirmed = (False, False)
+        self._candidate: tuple[bool, bool] | None = None
+        self._candidate_since: float | None = None
+
+    def update(
+        self, left_trigger: float, right_grip: float, *, now: float | None = None
+    ) -> tuple[float, float]:
+        """Return the confirmed trigger/grip pair after stable_for_s seconds."""
+        timestamp = time.monotonic() if now is None else float(now)
+        requested = (left_trigger > 0.5, right_grip > 0.5)
+        if requested == self._confirmed:
+            self._candidate = None
+            self._candidate_since = None
+        elif requested != self._candidate:
+            self._candidate = requested
+            self._candidate_since = timestamp
+        elif self._candidate_since is not None and timestamp - self._candidate_since >= self.stable_for_s:
+            self._confirmed = requested
+            self._candidate = None
+            self._candidate_since = None
+        return float(self._confirmed[0]), float(self._confirmed[1])
+
 class YawAccumulator:
     """Accumulates yaw heading angle based on joystick input."""
 
@@ -929,11 +959,25 @@ def get_abxy_buttons(reader=None):
 
 
 def compute_hand_joints_from_inputs(
-    left_solver, right_solver, left_trigger, left_grip, right_trigger, right_grip
+    left_solver,
+    right_solver,
+    left_trigger,
+    left_grip,
+    right_trigger,
+    right_grip,
+    *,
+    left_hand_trigger: float | None = None,
+    left_hand_right_grip: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute left/right hand joints using IK solvers, or zeros if unavailable."""
+    """Compute hand joints; left hand uses right grip as its four-state modifier."""
     if left_solver is not None and right_solver is not None:
-        left_finger_data = generate_finger_data("left", left_trigger, left_grip)
+        effective_left_trigger = left_trigger if left_hand_trigger is None else left_hand_trigger
+        effective_right_grip = (
+            right_grip if left_hand_right_grip is None else left_hand_right_grip
+        )
+        left_finger_data = generate_finger_data(
+            "left", effective_left_trigger, effective_right_grip
+        )
         right_finger_data = generate_finger_data("right", right_trigger, right_grip)
         left_hand_joints = left_solver({"position": left_finger_data})
         right_hand_joints = right_solver({"position": right_finger_data})
@@ -1498,6 +1542,7 @@ class PoseStreamer:
         self.record_idx = 0
 
         self.left_hand_ik_solver, self.right_hand_ik_solver = init_hand_ik_solvers()
+        self.left_hand_state_debouncer = HandStateDebouncer()
         self.parent_indices = [
             -1,
             0,
@@ -1605,6 +1650,9 @@ class PoseStreamer:
         self.toggle_data_collection_last = toggle_data_collection_tmp
         self.toggle_data_abort_last = toggle_data_abort_tmp
 
+        debounced_left_trigger, debounced_right_grip = self.left_hand_state_debouncer.update(
+            left_trigger, right_grip
+        )
         left_hand_joints, right_hand_joints = compute_hand_joints_from_inputs(
             self.left_hand_ik_solver,
             self.right_hand_ik_solver,
@@ -1612,6 +1660,8 @@ class PoseStreamer:
             left_grip,
             right_trigger,
             right_grip,
+            left_hand_trigger=debounced_left_trigger,
+            left_hand_right_grip=debounced_right_grip,
         )
         has_body_tracking = "body_poses_np" in sample
         self._set_tracking_mode("full-body" if has_body_tracking else "VR3PT-only")
@@ -2080,6 +2130,7 @@ class PlannerStreamer:
 
         # Hand IK solvers for trigger-controlled hand open/close in VR 3PT mode
         self.left_hand_ik_solver, self.right_hand_ik_solver = init_hand_ik_solvers()
+        self.left_hand_state_debouncer = HandStateDebouncer()
 
     def reset_yaw(self):
         """Called when entering planner mode. Resets state for fresh start."""
@@ -2195,6 +2246,9 @@ class PlannerStreamer:
                     left_grip,
                     right_grip,
                 ) = get_controller_inputs(self.reader)
+                debounced_left_trigger, debounced_right_grip = self.left_hand_state_debouncer.update(
+                    left_trigger, right_grip
+                )
                 lh_joints, rh_joints = compute_hand_joints_from_inputs(
                     self.left_hand_ik_solver,
                     self.right_hand_ik_solver,
@@ -2202,6 +2256,8 @@ class PlannerStreamer:
                     left_grip,
                     right_trigger,
                     right_grip,
+                    left_hand_trigger=debounced_left_trigger,
+                    left_hand_right_grip=debounced_right_grip,
                 )
                 left_hand_position = lh_joints.reshape(-1).astype(np.float32).tolist()
                 right_hand_position = rh_joints.reshape(-1).astype(np.float32).tolist()
