@@ -43,6 +43,8 @@ REG_FORCE_SET = 1498
 REG_SPEED_SET = 1522
 REG_ANGLE_ACT = 1546
 REG_FORCE_ACT = 1582
+REG_ERROR = 1606
+REG_STATUS = 1612
 
 INSPIRE_HAND_DOF = 6
 THUMB_ROTATE_INDEX = 5
@@ -336,6 +338,23 @@ class InspireModbusHand:
         values = self.read_registers(REG_FORCE_ACT, INSPIRE_HAND_DOF)
         return np.clip(np.asarray(values, dtype=np.float64) / 1000.0, 0.0, None)
 
+    def read_error_and_status(self) -> tuple[np.ndarray, np.ndarray]:
+        """Read the six actuator error codes and six motion status codes."""
+        register_count = (REG_STATUS - REG_ERROR + INSPIRE_HAND_DOF) // 2
+        words = self.read_registers(REG_ERROR, register_count, kind="state")
+        raw = np.frombuffer(
+            struct.pack(">" + "H" * len(words), *words),
+            dtype=np.uint8,
+        )
+        errors = raw[:INSPIRE_HAND_DOF].copy()
+        status_offset = REG_STATUS - REG_ERROR
+        statuses = raw[status_offset : status_offset + INSPIRE_HAND_DOF].copy()
+        return errors, statuses
+
+    def clear_error(self) -> None:
+        self.write_register(REG_CLEAR_ERROR, 1)
+        time.sleep(0.02)
+
     def set_angle(self, values: Iterable[int], speed: int = 3000, force: int = 12000) -> None:
         angle_values = [max(0, min(1000, int(v))) for v in values]
         if len(angle_values) != INSPIRE_HAND_DOF:
@@ -437,14 +456,28 @@ class ModbusPrioritySchedule:
     def __init__(self):
         self._lock = threading.Lock()
         self._targets: dict[str, list[int]] = {}
+        self._generation = 0
+        self._applied_generation = 0
 
     def set_targets(self, targets: dict[str, list[int]]) -> None:
         with self._lock:
-            self._targets = {side: values.copy() for side, values in targets.items()}
+            copied = {side: values.copy() for side, values in targets.items()}
+            if copied != self._targets:
+                self._targets = copied
+                self._generation += 1
 
-    def get_targets(self) -> dict[str, list[int]]:
+    def get_pending_targets(self) -> tuple[int, dict[str, list[int]]]:
         with self._lock:
-            return {side: values.copy() for side, values in self._targets.items()}
+            if self._applied_generation == self._generation:
+                return self._generation, {}
+            return self._generation, {
+                side: values.copy() for side, values in self._targets.items()
+            }
+
+    def mark_applied(self, generation: int) -> None:
+        with self._lock:
+            if generation == self._generation:
+                self._applied_generation = generation
 
 
 class TactileBatchPlanner:
@@ -583,9 +616,28 @@ def run_state_publisher(
             loop_start = time.monotonic()
             deadline = next_cycle_start + period
             try:
-                for side, target in schedule.get_targets().items():
+                generation, pending_targets = schedule.get_pending_targets()
+                for side, target in pending_targets.items():
                     if side in active_sides:
+                        errors, statuses = hands[side].read_error_and_status()
+                        protected = bool(np.any(errors)) or bool(
+                            np.any(np.isin(statuses, [5, 6, 7]))
+                        )
+                        if protected:
+                            print(
+                                f"Inspire {side} protection before new target: "
+                                f"errors={errors.tolist()} statuses={statuses.tolist()}; "
+                                "clearing recoverable errors once."
+                            )
+                            hands[side].clear_error()
+                        else:
+                            print(
+                                f"Inspire {side} status before new target: "
+                                f"errors={errors.tolist()} statuses={statuses.tolist()}"
+                            )
                         hands[side].set_angle(target, speed=args.speed, force=args.force)
+                if pending_targets:
+                    schedule.mark_applied(generation)
 
                 q = {"right": open_q.copy(), "left": open_q.copy()}
                 force_g: dict[str, np.ndarray | None] = {"right": None, "left": None}
