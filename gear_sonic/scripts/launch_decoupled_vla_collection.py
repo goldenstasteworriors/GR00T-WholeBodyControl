@@ -430,8 +430,8 @@ class DecoupledVLACollectionLaunchConfig:
     collect_tactile: bool = False
     """Record left RH56DFTP tactile data through a non-blocking latest-value cache."""
 
-    tactile_full_refresh_hz: float = 2.0
-    """Conservative target physical refresh rate for all left tactile regions."""
+    tactile_full_refresh_hz: float = 5.0
+    """Measured target that maximizes partial tactile updates under 50 Hz hand I/O."""
 
     tactile_zmq_host: str = "127.0.0.1"
     """Loopback bind/connect host for bridge-to-exporter tactile snapshots."""
@@ -439,11 +439,11 @@ class DecoupledVLACollectionLaunchConfig:
     tactile_zmq_port: int = 5558
     """Loopback port for bridge-to-exporter tactile snapshots."""
 
-    tactile_state_guard_ms: float = 2.0
+    tactile_state_guard_ms: float = 0.0
     """Extra deadline margin after the dynamic tactile batch-duration estimate."""
 
-    tactile_default_batch_ms: float = 10.0
-    """Conservative tactile duration estimate before the bridge has per-batch P95 samples."""
+    tactile_default_batch_ms: float = 6.0
+    """Initial tactile duration estimate before the bridge has per-batch P95 samples."""
 
     tactile_metrics_interval: float = 5.0
     """Interval for printing and persisting Modbus headroom metrics."""

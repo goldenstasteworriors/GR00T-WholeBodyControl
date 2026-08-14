@@ -841,7 +841,7 @@ def parse_args():
     parser.add_argument(
         "--tactile-full-refresh-hz",
         type=float,
-        default=2.0,
+        default=5.0,
         help="Target complete tactile refresh rate. Dataset snapshots remain at exporter FPS.",
     )
     parser.add_argument("--tactile-publish-host", default="127.0.0.1")
@@ -849,14 +849,14 @@ def parse_args():
     parser.add_argument(
         "--tactile-state-guard-ms",
         type=float,
-        default=2.0,
+        default=0.0,
         help="Extra margin after the dynamically estimated tactile batch duration.",
     )
     parser.add_argument(
         "--tactile-default-batch-ms",
         type=float,
-        default=10.0,
-        help="Conservative initial duration estimate before per-batch P95 timing is available.",
+        default=6.0,
+        help="Initial duration estimate before per-batch P95 timing is available.",
     )
     parser.add_argument("--tactile-metrics-interval", type=float, default=5.0)
     parser.add_argument("--tactile-metrics-log", default="")
