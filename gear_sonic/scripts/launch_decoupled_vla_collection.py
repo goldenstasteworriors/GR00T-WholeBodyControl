@@ -439,8 +439,11 @@ class DecoupledVLACollectionLaunchConfig:
     tactile_zmq_port: int = 5558
     """Loopback port for bridge-to-exporter tactile snapshots."""
 
-    tactile_state_guard_ms: float = 16.0
-    """Reserve this much time before each 50 Hz Inspire state deadline."""
+    tactile_state_guard_ms: float = 2.0
+    """Extra deadline margin after the dynamic tactile batch-duration estimate."""
+
+    tactile_default_batch_ms: float = 10.0
+    """Conservative tactile duration estimate before the bridge has per-batch P95 samples."""
 
     tactile_metrics_interval: float = 5.0
     """Interval for printing and persisting Modbus headroom metrics."""
@@ -612,6 +615,8 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
             errors.append("--tactile-full-refresh-hz must be positive")
         if config.tactile_state_guard_ms < 0.0:
             errors.append("--tactile-state-guard-ms must be nonnegative")
+        if config.tactile_default_batch_ms <= 0.0:
+            errors.append("--tactile-default-batch-ms must be positive")
         if config.tactile_metrics_interval <= 0.0:
             errors.append("--tactile-metrics-interval must be positive")
     if config.inspire_hand_test_count < 0:
@@ -973,6 +978,8 @@ def _build_inspire_hand_args(
         str(config.tactile_zmq_port),
         "--tactile-state-guard-ms",
         str(config.tactile_state_guard_ms),
+        "--tactile-default-batch-ms",
+        str(config.tactile_default_batch_ms),
         "--tactile-metrics-interval",
         str(config.tactile_metrics_interval),
         "--tactile-metrics-log",

@@ -16,7 +16,6 @@ import zmq
 from gear_sonic.utils.data_collection.inspire_tactile import (
     MODBUS_METRIC_NAMES,
     TACTILE_BATCHES,
-    TACTILE_BATCH_COUNT_WITH_FORCE,
     TACTILE_FORCE_COUNT,
     TACTILE_PROTOCOL_VERSION,
     TACTILE_REGION_COUNT,
@@ -48,6 +47,7 @@ REG_FORCE_ACT = 1582
 INSPIRE_HAND_DOF = 6
 THUMB_ROTATE_INDEX = 5
 DEFAULT_THUMB_ROTATE = 0.5
+STATE_TO_FORCE_REGISTER_COUNT = REG_FORCE_ACT - REG_ANGLE_ACT + INSPIRE_HAND_DOF
 
 
 class ModbusTcpError(RuntimeError):
@@ -59,8 +59,14 @@ class ModbusProfiler:
 
     METRIC_NAMES = MODBUS_METRIC_NAMES
 
-    def __init__(self, target_full_refresh_hz: float, window_s: float = 30.0):
+    def __init__(
+        self,
+        target_full_refresh_hz: float,
+        tactile_batches_per_refresh: int,
+        window_s: float = 30.0,
+    ):
         self.target_full_refresh_hz = float(target_full_refresh_hz)
+        self.tactile_batches_per_refresh = int(tactile_batches_per_refresh)
         self.window_s = float(window_s)
         self._lock = threading.Lock()
         self._events = deque()
@@ -136,7 +142,8 @@ class ModbusProfiler:
         tactile_p95_ms = self._p95(tactile_io)
         safe_budget_ratio = max(0.0, 0.60 - non_tactile_busy)
         estimated_max_hz = (
-            safe_budget_ratio * 1000.0 / (tactile_p95_ms * TACTILE_BATCH_COUNT_WITH_FORCE)
+            safe_budget_ratio * 1000.0
+            / (tactile_p95_ms * self.tactile_batches_per_refresh)
             if tactile_p95_ms > 0.0
             else 0.0
         )
@@ -312,6 +319,19 @@ class InspireModbusHand:
         values = self.read_registers(REG_ANGLE_ACT, INSPIRE_HAND_DOF)
         return np.clip(np.asarray(values, dtype=np.float64) / 1000.0, 0.0, 1.0)
 
+    def read_angle_and_force(self) -> tuple[np.ndarray, np.ndarray]:
+        """Read 50 Hz angle feedback and force feedback in one FC=03 request."""
+        values = self.read_registers(
+            REG_ANGLE_ACT,
+            STATE_TO_FORCE_REGISTER_COUNT,
+            kind="state",
+        )
+        raw = np.asarray(values, dtype=np.uint16)
+        q = np.clip(raw[:INSPIRE_HAND_DOF].astype(np.float64) / 1000.0, 0.0, 1.0)
+        force_offset = REG_FORCE_ACT - REG_ANGLE_ACT
+        force_g = raw[force_offset : force_offset + INSPIRE_HAND_DOF].view(np.int16)
+        return q, force_g.copy()
+
     def read_force_normalized(self) -> np.ndarray:
         values = self.read_registers(REG_FORCE_ACT, INSPIRE_HAND_DOF)
         return np.clip(np.asarray(values, dtype=np.float64) / 1000.0, 0.0, None)
@@ -412,23 +432,66 @@ def _make_inspire_state_msg(
 
 
 class ModbusPrioritySchedule:
-    """Let 50 Hz state reads and hand commands take priority over tactile reads."""
+    """Thread-safe latest-target cache consumed by the single Modbus I/O loop."""
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._next_state_deadline = 0.0
-        self.command_active = threading.Event()
+        self._targets: dict[str, list[int]] = {}
 
-    def set_state_deadline(self, deadline: float) -> None:
+    def set_targets(self, targets: dict[str, list[int]]) -> None:
         with self._lock:
-            self._next_state_deadline = deadline
+            self._targets = {side: values.copy() for side, values in targets.items()}
 
-    def tactile_has_budget(self, guard_s: float) -> bool:
-        if self.command_active.is_set():
-            return False
+    def get_targets(self) -> dict[str, list[int]]:
         with self._lock:
-            deadline = self._next_state_deadline
-        return deadline <= 0.0 or (deadline - time.monotonic()) > guard_s
+            return {side: values.copy() for side, values in self._targets.items()}
+
+
+class TactileBatchPlanner:
+    """Round-robin tactile batches that only run when the 50 Hz deadline permits."""
+
+    def __init__(
+        self,
+        target_full_refresh_hz: float,
+        *,
+        fallback_batch_ms: float,
+        deadline_margin_ms: float,
+    ):
+        self.items = list(TACTILE_BATCHES)
+        self.item_index = 0
+        self.successful_items: set[int] = set()
+        self.period_s = 1.0 / max(float(target_full_refresh_hz) * len(self.items), 1e-6)
+        self.next_attempt_s = time.monotonic()
+        self.fallback_batch_s = max(0.0, float(fallback_batch_ms) / 1000.0)
+        self.deadline_margin_s = max(0.0, float(deadline_margin_ms) / 1000.0)
+        self._durations_s = {item.name: deque(maxlen=128) for item in self.items}
+
+    @property
+    def item(self):
+        return self.items[self.item_index]
+
+    def predicted_duration_s(self) -> float:
+        samples = self._durations_s[self.item.name]
+        if not samples:
+            return self.fallback_batch_s
+        return float(np.percentile(samples, 95))
+
+    def can_run(self, now_s: float, deadline_s: float) -> bool:
+        return now_s >= self.next_attempt_s and (
+            deadline_s - now_s >= self.predicted_duration_s() + self.deadline_margin_s
+        )
+
+    def finish_attempt(self, *, success: bool, elapsed_s: float, now_s: float) -> bool:
+        self._durations_s[self.item.name].append(float(elapsed_s))
+        if success:
+            self.successful_items.add(self.item_index)
+        self.item_index = (self.item_index + 1) % len(self.items)
+        completed_full_refresh = False
+        if self.item_index == 0:
+            completed_full_refresh = len(self.successful_items) == len(self.items)
+            self.successful_items.clear()
+        self.next_attempt_s = max(self.next_attempt_s + self.period_s, now_s)
+        return completed_full_refresh
 
 
 def run_state_publisher(
@@ -436,10 +499,11 @@ def run_state_publisher(
     hands: dict[str, InspireModbusHand],
     active_sides: list[str],
     stop_event: threading.Event,
-    publisher: ChannelPublisher,
+    publisher: ChannelPublisher | None,
     schedule: ModbusPrioritySchedule,
     profiler: ModbusProfiler,
 ) -> None:
+    """Run all left-hand Modbus I/O in one 50 Hz, deadline-aware worker."""
     period = 1.0 / max(float(args.state_publish_frequency), 1e-6)
     last_q: dict[str, np.ndarray] = {}
     last_time: float | None = None
@@ -449,92 +513,45 @@ def run_state_publisher(
         dtype=np.float64,
     )
 
-    while not stop_event.is_set():
-        loop_start = time.monotonic()
-        schedule.set_state_deadline(loop_start + period)
-        try:
-            q = {
-                side: (
-                    hands[side].read_angle_normalized()
-                    if side in active_sides
-                    else open_q.copy()
-                )
-                for side in ("right", "left")
-            }
-            now = time.monotonic()
-            dq = {}
-            for side in ("right", "left"):
-                if last_time is None or side not in last_q or side not in active_sides:
-                    dq[side] = np.zeros(INSPIRE_HAND_DOF, dtype=np.float64)
-                else:
-                    dq[side] = (q[side] - last_q[side]) / max(now - last_time, 1e-6)
-
-            tau = {"right": None, "left": None}
-            if args.read_force_state:
-                for side in active_sides:
-                    tau[side] = hands[side].read_force_normalized()
-
-            publisher.Write(
-                _make_inspire_state_msg(
-                    q["right"],
-                    q["left"],
-                    dq["right"],
-                    dq["left"],
-                    tau["right"],
-                    tau["left"],
-                )
-            )
-            last_q = q
-            last_time = now
-        except Exception as exc:
-            now = time.monotonic()
-            if now - last_log_time >= 1.0:
-                print(f"Inspire state publish failed: {exc}")
-                last_log_time = now
-
-        elapsed = time.monotonic() - loop_start
-        profiler.record_state_cycle(elapsed > period)
-        stop_event.wait(max(0.0, period - elapsed))
-
-
-def run_tactile_publisher(
-    args,
-    hand: InspireModbusHand,
-    stop_event: threading.Event,
-    schedule: ModbusPrioritySchedule,
-    profiler: ModbusProfiler,
-) -> None:
-    """Read one low-priority batch at a time and publish latest-value snapshots."""
-    context = zmq.Context()
-    publisher = context.socket(zmq.PUB)
-    publisher.setsockopt(zmq.SNDHWM, 2)
-    publisher.bind(f"tcp://{args.tactile_publish_host}:{args.tactile_publish_port}")
-
-    region_values = {
-        region.name: np.zeros(region.size, dtype=np.uint16) for region in TACTILE_REGIONS
-    }
-    valid = np.zeros(TACTILE_REGION_COUNT, dtype=np.bool_)
-    updated_time_s = np.zeros(TACTILE_REGION_COUNT, dtype=np.float64)
-    update_sequence = np.zeros(TACTILE_REGION_COUNT, dtype=np.int64)
-    force_act_g = np.zeros(TACTILE_FORCE_COUNT, dtype=np.int16)
+    tactile_publisher = None
+    tactile_context = None
+    planner = None
+    region_values = None
+    valid = None
+    updated_time_s = None
+    update_sequence = None
+    force_act_g = None
     force_valid = False
     force_updated_time_s = 0.0
     force_update_sequence = 0
     publish_sequence = 0
-    schedule_items = [*TACTILE_BATCHES, None]
-    item_index = 0
-    successful_items: set[int] = set()
-    period = 1.0 / max(
-        float(args.tactile_full_refresh_hz) * TACTILE_BATCH_COUNT_WITH_FORCE,
-        1e-6,
-    )
-    guard_s = max(0.0, float(args.tactile_state_guard_ms) / 1000.0)
-    next_attempt = time.monotonic()
-    last_error_log = 0.0
+    last_tactile_error_log = 0.0
     last_metrics_log = time.monotonic()
     metrics_path = Path(args.tactile_metrics_log).expanduser() if args.tactile_metrics_log else None
 
+    if args.collect_tactile:
+        if "left" not in active_sides:
+            raise ValueError("Tactile collection currently requires the left hand to be active")
+        tactile_context = zmq.Context()
+        tactile_publisher = tactile_context.socket(zmq.PUB)
+        tactile_publisher.setsockopt(zmq.SNDHWM, 2)
+        tactile_publisher.bind(f"tcp://{args.tactile_publish_host}:{args.tactile_publish_port}")
+        planner = TactileBatchPlanner(
+            args.tactile_full_refresh_hz,
+            fallback_batch_ms=args.tactile_default_batch_ms,
+            deadline_margin_ms=args.tactile_state_guard_ms,
+        )
+        region_values = {
+            region.name: np.zeros(region.size, dtype=np.uint16) for region in TACTILE_REGIONS
+        }
+        valid = np.zeros(TACTILE_REGION_COUNT, dtype=np.bool_)
+        updated_time_s = np.zeros(TACTILE_REGION_COUNT, dtype=np.float64)
+        update_sequence = np.zeros(TACTILE_REGION_COUNT, dtype=np.int64)
+        force_act_g = np.zeros(TACTILE_FORCE_COUNT, dtype=np.int16)
+
     def make_snapshot(metrics: np.ndarray) -> dict:
+        assert region_values is not None and valid is not None
+        assert updated_time_s is not None and update_sequence is not None and force_act_g is not None
         return {
             "version": TACTILE_PROTOCOL_VERSION,
             "sequence": publish_sequence,
@@ -552,96 +569,130 @@ def run_tactile_publisher(
 
     try:
         while not stop_event.is_set():
-            now = time.monotonic()
-            if now < next_attempt:
-                stop_event.wait(min(next_attempt - now, 0.01))
-                continue
-            if not schedule.tactile_has_budget(guard_s):
-                stop_event.wait(0.001)
-                continue
-
-            item = schedule_items[item_index]
-            read_ok = False
+            loop_start = time.monotonic()
+            deadline = loop_start + period
             try:
-                if item is None:
-                    raw_force = hand.read_registers(
-                        REG_FORCE_ACT, TACTILE_FORCE_COUNT, kind="tactile"
-                    )
-                    force_act_g[:] = np.asarray(raw_force, dtype=np.uint16).view(np.int16)
-                    force_valid = True
+                for side, target in schedule.get_targets().items():
+                    if side in active_sides:
+                        hands[side].set_angle(target, speed=args.speed, force=args.force)
+
+                q = {"right": open_q.copy(), "left": open_q.copy()}
+                force_g: dict[str, np.ndarray | None] = {"right": None, "left": None}
+                for side in active_sides:
+                    q[side], force_g[side] = hands[side].read_angle_and_force()
+
+                now = time.monotonic()
+                dq = {}
+                for side in ("right", "left"):
+                    if last_time is None or side not in last_q or side not in active_sides:
+                        dq[side] = np.zeros(INSPIRE_HAND_DOF, dtype=np.float64)
+                    else:
+                        dq[side] = (q[side] - last_q[side]) / max(now - last_time, 1e-6)
+
+                if force_act_g is not None and force_g["left"] is not None:
+                    force_act_g[:] = force_g["left"]
                     force_updated_time_s = time.time()
                     force_update_sequence += 1
-                else:
-                    matrices = unpack_batch(
-                        item,
-                        hand.read_registers(item.address, item.count, kind="tactile"),
+                    force_valid = True
+
+                if publisher is not None:
+                    tau = {
+                        side: (
+                            np.clip(force_g[side].astype(np.float64) / 1000.0, 0.0, None)
+                            if args.read_force_state and force_g[side] is not None
+                            else None
+                        )
+                        for side in ("right", "left")
+                    }
+                    publisher.Write(
+                        _make_inspire_state_msg(
+                            q["right"], q["left"], dq["right"], dq["left"],
+                            tau["right"], tau["left"],
+                        )
                     )
-                    update_time = time.time()
-                    for region_name, values in matrices.items():
-                        region_index = TACTILE_REGION_INDEX_BY_NAME[region_name]
-                        region_values[region_name][:] = values
-                        valid[region_index] = True
-                        updated_time_s[region_index] = update_time
-                        update_sequence[region_index] += 1
-                read_ok = True
-                successful_items.add(item_index)
+                last_q = q
+                last_time = now
+
+                if planner is not None and planner.can_run(time.monotonic(), deadline):
+                    item = planner.item
+                    tactile_start = time.monotonic()
+                    read_ok = False
+                    try:
+                        matrices = unpack_batch(
+                            item,
+                            hands["left"].read_registers(item.address, item.count, kind="tactile"),
+                        )
+                        update_time = time.time()
+                        assert region_values is not None and valid is not None
+                        assert updated_time_s is not None and update_sequence is not None
+                        for region_name, values in matrices.items():
+                            region_index = TACTILE_REGION_INDEX_BY_NAME[region_name]
+                            region_values[region_name][:] = values
+                            valid[region_index] = True
+                            updated_time_s[region_index] = update_time
+                            update_sequence[region_index] += 1
+                        read_ok = True
+                    except Exception as exc:
+                        wall_now = time.monotonic()
+                        if wall_now - last_tactile_error_log >= 1.0:
+                            print(f"Inspire tactile batch read failed: {exc}")
+                            last_tactile_error_log = wall_now
+                    completed = planner.finish_attempt(
+                        success=read_ok,
+                        elapsed_s=time.monotonic() - tactile_start,
+                        now_s=time.monotonic(),
+                    )
+                    if completed:
+                        profiler.record_full_refresh()
             except Exception as exc:
-                wall_now = time.monotonic()
-                if wall_now - last_error_log >= 1.0:
-                    print(f"Inspire tactile batch read failed: {exc}")
-                    last_error_log = wall_now
+                now = time.monotonic()
+                if now - last_log_time >= 1.0:
+                    print(f"Inspire priority I/O cycle failed: {exc}")
+                    last_log_time = now
 
-            item_index = (item_index + 1) % len(schedule_items)
-            if item_index == 0:
-                if len(successful_items) == len(schedule_items):
-                    profiler.record_full_refresh()
-                successful_items.clear()
-
-            metrics_record = profiler.snapshot()
-            if read_ok:
+            elapsed = time.monotonic() - loop_start
+            profiler.record_state_cycle(elapsed > period)
+            if tactile_publisher is not None:
+                metrics_record = profiler.snapshot()
                 publish_sequence += 1
                 try:
-                    publisher.send(
-                        pack_snapshot(make_snapshot(metrics_record["values"])),
-                        flags=zmq.NOBLOCK,
+                    tactile_publisher.send(
+                        pack_snapshot(make_snapshot(metrics_record["values"])), flags=zmq.NOBLOCK
                     )
                 except zmq.Again:
                     pass
-
-            wall_now = time.monotonic()
-            if wall_now - last_metrics_log >= args.tactile_metrics_interval:
-                serializable = {
-                    "time_s": metrics_record["time_s"],
-                    "window_s": metrics_record["window_s"],
-                    **dict(zip(metrics_record["metric_names"], metrics_record["values"].tolist())),
-                }
-                print("[InspireTactileModbus] " + " ".join(
-                    f"{key}={value:.3f}" for key, value in serializable.items() if key != "time_s"
-                ))
-                if metrics_path is not None:
-                    metrics_path.parent.mkdir(parents=True, exist_ok=True)
-                    with metrics_path.open("a", encoding="utf-8") as stream:
-                        stream.write(json.dumps(serializable, ensure_ascii=False) + "\n")
-                last_metrics_log = wall_now
-
-            next_attempt = max(next_attempt + period, time.monotonic())
+                wall_now = time.monotonic()
+                if wall_now - last_metrics_log >= args.tactile_metrics_interval:
+                    serializable = {
+                        "time_s": metrics_record["time_s"],
+                        "window_s": metrics_record["window_s"],
+                        **dict(zip(metrics_record["metric_names"], metrics_record["values"].tolist())),
+                    }
+                    print("[InspireTactileModbus] " + " ".join(
+                        f"{key}={value:.3f}" for key, value in serializable.items() if key != "time_s"
+                    ))
+                    if metrics_path is not None:
+                        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+                        with metrics_path.open("a", encoding="utf-8") as stream:
+                            stream.write(json.dumps(serializable, ensure_ascii=False) + "\n")
+                    last_metrics_log = wall_now
+            stop_event.wait(max(0.0, deadline - time.monotonic()))
     finally:
-        publisher.close(linger=0)
-        context.term()
+        if tactile_publisher is not None:
+            tactile_publisher.close(linger=0)
+        if tactile_context is not None:
+            tactile_context.term()
 
 
 def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
     last_command = None
-    profile_samples = []
-    last_profile_time = time.monotonic()
     active_sides = ["left", "right"] if args.side == "both" else [args.side]
     schedule = ModbusPrioritySchedule()
     profiler = next(iter(hands.values())).profiler
     assert profiler is not None
 
     def callback(msg: MotorCmds_) -> None:
-        nonlocal last_command, last_profile_time
-        callback_start = time.perf_counter()
+        nonlocal last_command
         if len(msg.cmds) < 12:
             print(f"skip short inspire command: {len(msg.cmds)}")
             return
@@ -650,10 +701,6 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
         left_q = tuple(float(msg.cmds[i + 6].q) for i in range(6))
         dds_q = {"left": left_q, "right": right_q}
         command_key = tuple(dds_q[side] for side in active_sides)
-        if command_key == last_command:
-            return
-
-        schedule.command_active.set()
         try:
             angles = {
                 side: normalized_to_task_angle(
@@ -661,47 +708,15 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
                 )
                 for side in active_sides
             }
-            side_ms = {"left": 0.0, "right": 0.0}
-            successful_sides = []
-            for side in active_sides:
-                side_start = time.perf_counter()
-                try:
-                    hands[side].set_angle(
-                        angles[side], speed=args.speed, force=args.force
-                    )
-                    successful_sides.append(side)
-                except Exception as exc:
-                    print(f"DDS -> Modbus {side} failed: {exc}")
-                finally:
-                    side_ms[side] = (time.perf_counter() - side_start) * 1000.0
-
-            total_ms = (time.perf_counter() - callback_start) * 1000.0
-            if args.profile_timing:
-                profile_samples.append((side_ms["right"], side_ms["left"], total_ms))
-                now = time.monotonic()
-                if now - last_profile_time >= args.profile_interval:
-                    arr = np.asarray(profile_samples, dtype=np.float64)
-                    print(
-                        "[InspireHandProfile] "
-                        f"n={len(profile_samples)} "
-                        f"right_modbus={arr[:, 0].mean():.2f}ms "
-                        f"left_modbus={arr[:, 1].mean():.2f}ms "
-                        f"callback_total={arr[:, 2].mean():.2f}ms "
-                        f"callback_max={arr[:, 2].max():.2f}ms"
-                    )
-                    profile_samples.clear()
-                    last_profile_time = now
-            if successful_sides:
+            schedule.set_targets(angles)
+            if command_key != last_command:
                 summary = " ".join(
-                    f"{side}={angles[side]}" for side in successful_sides
+                    f"{side}={angles[side]}" for side in active_sides
                 )
-                print(f"DDS -> Modbus {summary}")
-            if len(successful_sides) == len(active_sides):
+                print(f"DDS target queued for 50 Hz Modbus I/O: {summary}")
                 last_command = command_key
         except Exception as exc:
-            print(f"DDS -> Modbus failed: {exc}")
-        finally:
-            schedule.command_active.clear()
+            print(f"DDS target mapping failed: {exc}")
 
     ChannelFactoryInitialize(args.domain_id, args.network)
     stop_event = threading.Event()
@@ -719,30 +734,23 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
     subscriber = ChannelSubscriber("rt/inspire/cmd", MotorCmds_)
     subscriber.Init(callback, 10)
 
+    if args.collect_tactile and "left" not in active_sides:
+        raise ValueError("Tactile collection currently requires the left hand to be active")
+    state_thread = threading.Thread(
+        target=run_state_publisher,
+        args=(args, hands, active_sides, stop_event, publisher, schedule, profiler),
+        daemon=True,
+    )
+    state_thread.start()
     if publisher is not None:
-        state_thread = threading.Thread(
-            target=run_state_publisher,
-            args=(args, hands, active_sides, stop_event, publisher, schedule, profiler),
-            daemon=True,
-        )
-        state_thread.start()
         print(
             "Modbus -> DDS state publisher running on rt/inspire/state "
             f"at {args.state_publish_frequency:.1f} Hz."
         )
-
     if args.collect_tactile:
-        if "left" not in active_sides:
-            raise ValueError("Tactile collection currently requires the left hand to be active")
-        tactile_thread = threading.Thread(
-            target=run_tactile_publisher,
-            args=(args, hands["left"], stop_event, schedule, profiler),
-            daemon=True,
-        )
-        tactile_thread.start()
         print(
-            "Low-priority left tactile publisher running at "
-            f"{args.tactile_full_refresh_hz:.2f} full refreshes/s on "
+            "Deadline-aware left tactile publisher running at "
+            f"up to {args.tactile_full_refresh_hz:.2f} full refreshes/s on "
             f"tcp://{args.tactile_publish_host}:{args.tactile_publish_port}."
         )
 
@@ -821,8 +829,14 @@ def parse_args():
     parser.add_argument(
         "--tactile-state-guard-ms",
         type=float,
-        default=16.0,
-        help="Do not begin a tactile batch this close to the next 50 Hz state deadline.",
+        default=2.0,
+        help="Extra margin after the dynamically estimated tactile batch duration.",
+    )
+    parser.add_argument(
+        "--tactile-default-batch-ms",
+        type=float,
+        default=10.0,
+        help="Conservative initial duration estimate before per-batch P95 timing is available.",
     )
     parser.add_argument("--tactile-metrics-interval", type=float, default=5.0)
     parser.add_argument("--tactile-metrics-log", default="")
@@ -846,7 +860,12 @@ def main():
         raise ValueError("--tactile-full-refresh-hz must be positive")
     if args.tactile_state_guard_ms < 0.0:
         raise ValueError("--tactile-state-guard-ms must be nonnegative")
-    profiler = ModbusProfiler(args.tactile_full_refresh_hz)
+    if args.tactile_default_batch_ms <= 0.0:
+        raise ValueError("--tactile-default-batch-ms must be positive")
+    profiler = ModbusProfiler(
+        args.tactile_full_refresh_hz,
+        tactile_batches_per_refresh=len(TACTILE_BATCHES),
+    )
     hands = {
         "left": InspireModbusHand(
             "left", args.left_ip, args.hand_port, args.device_id, profiler=profiler
