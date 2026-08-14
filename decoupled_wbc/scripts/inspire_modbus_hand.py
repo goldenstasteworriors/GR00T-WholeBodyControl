@@ -465,6 +465,7 @@ class TactileBatchPlanner:
         self.fallback_batch_s = max(0.0, float(fallback_batch_ms) / 1000.0)
         self.deadline_margin_s = max(0.0, float(deadline_margin_ms) / 1000.0)
         self._durations_s = {item.name: deque(maxlen=128) for item in self.items}
+        self._deferrals = {item.name: 0 for item in self.items}
 
     @property
     def item(self):
@@ -472,7 +473,7 @@ class TactileBatchPlanner:
 
     def predicted_duration_s(self) -> float:
         samples = self._durations_s[self.item.name]
-        if not samples:
+        if len(samples) < 8 or self._deferrals[self.item.name] >= len(self.items):
             return self.fallback_batch_s
         return float(np.percentile(samples, 95))
 
@@ -481,14 +482,23 @@ class TactileBatchPlanner:
             deadline_s - now_s >= self.predicted_duration_s() + self.deadline_margin_s
         )
 
+    def is_due(self, now_s: float) -> bool:
+        return now_s >= self.next_attempt_s
+
+    def defer_attempt(self, now_s: float) -> None:
+        """Try another batch without letting one slow batch block all taxels."""
+        self._deferrals[self.item.name] += 1
+        self.item_index = (self.item_index + 1) % len(self.items)
+        self.next_attempt_s = max(self.next_attempt_s + self.period_s, now_s)
+
     def finish_attempt(self, *, success: bool, elapsed_s: float, now_s: float) -> bool:
         self._durations_s[self.item.name].append(float(elapsed_s))
+        self._deferrals[self.item.name] = 0
         if success:
             self.successful_items.add(self.item_index)
         self.item_index = (self.item_index + 1) % len(self.items)
-        completed_full_refresh = False
-        if self.item_index == 0:
-            completed_full_refresh = len(self.successful_items) == len(self.items)
+        completed_full_refresh = len(self.successful_items) == len(self.items)
+        if completed_full_refresh:
             self.successful_items.clear()
         self.next_attempt_s = max(self.next_attempt_s + self.period_s, now_s)
         return completed_full_refresh
@@ -614,9 +624,10 @@ def run_state_publisher(
                 last_q = q
                 last_time = now
 
-                if planner is not None and planner.can_run(time.monotonic(), deadline):
+                tactile_now = time.monotonic()
+                if planner is not None and planner.can_run(tactile_now, deadline):
                     item = planner.item
-                    tactile_start = time.monotonic()
+                    tactile_start = tactile_now
                     read_ok = False
                     try:
                         matrices = unpack_batch(
@@ -645,6 +656,8 @@ def run_state_publisher(
                     )
                     if completed:
                         profiler.record_full_refresh()
+                elif planner is not None and planner.is_due(tactile_now):
+                    planner.defer_attempt(tactile_now)
             except Exception as exc:
                 now = time.monotonic()
                 if now - last_log_time >= 1.0:
