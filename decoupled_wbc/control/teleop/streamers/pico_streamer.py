@@ -66,6 +66,35 @@ def _run_main_smpl_visualizer(frame_queue, stop_event):
         three_point.close()
 
 
+HAND_STATE_DEBOUNCE_S = 0.1
+
+
+class HandStateDebouncer:
+    """Confirm a left-trigger/right-grip state after a stable interval."""
+
+    def __init__(self, stable_for_s: float = HAND_STATE_DEBOUNCE_S):
+        self.stable_for_s = float(stable_for_s)
+        self._confirmed = (False, False)
+        self._candidate: tuple[bool, bool] | None = None
+        self._candidate_since: float | None = None
+
+    def update(
+        self, left_trigger: float, right_grip: float, *, now: float | None = None
+    ) -> tuple[float, float]:
+        timestamp = time.monotonic() if now is None else float(now)
+        requested = (left_trigger > 0.5, right_grip > 0.5)
+        if requested == self._confirmed:
+            self._candidate = None
+            self._candidate_since = None
+        elif requested != self._candidate:
+            self._candidate = requested
+            self._candidate_since = timestamp
+        elif self._candidate_since is not None and timestamp - self._candidate_since >= self.stable_for_s:
+            self._confirmed = requested
+            self._candidate = None
+            self._candidate_since = None
+        return float(self._confirmed[0]), float(self._confirmed[1])
+
 class PicoStreamer(BaseStreamer):
     def __init__(
         self,
@@ -78,6 +107,7 @@ class PicoStreamer(BaseStreamer):
         self.run_pico_service()
         self.xr_client = XrClient()
         self._xr_lock = threading.Lock()
+        self._left_hand_state_debouncer = HandStateDebouncer()
         self._button_sampler = PicoButtonEventSampler(
             self._read_official_button_state,
             poll_hz=200.0,
@@ -588,19 +618,32 @@ class PicoStreamer(BaseStreamer):
         ) * self.navigation_range
 
     def _generate_finger_data(self, pico_data, hand):
-        """Generate finger position data.
+        """Encode Pico inputs as G1 hand gestures.
 
-        Match the main Sonic VLA PICO streamer: trigger controls hand grasp,
-        while grip is reserved for controller modifiers such as data collection.
+        Left hand uses left trigger plus right grip to select open, pressed,
+        grip, or grip_pressed. The combined state is debounced for 100 ms so
+        a short intermediate right-grip-only sample cannot trigger state 3.
         """
         fingertips = np.zeros([25, 4, 4])
+        thumb_tip = 4
+        index_tip = 9
+        middle_tip = 14
+        ring_tip = 19
+        fingertips[thumb_tip, 0, 3] = 1.0
 
-        thumb = 0
-        middle = 10
-
-        fingertips[4 + thumb, 0, 3] = 1.0  # open thumb
-        if pico_data[f"{hand}_trigger"] > 0.5:
-            fingertips[4 + middle, 0, 3] = 1.0  # close middle
+        if hand == "left":
+            left_trigger, right_grip = self._left_hand_state_debouncer.update(
+                pico_data["left_trigger"], pico_data["right_grip"]
+            )
+            if right_grip > 0.5 and left_trigger > 0.5:
+                fingertips[middle_tip, 0, 3] = 1.0  # grip_pressed
+            elif right_grip > 0.5:
+                fingertips[ring_tip, 0, 3] = 1.0  # grip
+            elif left_trigger > 0.5:
+                fingertips[index_tip, 0, 3] = 1.0  # pressed
+        elif pico_data["right_trigger"] > 0.5:
+            # Keep the existing right-hand trigger behavior unchanged.
+            fingertips[middle_tip, 0, 3] = 1.0
 
         return fingertips
 
