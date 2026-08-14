@@ -528,6 +528,7 @@ def run_state_publisher(
     last_tactile_error_log = 0.0
     last_metrics_log = time.monotonic()
     metrics_path = Path(args.tactile_metrics_log).expanduser() if args.tactile_metrics_log else None
+    next_cycle_start = time.monotonic()
 
     if args.collect_tactile:
         if "left" not in active_sides:
@@ -570,7 +571,7 @@ def run_state_publisher(
     try:
         while not stop_event.is_set():
             loop_start = time.monotonic()
-            deadline = loop_start + period
+            deadline = next_cycle_start + period
             try:
                 for side, target in schedule.get_targets().items():
                     if side in active_sides:
@@ -676,7 +677,12 @@ def run_state_publisher(
                         with metrics_path.open("a", encoding="utf-8") as stream:
                             stream.write(json.dumps(serializable, ensure_ascii=False) + "\n")
                     last_metrics_log = wall_now
-            stop_event.wait(max(0.0, deadline - time.monotonic()))
+            next_cycle_start += period
+            now = time.monotonic()
+            if next_cycle_start < now:
+                # Do not pile up stale state cycles after an overrun.
+                next_cycle_start = now
+            stop_event.wait(max(0.0, next_cycle_start - now))
     finally:
         if tactile_publisher is not None:
             tactile_publisher.close(linger=0)
@@ -810,7 +816,7 @@ def parse_args():
         "--read-force-state",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Also read FORCE_ACT and publish it as tau_est. This adds two Modbus reads per cycle.",
+        help="Publish FORCE_ACT from the combined ANGLE_ACT-to-FORCE_ACT state read as tau_est.",
     )
     parser.add_argument(
         "--collect-tactile",
