@@ -16,6 +16,7 @@ from datasets import load_dataset
 from datasets.utils import disable_progress_bars
 from huggingface_hub.errors import RepositoryNotFoundError
 from lerobot.common.datasets.lerobot_dataset import (
+    CODEBASE_VERSION,
     LeRobotDataset,
     LeRobotDatasetMetadata,
     compute_episode_stats,
@@ -97,8 +98,34 @@ class Gr00tDatasetMetadata(LeRobotDatasetMetadata):
 
     MODALITY_CONFIG_REL_PATH = Path("meta/modality.json")
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        repo_id: str,
+        root: str | Path,
+        revision: str | None = None,
+        force_cache_sync: bool = False,
+    ):
+        """Load only local metadata when resuming a collection dataset.
+
+        LeRobotDatasetMetadata falls back to Hugging Face when a local metadata
+        file is missing. Data collection datasets are intentionally local, and
+        that fallback both blocks startup on an unavailable network and can
+        never repair a local ``tmp/tmp_dataset`` collection. Fail clearly
+        instead so the operator can use a new dataset name or explicitly
+        overwrite the incomplete directory.
+        """
+        del force_cache_sync
+        self.repo_id = repo_id
+        self.revision = revision if revision is not None else CODEBASE_VERSION
+        self.root = Path(root)
+        try:
+            self.load_metadata()
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            raise ValueError(
+                f"Local dataset metadata is incomplete at {self.root}. "
+                "Choose a new dataset name or rerun with "
+                "--overwrite-existing-dataset to recreate this directory."
+            ) from exc
         with open(self.root / self.MODALITY_CONFIG_REL_PATH, "rb") as f:
             self.modality_config = json.load(f)
 
