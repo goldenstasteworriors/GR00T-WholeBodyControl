@@ -300,7 +300,7 @@ def _load_replay_data(args: argparse.Namespace) -> ReplayData:
         f"duration={result.num_frames / fps:.2f}s, path={parquet_path}"
     )
     print(
-        "G1 input: observation.state -> 29 body joints in IsaacLab encoder order; "
+        f"G1 input: {args.joint_column} -> 29 body joints in IsaacLab encoder order; "
         f"velocity={args.velocity_source}; max_abs_velocity={np.abs(result.joint_vel).max():.4f}"
     )
     print("Hand input: disabled (no hand fields will be transmitted).")
