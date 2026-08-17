@@ -5,6 +5,11 @@ import time
 from typing import Dict
 
 import numpy as np
+import zmq
+from gear_sonic.utils.teleop.zmq.zmq_planner_sender import (
+    build_command_message,
+    build_planner_message,
+)
 from gear_sonic.utils.data_collection.inspire_hand_tasks import (
     DEFAULT_HAND_TASK,
     resolve_hand_task_pose,
@@ -112,6 +117,183 @@ class BodyCommandSender:
 
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
         self.lowcmd_publisher_.Write(self.low_cmd)
+
+
+class SonicPlannerArmCommandSender:
+    """Drive SONIC through ZMQ while SONIC remains the sole ``rt/lowcmd`` writer.
+
+    The decoupled teleop policy supplies only the 14 arm targets.  Navigation
+    velocities are converted to SONIC planner direction/speed commands with
+    acceleration limiting; legs and all three waist joints remain SONIC outputs.
+    """
+
+    ARM_SLICE = slice(15, 29)
+    IDLE_MODE = 0
+    SLOW_WALK_MODE = 1
+    WALK_MODE = 2
+
+    def __init__(self, config: Dict):
+        self.config = config
+        self._active = False
+        self._emergency = False
+        self._has_activated = False
+        self._stop_requested = False
+        self._navigation_enabled = bool(config.get("sonic_navigation_enabled", False))
+        self._max_linear_velocity = float(config.get("sonic_max_linear_velocity", 0.8))
+        self._max_angular_velocity = float(config.get("sonic_max_angular_velocity", 0.8))
+        self._max_linear_acceleration = float(
+            config.get("sonic_max_linear_acceleration", 0.8)
+        )
+        self._max_angular_acceleration = float(
+            config.get("sonic_max_angular_acceleration", 1.2)
+        )
+        self._velocity_deadzone = float(config.get("sonic_velocity_deadzone", 0.03))
+        self._target_velocity = np.zeros(3, dtype=np.float64)
+        self._command_velocity = np.zeros(3, dtype=np.float64)
+        self._facing_angle = 0.0
+        self._last_send_time = time.monotonic()
+
+        bind_host = str(config.get("sonic_zmq_bind_host", "127.0.0.1"))
+        port = int(config.get("sonic_zmq_port", 5556))
+        self._endpoint = f"tcp://{bind_host}:{port}"
+        self._context = zmq.Context()
+        self._publisher = self._context.socket(zmq.PUB)
+        self._publisher.setsockopt(zmq.LINGER, 0)
+        self._publisher.setsockopt(zmq.SNDHWM, 4)
+        try:
+            self._publisher.bind(self._endpoint)
+        except zmq.ZMQError as exc:
+            self._publisher.close(linger=0)
+            self._context.term()
+            raise RuntimeError(
+                f"Cannot bind SONIC command publisher at {self._endpoint}; "
+                "another PICO/SONIC publisher may already own the port"
+            ) from exc
+        print(f"SONIC planner/arm publisher bound at {self._endpoint}", flush=True)
+
+    @staticmethod
+    def _approach(current: np.ndarray, target: np.ndarray, max_delta: np.ndarray) -> np.ndarray:
+        return current + np.clip(target - current, -max_delta, max_delta)
+
+    def set_active(self, active: bool, emergency: bool = False) -> None:
+        requested_active = bool(active) and not emergency
+        if requested_active:
+            self._has_activated = True
+            self._stop_requested = False
+        elif self._active or (emergency and self._has_activated):
+            # SONIC's stop command deliberately ends the authorized process.
+            # Do not send it during the initial waiting-for-activation phase.
+            self._stop_requested = True
+        self._active = requested_active
+        self._emergency = bool(emergency)
+        if not self._active:
+            self._target_velocity.fill(0.0)
+
+    def update_status(self) -> None:
+        return
+
+    def operator_ready(self) -> bool:
+        return self._active
+
+    def send_velocity(self, navigate_cmd) -> None:
+        velocity = np.asarray(navigate_cmd, dtype=np.float64)
+        if velocity.shape != (3,) or not np.isfinite(velocity).all():
+            raise ValueError("navigate_cmd must contain three finite values")
+        if not self._navigation_enabled or not self._active:
+            velocity = np.zeros(3, dtype=np.float64)
+        velocity[:2] = np.clip(
+            velocity[:2], -self._max_linear_velocity, self._max_linear_velocity
+        )
+        velocity[2] = np.clip(
+            velocity[2], -self._max_angular_velocity, self._max_angular_velocity
+        )
+        self._target_velocity = velocity
+
+    def _planner_fields(self, now: float) -> tuple[int, np.ndarray, np.ndarray, float]:
+        dt = float(np.clip(now - self._last_send_time, 0.0, 0.1))
+        max_delta = np.array(
+            [
+                self._max_linear_acceleration * dt,
+                self._max_linear_acceleration * dt,
+                self._max_angular_acceleration * dt,
+            ],
+            dtype=np.float64,
+        )
+        target = self._target_velocity if self._active else np.zeros(3, dtype=np.float64)
+        self._command_velocity = self._approach(
+            self._command_velocity, target, max_delta
+        )
+        self._facing_angle += float(self._command_velocity[2]) * dt
+        facing = np.array(
+            [np.cos(self._facing_angle), np.sin(self._facing_angle), 0.0],
+            dtype=np.float64,
+        )
+        planar = self._command_velocity[:2]
+        speed = float(np.linalg.norm(planar))
+        if speed <= self._velocity_deadzone:
+            return self.IDLE_MODE, np.zeros(3, dtype=np.float64), facing, -1.0
+        body_direction = planar / speed
+        cos_yaw = np.cos(self._facing_angle)
+        sin_yaw = np.sin(self._facing_angle)
+        movement = np.array(
+            [
+                cos_yaw * body_direction[0] - sin_yaw * body_direction[1],
+                sin_yaw * body_direction[0] + cos_yaw * body_direction[1],
+                0.0,
+            ],
+            dtype=np.float64,
+        )
+        mode = self.SLOW_WALK_MODE if speed <= 0.8 else self.WALK_MODE
+        return mode, movement, facing, speed
+
+    def send_command(self, cmd_q: np.ndarray, cmd_dq: np.ndarray, cmd_tau: np.ndarray):
+        del cmd_tau
+        q = np.asarray(cmd_q, dtype=np.float64)
+        dq = np.asarray(cmd_dq, dtype=np.float64)
+        if q.shape != (29,) or dq.shape != (29,):
+            raise ValueError("SONIC arm override requires 29-DOF body q/dq")
+        arm_q = q[self.ARM_SLICE]
+        arm_dq = dq[self.ARM_SLICE]
+        if not np.isfinite(arm_q).all() or not np.isfinite(arm_dq).all():
+            raise ValueError("SONIC arm override contains non-finite values")
+
+        now = time.monotonic()
+        mode, movement, facing, speed = self._planner_fields(now)
+        self._publisher.send(
+            build_command_message(
+                start=self._active,
+                stop=self._stop_requested,
+                planner=True,
+            ),
+            flags=zmq.NOBLOCK,
+        )
+        self._publisher.send(
+            build_planner_message(
+                mode=mode,
+                movement=movement,
+                facing=facing,
+                speed=speed,
+                height=-1.0,
+                arm_position=arm_q,
+                arm_velocity=arm_dq,
+            ),
+            flags=zmq.NOBLOCK,
+        )
+        self._last_send_time = now
+        self._emergency = False
+
+    def close(self) -> None:
+        self.set_active(False, emergency=True)
+        try:
+            for _ in range(3):
+                self._publisher.send(
+                    build_command_message(start=False, stop=True, planner=True),
+                    flags=zmq.NOBLOCK,
+                )
+                time.sleep(0.02)
+        finally:
+            self._publisher.close(linger=0)
+            self._context.term()
 
 
 class UnitreeLocoArmCommandSender:

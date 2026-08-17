@@ -20,12 +20,12 @@ class G1DecoupledWholeBodyPolicy(Policy):
         robot_model,
         lower_body_policy: Optional[Policy],
         upper_body_policy: Policy,
-        use_official_loco: bool = False,
+        use_external_lower_body: bool = False,
     ):
         self.robot_model = robot_model
         self.lower_body_policy = lower_body_policy
         self.upper_body_policy = upper_body_policy
-        self.use_official_loco = use_official_loco
+        self.use_external_lower_body = use_external_lower_body
         self.observation = None
         self.last_goal_time = time_module.monotonic()
         self.is_in_teleop_mode = False  # Track if lower body is in teleop mode
@@ -141,7 +141,7 @@ class G1DecoupledWholeBodyPolicy(Policy):
         yaw_only_waist_from_torso = waist_yaw_only_rotation.T @ torso_orientation
         torso_orientation_rpy = rpy.matrixToRpy(yaw_only_waist_from_torso)
 
-        if self.use_official_loco:
+        if self.use_external_lower_body:
             if self.observation is None:
                 raise ValueError("No observation set. Call set_observation() first.")
             q[lower_body_indices] = self.observation["q"][lower_body_indices]

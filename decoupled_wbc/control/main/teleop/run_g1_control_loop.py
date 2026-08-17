@@ -177,12 +177,12 @@ def main(config: ControlLoopConfig):
                 with telemetry.timer("publish_status"):
                     # Get policy status - check if the lower body policy has use_policy_action enabled
                     policy_use_action = False
-                    if config.lower_body_controller == "unitree_loco":
+                    if config.lower_body_controller in {"unitree_loco", "sonic"}:
                         policy_use_action = env.lower_body_active()
                     try:
                         # Access the lower body policy through the decoupled whole body policy
                         if (
-                            config.lower_body_controller != "unitree_loco"
+                            config.lower_body_controller not in {"unitree_loco", "sonic"}
                             and hasattr(wbc_policy, "lower_body_policy")
                         ):
                             policy_use_action = getattr(

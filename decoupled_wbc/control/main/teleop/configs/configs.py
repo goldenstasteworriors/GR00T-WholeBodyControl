@@ -75,6 +75,14 @@ def override_wbc_config(
         "unitree_loco_max_angular_velocity": config.unitree_loco_max_angular_velocity,
         "unitree_arm_weight_ramp_duration": config.unitree_arm_weight_ramp_duration,
         "unitree_arm_handoff_max_velocity": config.unitree_arm_handoff_max_velocity,
+        "sonic_zmq_bind_host": config.sonic_zmq_bind_host,
+        "sonic_zmq_port": config.sonic_zmq_port,
+        "sonic_navigation_enabled": config.sonic_navigation_enabled,
+        "sonic_max_linear_velocity": config.sonic_max_linear_velocity,
+        "sonic_max_angular_velocity": config.sonic_max_angular_velocity,
+        "sonic_max_linear_acceleration": config.sonic_max_linear_acceleration,
+        "sonic_max_angular_acceleration": config.sonic_max_angular_acceleration,
+        "sonic_velocity_deadzone": config.sonic_velocity_deadzone,
     }
 
     if missed_keys_only:
@@ -125,8 +133,8 @@ class BaseConfig(ArgsConfigTemplate):
     wbc_policy_class: str = "G1DecoupledWholeBodyPolicy"
     """Whole body policy class."""
 
-    lower_body_controller: Literal["decoupled", "unitree_loco"] = "decoupled"
-    """Lower-body backend: local ONNX policy or Unitree's official loco service."""
+    lower_body_controller: Literal["decoupled", "unitree_loco", "sonic"] = "decoupled"
+    """Lower-body backend: local ONNX, Unitree loco, or external SONIC."""
 
     unitree_loco_start_fsm_id: int = 501
     """Official motion FSM; set negative to stop at locked standing (FSM 4)."""
@@ -190,6 +198,30 @@ class BaseConfig(ArgsConfigTemplate):
 
     unitree_arm_handoff_max_velocity: float = 0.5
     """Maximum arm speed while joining the measured takeover pose to the policy target."""
+
+    sonic_zmq_bind_host: str = "127.0.0.1"
+    """Local address used by the decoupled-to-SONIC ZMQ publisher."""
+
+    sonic_zmq_port: int = 5556
+    """SONIC ZMQ input port."""
+
+    sonic_navigation_enabled: bool = False
+    """Allow nonzero PICO velocity commands to reach SONIC's planner."""
+
+    sonic_max_linear_velocity: float = 0.8
+    """Maximum planar velocity sent to SONIC, in m/s."""
+
+    sonic_max_angular_velocity: float = 0.8
+    """Maximum yaw rate integrated into SONIC's facing command, in rad/s."""
+
+    sonic_max_linear_acceleration: float = 0.8
+    """Planar command acceleration limit, in m/s^2."""
+
+    sonic_max_angular_acceleration: float = 1.2
+    """Yaw-rate command acceleration limit, in rad/s^2."""
+
+    sonic_velocity_deadzone: float = 0.03
+    """Planar speed below which SONIC receives IDLE."""
 
     # System Configuration
     interface: str = "sim"

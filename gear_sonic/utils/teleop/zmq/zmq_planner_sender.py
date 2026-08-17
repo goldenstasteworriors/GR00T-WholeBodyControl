@@ -69,6 +69,8 @@ def build_planner_message(
     height: float = -1.0,
     upper_body_position: Sequence[float] | None = None,
     upper_body_velocity: Sequence[float] | None = None,
+    arm_position: Sequence[float] | None = None,
+    arm_velocity: Sequence[float] | None = None,
     left_hand_position: Sequence[float] | None = None,
     right_hand_position: Sequence[float] | None = None,
     vr_3pt_position: Sequence[float] | None = None,
@@ -120,6 +122,20 @@ def build_planner_message(
             {"name": "upper_body_velocity", "dtype": "f32", "shape": [len(upper_body_velocity)]}
         )
         for value in upper_body_velocity:
+            payload += struct.pack("<f", float(value))
+
+    if arm_position is not None:
+        if len(arm_position) != 14:
+            raise ValueError("arm_position must have length 14 (left 7, right 7)")
+        fields.append({"name": "arm_position", "dtype": "f32", "shape": [14]})
+        for value in arm_position:
+            payload += struct.pack("<f", float(value))
+
+    if arm_velocity is not None:
+        if len(arm_velocity) != 14:
+            raise ValueError("arm_velocity must have length 14 (left 7, right 7)")
+        fields.append({"name": "arm_velocity", "dtype": "f32", "shape": [14]})
+        for value in arm_velocity:
             payload += struct.pack("<f", float(value))
 
     if left_hand_position is not None:

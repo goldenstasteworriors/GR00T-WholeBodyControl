@@ -1,0 +1,185 @@
+--- a/src/g1/g1_deploy_onnx_ref/include/input_interface/input_command.hpp
++++ b/src/g1/g1_deploy_onnx_ref/include/input_interface/input_command.hpp
+@@ -64,0 +65,2 @@
++ *   - arm_position       : float[14] – direct left/right arm targets in MuJoCo order
++ *   - arm_velocity       : float[14] – direct left/right arm velocities in MuJoCo order
+@@ -91,0 +94,5 @@
++  /// Optional arm-only targets in MuJoCo/hardware order (left 7, then right 7).
++  /// These condition SONIC before inference and override only arm motor outputs.
++  std::optional<std::array<double, 14>> arm_position;
++  std::optional<std::array<double, 14>> arm_velocity;
++
+@@ -108 +114,0 @@
+-
+--- a/src/g1/g1_deploy_onnx_ref/include/input_interface/input_interface.hpp
++++ b/src/g1/g1_deploy_onnx_ref/include/input_interface/input_interface.hpp
+@@ -392,0 +393,23 @@
++    /// Arm-only override in MuJoCo/hardware order: left arm 7, then right arm 7.
++    virtual std::pair<bool, std::array<double, 14>> GetArmJointPositions() const {
++        if (!has_arm_control_) {
++            return {false, {}};
++        }
++        auto buffered_data = arm_joint_positions_.GetDataWithTime();
++        if (buffered_data.data) {
++            return {true, *buffered_data.data};
++        }
++        return {false, {}};
++    }
++
++    virtual std::pair<bool, std::array<double, 14>> GetArmJointVelocities() const {
++        if (!has_arm_control_) {
++            return {false, {}};
++        }
++        auto buffered_data = arm_joint_velocities_.GetDataWithTime();
++        if (buffered_data.data) {
++            return {true, *buffered_data.data};
++        }
++        return {false, {}};
++    }
++
+@@ -470,0 +494 @@
++    std::atomic<bool> has_arm_control_{false}; ///< Direct arm-only 14-DOF targets available.
+@@ -490,0 +515,3 @@
++    /// Arm-only targets in MuJoCo/hardware order (left 7, right 7).
++    DataBuffer<std::array<double, 14>> arm_joint_positions_;
++    DataBuffer<std::array<double, 14>> arm_joint_velocities_;
+--- a/src/g1/g1_deploy_onnx_ref/include/input_interface/zmq_manager.hpp
++++ b/src/g1/g1_deploy_onnx_ref/include/input_interface/zmq_manager.hpp
+@@ -53,0 +54,2 @@
++#include <tuple>
++#include <type_traits>
+@@ -259,0 +262 @@
++                  has_arm_control_ = latest_planner_message_.arm_position.has_value();
+@@ -277,0 +281,3 @@
++              has_upper_body_control_ = false;
++              has_arm_control_ = false;
++              has_hand_joints_ = false;
+@@ -334,0 +341 @@
++        has_arm_control_ = false;
+@@ -357,0 +365 @@
++        has_arm_control_ = false;
+@@ -611,0 +620 @@
++          has_arm_control_ = latest_planner_message_.arm_position.has_value();
+@@ -648,0 +658 @@
++          has_arm_control_ = false;
+@@ -800,0 +811 @@
++      int arm_position_idx = -1, arm_velocity_idx = -1;
+@@ -812,0 +824,2 @@
++        else if (f.name == "arm_position") arm_position_idx = static_cast<int>(i);
++        else if (f.name == "arm_velocity") arm_velocity_idx = static_cast<int>(i);
+@@ -828,0 +842,39 @@
++
++      auto decode_fixed_floating_array = [&](int field_idx, auto& output,
++                                             const char* field_name) -> bool {
++        if (field_idx < 0) return false;
++        const auto& field = hdr.fields[field_idx];
++        const auto& buffer = bufs[field_idx];
++        constexpr size_t count = std::tuple_size_v<std::decay_t<decltype(output)>>;
++        const bool is_f32 = field.dtype == "f32";
++        const bool is_f64 = field.dtype == "f64";
++        if (!is_f32 && !is_f64) {
++          std::cerr << "[ZMQManager] " << field_name
++                    << " must use f32 or f64" << std::endl;
++          return false;
++        }
++        const size_t scalar_size = is_f32 ? sizeof(float) : sizeof(double);
++        if (buffer.size < count * scalar_size) {
++          std::cerr << "[ZMQManager] " << field_name << " payload too small: "
++                    << buffer.size << " < " << count * scalar_size << std::endl;
++          return false;
++        }
++        for (size_t i = 0; i < count; ++i) {
++          if (is_f32) {
++            float value;
++            std::memcpy(&value,
++                        static_cast<const uint8_t*>(buffer.data) + i * sizeof(float),
++                        sizeof(float));
++            if (needs_swap) value = byte_swap(value);
++            output[i] = static_cast<double>(value);
++          } else {
++            double value;
++            std::memcpy(&value,
++                        static_cast<const uint8_t*>(buffer.data) + i * sizeof(double),
++                        sizeof(double));
++            if (needs_swap) value = byte_swap(value);
++            output[i] = value;
++          }
++        }
++        return true;
++      };
+@@ -969,0 +1022,17 @@
++
++      // Arm-only targets are deliberately separate from the legacy 17-DOF
++      // upper-body field so SONIC remains responsible for all three waist joints.
++      std::array<double, 14> arm_position_data{};
++      if (decode_fixed_floating_array(
++              arm_position_idx, arm_position_data, "arm_position")) {
++        msg.arm_position = arm_position_data;
++        arm_joint_positions_.SetData(arm_position_data);
++      }
++
++      std::array<double, 14> arm_velocity_data{};
++      if (decode_fixed_floating_array(
++              arm_velocity_idx, arm_velocity_data, "arm_velocity")) {
++        msg.arm_velocity = arm_velocity_data;
++        arm_joint_velocities_.SetData(arm_velocity_data);
++      }
++      has_arm_control_ = msg.arm_position.has_value();
+--- a/src/g1/g1_deploy_onnx_ref/include/policy_parameters.hpp
++++ b/src/g1/g1_deploy_onnx_ref/include/policy_parameters.hpp
+@@ -82,0 +83,8 @@
++// Arm-only wire order is MuJoCo/hardware order: left arm 15..21, right arm 22..28.
++const std::array<int, 14> arm_joint_mujoco_order_in_isaaclab_index = {
++  11, 15, 19, 21, 23, 25, 27, 12, 16, 20, 22, 24, 26, 28
++};
++const std::array<int, 14> arm_joint_mujoco_order_in_mujoco_index = {
++  15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28
++};
++
+--- a/src/g1/g1_deploy_onnx_ref/src/g1_deploy_onnx_ref.cpp
++++ b/src/g1/g1_deploy_onnx_ref/src/g1_deploy_onnx_ref.cpp
+@@ -208,0 +209,3 @@
++    bool has_arm_data_ = false;
++    std::array<double, 14> arm_joint_positions_buffer_{};
++    std::array<double, 14> arm_joint_velocities_buffer_{};
+@@ -807,0 +811,8 @@
++          // The arm-only condition takes precedence over the legacy upper-body
++          // condition and never changes the three waist reference joints.
++          if (has_arm_data_) {
++            for (size_t i = 0; i < arm_joint_mujoco_order_in_isaaclab_index.size(); ++i) {
++              target_buffer[frame_offset + arm_joint_mujoco_order_in_isaaclab_index[i]] =
++                  arm_joint_positions_buffer_[i];
++            }
++          }
+@@ -884,0 +896,6 @@
++            if (has_arm_data_) {
++              for (size_t i = 0; i < arm_joint_mujoco_order_in_isaaclab_index.size(); ++i) {
++                target_buffer[frame_offset + arm_joint_mujoco_order_in_isaaclab_index[i]] =
++                    arm_joint_velocities_buffer_[i];
++              }
++            }
+@@ -3136,0 +3154,2 @@
++      std::tie(has_arm_data_, arm_joint_positions_buffer_) = input_interface_->GetArmJointPositions();
++      std::tie(std::ignore, arm_joint_velocities_buffer_) = input_interface_->GetArmJointVelocities();
+@@ -3306,0 +3326,21 @@
++      }
++
++      if (has_arm_data_) {
++        for (size_t i = 0; i < arm_joint_mujoco_order_in_mujoco_index.size(); ++i) {
++          const int motor_index = arm_joint_mujoco_order_in_mujoco_index[i];
++          const int action_index = arm_joint_mujoco_order_in_isaaclab_index[i];
++          const double q_target = arm_joint_positions_buffer_[i];
++          const double dq_target = arm_joint_velocities_buffer_[i];
++          if (!std::isfinite(q_target) || !std::isfinite(dq_target)) {
++            std::cerr << "✗ Error: Non-finite arm override at wire index " << i << std::endl;
++            return false;
++          }
++          motor_command_tmp.q_target.at(motor_index) = static_cast<float>(q_target);
++          motor_command_tmp.dq_target.at(motor_index) = static_cast<float>(dq_target);
++          motor_command_tmp.tau_ff.at(motor_index) = 0.0f;
++
++          // last_action is stored in IsaacLab action order. Backfill the
++          // actually-applied target so the next policy observation is consistent.
++          last_action[action_index] =
++              (q_target - default_angles[motor_index]) / g1_action_scale[motor_index];
++        }

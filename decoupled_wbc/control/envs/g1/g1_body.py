@@ -6,6 +6,7 @@ import numpy as np
 from decoupled_wbc.control.base.env import Env
 from decoupled_wbc.control.envs.g1.utils.command_sender import (
     BodyCommandSender,
+    SonicPlannerArmCommandSender,
     UnitreeLocoArmCommandSender,
 )
 from decoupled_wbc.control.envs.g1.utils.state_processor import BodyStateProcessor
@@ -15,8 +16,11 @@ class G1Body(Env):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         self.body_state_processor = BodyStateProcessor(config=config)
-        if config.get("lower_body_controller", "decoupled") == "unitree_loco":
+        lower_body_controller = config.get("lower_body_controller", "decoupled")
+        if lower_body_controller == "unitree_loco":
             self.body_command_sender = UnitreeLocoArmCommandSender(config=config)
+        elif lower_body_controller == "sonic":
+            self.body_command_sender = SonicPlannerArmCommandSender(config=config)
         else:
             self.body_command_sender = BodyCommandSender(config=config)
 
@@ -57,7 +61,10 @@ class G1Body(Env):
         )
 
     def handle_control_goal(self, goal: dict[str, any]) -> None:
-        if not isinstance(self.body_command_sender, UnitreeLocoArmCommandSender):
+        if not isinstance(
+            self.body_command_sender,
+            (UnitreeLocoArmCommandSender, SonicPlannerArmCommandSender),
+        ):
             return
         if goal.get("emergency_stop", False):
             self.body_command_sender.set_active(False, emergency=True)
@@ -68,7 +75,10 @@ class G1Body(Env):
         self.body_command_sender.send_velocity(goal.get("navigate_cmd", (0.0, 0.0, 0.0)))
 
     def lower_body_active(self) -> bool:
-        if isinstance(self.body_command_sender, UnitreeLocoArmCommandSender):
+        if isinstance(
+            self.body_command_sender,
+            (UnitreeLocoArmCommandSender, SonicPlannerArmCommandSender),
+        ):
             return self.body_command_sender.operator_ready()
         return False
 

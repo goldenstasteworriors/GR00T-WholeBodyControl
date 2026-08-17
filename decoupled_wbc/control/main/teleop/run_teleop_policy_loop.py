@@ -54,8 +54,11 @@ def main(config: TeleopConfig):
         print("running teleop policy, waiting teleop policy to be initialized...")
         pre_activation_upper_body_pose = None
         if (
-            config.lower_body_controller == "unitree_loco"
-            and config.unitree_loco_arm_control_enabled
+            config.lower_body_controller == "sonic"
+            or (
+                config.lower_body_controller == "unitree_loco"
+                and config.unitree_loco_arm_control_enabled
+            )
         ):
             preparation_body_pose = get_unitree_loco_startup_body_pose(
                 robot_model,

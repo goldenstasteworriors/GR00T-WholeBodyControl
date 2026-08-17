@@ -116,6 +116,23 @@ def _default_hand_task_config(repo_root: Path) -> Path:
     return repo_root / "gear_sonic/config/data_collection/inspire_hand_tasks.json"
 
 
+def _sonic_runtime_paths(config: "DecoupledVLACollectionLaunchConfig") -> dict[str, Path]:
+    root = Path(config.sonic_vla_root).expanduser().resolve()
+    deploy = root / "gear_sonic_deploy"
+    policy = deploy / "policy/sonic_v1_1"
+    return {
+        "root": root,
+        "deploy": deploy,
+        "binary": deploy / "target/release/g1_deploy_onnx_ref_sonic_hybrid",
+        "decoder": policy / "model_decoder.onnx",
+        "encoder": policy / "model_encoder.onnx",
+        "obs_config": policy / "observation_config.yaml",
+        "planner": deploy
+        / "planner/target_vel/V2/planner_sonic_trt85_static_einsum5d.onnx",
+        "motion_data": deploy / "reference/example",
+    }
+
+
 def _aarch64_control_runtime_prefix() -> str:
     """Select the ARM64 DDS runtime and preload PyTorch's OpenMP library."""
     return (
@@ -171,6 +188,9 @@ class DecoupledVLACollectionLaunchConfig:
     sim: bool = False
     """Run against MuJoCo sim. Default is real robot."""
 
+    dry_run: bool = False
+    """Validate all paths and print exact pane commands without starting tmux or robot control."""
+
     conda_env: str = DEFAULT_CONDA_ENV
     """Conda environment that contains decoupled_wbc, gear_sonic, ROS2 and PICO deps."""
 
@@ -193,7 +213,46 @@ class DecoupledVLACollectionLaunchConfig:
     """Decoupled WBC version."""
 
     lower_body_controller: str = "decoupled"
-    """Use ``decoupled`` ONNX control or Unitree's official ``unitree_loco`` service."""
+    """Use ``decoupled``, ``unitree_loco``, or VLA-root ``sonic`` control."""
+
+    sonic_vla_root: str = "/home/unitree/VLA/GR00T-WholeBodyControl"
+    """Actual SONIC deployment root; never resolved from the data_collection checkout."""
+
+    sonic_network_interface: str = "eth0"
+    """DDS interface passed to the SONIC real-robot binary."""
+
+    sonic_zmq_bind_host: str = "127.0.0.1"
+    """Loopback address bound by the decoupled-to-SONIC command publisher."""
+
+    sonic_navigation_enabled: bool = False
+    """Allow PICO velocity commands to drive the SONIC planner."""
+
+    sonic_max_linear_velocity: float = 0.8
+    """Maximum planar velocity sent to SONIC, in m/s."""
+
+    sonic_max_angular_velocity: float = 0.8
+    """Maximum yaw rate integrated into SONIC facing direction, in rad/s."""
+
+    sonic_max_linear_acceleration: float = 0.8
+    """Maximum planar command acceleration, in m/s^2."""
+
+    sonic_max_angular_acceleration: float = 1.2
+    """Maximum yaw-rate command acceleration, in rad/s^2."""
+
+    sonic_velocity_deadzone: float = 0.03
+    """Planar speed below which SONIC receives IDLE."""
+
+    enable_sonic_publish: bool = False
+    """Explicitly authorize the VLA SONIC binary to publish real robot commands."""
+
+    sonic_max_runtime_s: float = 3600.0
+    """Finite SONIC publish authorization window."""
+
+    sonic_streaming_timeout_s: float = 0.5
+    """Maximum command-stream gap before the SONIC publisher watchdog trips."""
+
+    sonic_lowstate_timeout_s: float = 0.2
+    """Maximum LowState age accepted by SONIC."""
 
     unitree_loco_start_fsm_id: int = 501
     """Official motion FSM; set negative to stop at locked standing (FSM 4)."""
@@ -542,14 +601,47 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
     if config.pico_fixed_side not in {"left", "right", "none"}:
         errors.append("--pico-fixed-side must be left, right, or none")
 
-    if config.lower_body_controller not in {"decoupled", "unitree_loco"}:
-        errors.append("--lower-body-controller must be decoupled or unitree_loco")
+    if config.lower_body_controller not in {"decoupled", "unitree_loco", "sonic"}:
+        errors.append("--lower-body-controller must be decoupled, unitree_loco, or sonic")
     if config.unitree_arm_handoff_max_velocity <= 0.0:
         errors.append("--unitree-arm-handoff-max-velocity must be positive")
     if config.lower_body_controller == "unitree_loco" and config.sim:
         errors.append("--lower-body-controller unitree_loco is only available on the real robot")
     if config.lower_body_controller == "unitree_loco" and config.enable_waist:
         errors.append("unitree_loco owns the waist; do not use --enable-waist")
+    if config.lower_body_controller == "sonic":
+        if config.sim:
+            errors.append("--lower-body-controller sonic is only available on the real robot")
+        if config.enable_waist:
+            errors.append("SONIC owns the waist; do not use --enable-waist")
+        if config.pico_data_streamer:
+            errors.append(
+                "SONIC command publishing owns --sonic-zmq-port; use --no-pico-data-streamer"
+            )
+        if not config.enable_sonic_publish:
+            errors.append(
+                "real SONIC control requires the explicit --enable-sonic-publish flag"
+            )
+        if config.sonic_zmq_host not in {"localhost", "127.0.0.1"}:
+            errors.append("onboard SONIC requires --sonic-zmq-host localhost or 127.0.0.1")
+        for name, path in _sonic_runtime_paths(config).items():
+            if name != "root" and not path.exists():
+                errors.append(f"VLA SONIC {name} missing: {path}")
+        positive_values = {
+            "--sonic-max-linear-velocity": config.sonic_max_linear_velocity,
+            "--sonic-max-angular-velocity": config.sonic_max_angular_velocity,
+            "--sonic-max-linear-acceleration": config.sonic_max_linear_acceleration,
+            "--sonic-max-angular-acceleration": config.sonic_max_angular_acceleration,
+            "--sonic-velocity-deadzone": config.sonic_velocity_deadzone,
+            "--sonic-max-runtime-s": config.sonic_max_runtime_s,
+            "--sonic-streaming-timeout-s": config.sonic_streaming_timeout_s,
+            "--sonic-lowstate-timeout-s": config.sonic_lowstate_timeout_s,
+        }
+        errors.extend(
+            f"{name} must be positive"
+            for name, value in positive_values.items()
+            if value <= 0.0
+        )
     if config.keyboard_lower_body_control:
         if config.lower_body_controller != "unitree_loco":
             errors.append(
@@ -755,6 +847,21 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.unitree_loco_max_angular_velocity),
         "--unitree-arm-handoff-max-velocity",
         str(config.unitree_arm_handoff_max_velocity),
+        "--sonic-zmq-bind-host",
+        config.sonic_zmq_bind_host,
+        "--sonic-zmq-port",
+        str(config.sonic_zmq_port),
+        *_bool_arg("sonic-navigation-enabled", config.sonic_navigation_enabled),
+        "--sonic-max-linear-velocity",
+        str(config.sonic_max_linear_velocity),
+        "--sonic-max-angular-velocity",
+        str(config.sonic_max_angular_velocity),
+        "--sonic-max-linear-acceleration",
+        str(config.sonic_max_linear_acceleration),
+        "--sonic-max-angular-acceleration",
+        str(config.sonic_max_angular_acceleration),
+        "--sonic-velocity-deadzone",
+        str(config.sonic_velocity_deadzone),
         "--wbc-model-path",
         config.wbc_model_path,
         "--control-frequency",
@@ -919,6 +1026,70 @@ def _build_sim_args(config: DecoupledVLACollectionLaunchConfig, interface: str) 
     ]
 
 
+def _sonic_runtime_prefix(config: DecoupledVLACollectionLaunchConfig) -> str:
+    paths = _sonic_runtime_paths(config)
+    vla_base = paths["root"].parent
+    deploy = paths["deploy"]
+    library_paths = [
+        vla_base / "third_party/onnxruntime/lib",
+        Path("/usr/local/cuda/targets/aarch64-linux/lib"),
+        Path("/usr/lib/aarch64-linux-gnu"),
+        Path("/usr/lib/aarch64-linux-gnu/nvidia"),
+        deploy / "thirdparty/unitree_sdk2/thirdparty/lib/aarch64",
+    ]
+    joined = ":".join(str(path) for path in library_paths)
+    return (
+        f"cd {shlex.quote(str(deploy))} && "
+        "export TensorRT_ROOT=/usr CUDAToolkit_ROOT=/usr/local/cuda HAS_ROS2=0 && "
+        f"export LD_LIBRARY_PATH={shlex.quote(joined)}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}} && "
+    )
+
+
+def _build_sonic_args(config: DecoupledVLACollectionLaunchConfig) -> list[str]:
+    paths = _sonic_runtime_paths(config)
+    log_tag = _sanitize_log_name(config.dataset_name or config.task_prompt)
+    logs_dir = paths["deploy"] / "logs/sonic_hybrid" / log_tag
+    return [
+        str(paths["binary"]),
+        config.sonic_network_interface,
+        str(paths["decoder"]),
+        str(paths["motion_data"]),
+        "--planner-file",
+        str(paths["planner"]),
+        "--input-type",
+        "zmq_manager",
+        "--output-type",
+        "all",
+        "--obs-config",
+        str(paths["obs_config"]),
+        "--encoder-file",
+        str(paths["encoder"]),
+        "--planner-precision",
+        "16",
+        "--policy-precision",
+        "32",
+        "--zmq-host",
+        config.sonic_zmq_host,
+        "--zmq-port",
+        str(config.sonic_zmq_port),
+        "--zmq-out-port",
+        str(config.pico_zmq_feedback_port),
+        "--zmq-out-topic",
+        "g1_debug",
+        "--logs-dir",
+        str(logs_dir),
+        "--enable-sonic-publish",
+        "--max-runtime-s",
+        str(config.sonic_max_runtime_s),
+        "--streaming-timeout-s",
+        str(config.sonic_streaming_timeout_s),
+        "--lowstate-timeout-s",
+        str(config.sonic_lowstate_timeout_s),
+        "--sonic-publish-confirm",
+        "I_ACKNOWLEDGE_SONIC_CAN_MOVE_G1",
+    ]
+
+
 def _build_pico_data_args(config: DecoupledVLACollectionLaunchConfig) -> list[str]:
     args = [
         "python",
@@ -1012,16 +1183,52 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     interface = config.interface or ("sim" if config.sim else "real")
 
     _check_prerequisites(config, repo_root)
-    _kill_existing_session()
 
     prefix = _conda_prefix(repo_root, config.conda_env)
     runtime_env = _runtime_env_prefix(repo_root, config)
+
+    if config.dry_run:
+        commands = {
+            "control": prefix
+            + runtime_env
+            + _aarch64_control_runtime_prefix()
+            + _shell_join(_build_control_args(config, interface)),
+            "teleop": prefix
+            + runtime_env
+            + _shell_join(_build_teleop_args(config, interface)),
+            "exporter": prefix
+            + runtime_env
+            + _aarch64_control_runtime_prefix()
+            + _shell_join(_build_exporter_args(config)),
+        }
+        if config.lower_body_controller == "sonic":
+            commands["sonic"] = _sonic_runtime_prefix(config) + _shell_join(
+                _build_sonic_args(config)
+            )
+        if config.inspire_hand_bridge:
+            commands["inspire_hand"] = (
+                prefix
+                + runtime_env
+                + _aarch64_control_runtime_prefix()
+                + _shell_join(_build_inspire_hand_args(config, mode="dds"))
+            )
+        print("DRY RUN: validated configuration; no tmux session or robot process was started.")
+        for name, command in commands.items():
+            print(f"[{name}]\n{command}\n")
+        return
+
+    _kill_existing_session()
 
     print("=" * 72)
     print("  Decoupled WBC -> Sonic VLA Data Collection")
     print("=" * 72)
     print(f"  Mode:          {'Simulation' if config.sim else 'Real Robot'}")
     print(f"  Lower body:    {config.lower_body_controller}")
+    if config.lower_body_controller == "sonic":
+        sonic_paths = _sonic_runtime_paths(config)
+        print(f"  SONIC runtime: {sonic_paths['root']}")
+        print(f"  SONIC policy:  {sonic_paths['decoder'].parent} (sonic_v1_1)")
+        print(f"  SONIC binary:  {sonic_paths['binary']}")
     print(
         "  Keyboard loco: "
         f"{'enabled' if config.keyboard_lower_body_control else 'disabled'}"
@@ -1133,8 +1340,17 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
             ]
         )
     )
+    sonic_cmd = None
+    if config.lower_body_controller == "sonic":
+        sonic_cmd = _sonic_runtime_prefix(config) + _shell_join(_build_sonic_args(config))
 
     _send_to_target(f"{SESSION_NAME}:collection.0", control_cmd, wait=3.0)
+    if sonic_cmd is not None:
+        subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "sonic"])
+        _send_to_target(f"{SESSION_NAME}:sonic", sonic_cmd, wait=5.0)
+        subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
+        if profile_log_dir is not None:
+            _pipe_pane_to_log(f"{SESSION_NAME}:sonic.0", profile_log_dir / "sonic.log")
     _send_to_target(f"{SESSION_NAME}:collection.2", teleop_cmd, wait=2.0)
     if config.pico_data_streamer:
         subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "pico_data"])
@@ -1167,6 +1383,8 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         print("  pico_data window:      optional PICO SMPL/VR3PT streamer")
     if config.inspire_hand_bridge:
         print("  inspire_hand window:   onboard Inspire DDS -> Modbus bridge")
+    if config.lower_body_controller == "sonic":
+        print("  sonic window:          VLA SONIC + sonic_v1_1 + target-velocity planner")
     if profile_log_dir is not None:
         print(f"  logs:                  {profile_log_dir}")
     print()
@@ -1190,6 +1408,17 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
             f"{'enabled' if config.unitree_loco_navigation_enabled else 'ZERO ONLY'}; "
             "arm_sdk: "
             f"{'enabled' if config.unitree_loco_arm_control_enabled else 'disabled'}"
+        )
+    if config.lower_body_controller == "sonic":
+        print("    SONIC is the only rt/lowcmd publisher; decoupled control sends ZMQ only")
+        print("    SONIC owns legs and waist; decoupled targets override arm motors 15..28")
+        print("    PICO: A+B+X+Y starts/stops the authorized SONIC publish session")
+        print("    PICO: click both thumbsticks requests an unconditional stop")
+        print(
+            "    navigation: "
+            f"{'enabled' if config.sonic_navigation_enabled else 'ZERO ONLY'}; "
+            f"linear <= {config.sonic_max_linear_velocity:.2f} m/s, "
+            f"yaw <= {config.sonic_max_angular_velocity:.2f} rad/s"
         )
     if config.keyboard_lower_body_control:
         print("    control pane: G start/toggle emergency")
