@@ -118,6 +118,8 @@ class UnitreeLocoArmCommandSender:
     """Use Unitree loco for the legs/waist and ``rt/arm_sdk`` for both arms."""
 
     ARM_MOTOR_INDICES = tuple(range(15, 29))
+    LEFT_ARM_MOTOR_INDICES = tuple(range(15, 22))
+    RIGHT_ARM_MOTOR_INDICES = tuple(range(22, 29))
     ARM_WEIGHT_INDEX = 29
     LEG_JOINT_COUNT = 12
     BODY_JOINT_COUNT = 29
@@ -451,7 +453,8 @@ class UnitreeLocoArmCommandSender:
         print(
             f"Unitree {source} confirmed; blending arm_sdk for motors 15-28 "
             f"over {self._weight_ramp_duration:.1f}s; the 29-DOF packet was seeded "
-            "from measured pose and only dual-arm targets will change",
+            "from measured pose; only the left arm moves to its preparation target "
+            "while the right arm holds its measured preparation pose",
             flush=True,
         )
 
@@ -555,7 +558,7 @@ class UnitreeLocoArmCommandSender:
             else:
                 startup_path += f" -> Start({self._start_fsm_id})"
             if self._arm_control_enabled:
-                startup_path += " -> smoothly raise left arm"
+                startup_path += " -> smoothly raise left arm and hold measured right arm"
             print(
                 f"Unitree official loco startup requested: {startup_path}",
                 flush=True,
@@ -643,7 +646,8 @@ class UnitreeLocoArmCommandSender:
                 self._stable_since = None
                 self._log_waiting(
                     now,
-                    f"raising left arm in fsm_id={expected_fsm_id}, current={fsm_id}",
+                    "raising left arm and holding measured right arm in "
+                    f"fsm_id={expected_fsm_id}, current={fsm_id}",
                 )
                 return
             if self._start_fsm_id is not None and (
@@ -655,7 +659,7 @@ class UnitreeLocoArmCommandSender:
                 self._stable_since = None
                 self._log_waiting(
                     now,
-                    "smoothly raising left arm from the measured pose "
+                    "smoothly raising left arm while holding measured right arm "
                     f"({preparation_time:.2f}/{self._weight_ramp_duration:.2f}s)",
                 )
                 return
@@ -758,9 +762,16 @@ class UnitreeLocoArmCommandSender:
         for motor_index in self.ARM_MOTOR_INDICES:
             joint_index = self.config["MOTOR2JOINT"][motor_index]
             motor = self.low_cmd.motor_cmd[motor_index]
-            if self._arm_preparing:
+            hold_preparation_pose = motor_index in self.RIGHT_ARM_MOTOR_INDICES
+            if self._arm_preparing and hold_preparation_pose:
+                # Keep the exact right-arm pose measured when arm_sdk takeover
+                # began. Do not move it toward the model's nominal zero pose.
+                motor.q = float(self._arm_handoff_q[joint_index])
+                motor.dq = 0.0
+                motor.tau = 0.0
+            elif self._arm_preparing:
                 # Start from the measured pose and rate-limit the configured
-                # preparation target while arm_sdk authority is blended in.
+                # left-arm target while arm_sdk authority is blended in.
                 target_q = float(cmd_q[joint_index])
                 previous_q = float(self._arm_handoff_q[joint_index])
                 motor.q = float(
@@ -773,6 +784,15 @@ class UnitreeLocoArmCommandSender:
                 motor.dq = 0.0
                 motor.tau = 0.0
                 self._arm_handoff_q[joint_index] = motor.q
+            elif self._arm_handoff_active and hold_preparation_pose:
+                # Do not release the right-arm snapshot until the teleop policy
+                # has synchronized its own held target to this same pose.
+                target_q = float(cmd_q[joint_index])
+                motor.q = float(self._arm_handoff_q[joint_index])
+                motor.dq = 0.0
+                motor.tau = 0.0
+                if not np.isclose(motor.q, target_q, atol=1e-9, rtol=0.0):
+                    handoff_complete = False
             elif self._arm_handoff_active:
                 target_q = float(cmd_q[joint_index])
                 previous_q = float(self._arm_handoff_q[joint_index])

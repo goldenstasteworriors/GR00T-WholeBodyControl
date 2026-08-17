@@ -249,7 +249,7 @@ def test_arm_output_is_enabled_only_during_post_locomotion_preparation():
     assert not sender.active
 
 
-def test_arm_sdk_rate_limits_dual_arms_from_measured_pose_during_takeover():
+def test_arm_sdk_rate_limits_left_arm_and_holds_measured_right_arm_during_takeover():
     sender = _make_sender()
     sender._arm_control_enabled = True
     sender._arm_preparing = True
@@ -279,7 +279,7 @@ def test_arm_sdk_rate_limits_dual_arms_from_measured_pose_during_takeover():
     for expected, motor_index in zip(waist_before, range(12, 15)):
         motor = sender.low_cmd.motor_cmd[motor_index]
         assert (motor.q, motor.dq, motor.tau, motor.kp, motor.kd) == expected
-    for motor_index in sender.ARM_MOTOR_INDICES:
+    for motor_index in sender.LEFT_ARM_MOTOR_INDICES:
         expected = np.clip(
             cmd_q[motor_index],
             sender._latest_body_q[motor_index] - sender._arm_handoff_max_delta,
@@ -289,8 +289,43 @@ def test_arm_sdk_rate_limits_dual_arms_from_measured_pose_during_takeover():
         assert motor.q == expected
         assert motor.dq == 0.0
         assert motor.tau == 0.0
+    for motor_index in sender.RIGHT_ARM_MOTOR_INDICES:
+        motor = sender.low_cmd.motor_cmd[motor_index]
+        assert motor.q == sender._latest_body_q[motor_index]
+        assert motor.dq == 0.0
+        assert motor.tau == 0.0
     assert sender.low_cmd.motor_cmd[sender.ARM_WEIGHT_INDEX].q == 0.5
     sender.publisher.Write.assert_called_once_with(sender.low_cmd)
+
+
+def test_arm_handoff_holds_right_arm_until_policy_target_matches_snapshot():
+    sender = _make_sender()
+    sender.active = True
+    sender._arm_control_enabled = True
+    sender._arm_preparation_complete = True
+    sender._arm_handoff_active = True
+    sender._arm_handoff_q = np.arange(29, dtype=np.float64) / 50.0
+    _configure_upper_body_output(sender)
+    cmd_q = sender._arm_handoff_q.copy()
+    cmd_q[list(sender.RIGHT_ARM_MOTOR_INDICES)] = 0.0
+    cmd_dq = np.zeros(29)
+    cmd_tau = np.zeros(29)
+
+    sender.send_command(cmd_q, cmd_dq, cmd_tau)
+
+    assert sender._arm_handoff_active
+    for motor_index in sender.RIGHT_ARM_MOTOR_INDICES:
+        assert (
+            sender.low_cmd.motor_cmd[motor_index].q
+            == sender._arm_handoff_q[motor_index]
+        )
+
+    cmd_q[list(sender.RIGHT_ARM_MOTOR_INDICES)] = sender._arm_handoff_q[
+        list(sender.RIGHT_ARM_MOTOR_INDICES)
+    ]
+    sender.send_command(cmd_q, cmd_dq, cmd_tau)
+
+    assert not sender._arm_handoff_active
 
 
 def test_stable_locked_standing_requests_fsm_501_before_arm_preparation():
