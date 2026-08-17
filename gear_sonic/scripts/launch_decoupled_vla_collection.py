@@ -283,7 +283,7 @@ class DecoupledVLACollectionLaunchConfig:
     """Seconds to move all remaining joints to the normal initial pose."""
 
     startup_final_elbow_angle: float = -0.2617993877991494
-    """arm_sdk startup target for both elbows; -15 degrees raises both arms."""
+    """Left-elbow arm_sdk startup target; the right arm stays at its model default."""
 
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher type for control loop."""

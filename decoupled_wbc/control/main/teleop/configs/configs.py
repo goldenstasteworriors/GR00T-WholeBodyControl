@@ -243,7 +243,7 @@ class BaseConfig(ArgsConfigTemplate):
     """Seconds to move all remaining joints to the normal initial pose."""
 
     startup_final_elbow_angle: float = -0.2617993877991494
-    """Elbow target used only for the arm_sdk startup pose; -15 degrees raises both arms."""
+    """Left-elbow arm_sdk startup target; -15 degrees raises only the left arm."""
 
     env_name: str = "default"
     """Environment name."""

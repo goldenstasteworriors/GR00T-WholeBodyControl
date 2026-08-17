@@ -3,7 +3,24 @@ from unittest.mock import Mock
 import numpy as np
 
 from decoupled_wbc.control.policy.teleop_policy import TeleopPolicy
+from decoupled_wbc.control.policy.wbc_policy_factory import (
+    get_unitree_loco_startup_body_pose,
+)
 from decoupled_wbc.control.teleop.streamers.pico_streamer import PicoStreamer
+
+
+def test_unitree_startup_pose_raises_only_left_elbow():
+    robot_model = Mock()
+    robot_model.initial_body_pose = np.array([0.1, 0.2, 0.3, 0.4])
+    robot_model.dof_index.side_effect = {
+        "left_elbow_joint": 1,
+        "right_elbow_joint": 3,
+    }.__getitem__
+
+    startup_pose = get_unitree_loco_startup_body_pose(robot_model, -0.2617993877991494)
+
+    np.testing.assert_allclose(startup_pose, [0.1, -0.2617993877991494, 0.3, 0.4])
+    np.testing.assert_allclose(robot_model.initial_body_pose, [0.1, 0.2, 0.3, 0.4])
 
 
 def test_pico_left_stick_tie_prefers_forward_backward_axis():

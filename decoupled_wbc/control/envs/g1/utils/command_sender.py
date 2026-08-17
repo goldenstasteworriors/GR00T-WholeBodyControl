@@ -555,7 +555,7 @@ class UnitreeLocoArmCommandSender:
             else:
                 startup_path += f" -> Start({self._start_fsm_id})"
             if self._arm_control_enabled:
-                startup_path += " -> smoothly raise arms"
+                startup_path += " -> smoothly raise left arm"
             print(
                 f"Unitree official loco startup requested: {startup_path}",
                 flush=True,
@@ -643,7 +643,7 @@ class UnitreeLocoArmCommandSender:
                 self._stable_since = None
                 self._log_waiting(
                     now,
-                    f"raising arms in fsm_id={expected_fsm_id}, current={fsm_id}",
+                    f"raising left arm in fsm_id={expected_fsm_id}, current={fsm_id}",
                 )
                 return
             if self._start_fsm_id is not None and (
@@ -655,7 +655,7 @@ class UnitreeLocoArmCommandSender:
                 self._stable_since = None
                 self._log_waiting(
                     now,
-                    "smoothly raising arms from the measured pose "
+                    "smoothly raising left arm from the measured pose "
                     f"({preparation_time:.2f}/{self._weight_ramp_duration:.2f}s)",
                 )
                 return

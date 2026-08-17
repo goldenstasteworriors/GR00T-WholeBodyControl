@@ -11,6 +11,9 @@ from decoupled_wbc.control.main.constants import (
 from decoupled_wbc.control.main.teleop.configs.configs import TeleopConfig
 from decoupled_wbc.control.policy.lerobot_replay_policy import LerobotReplayPolicy
 from decoupled_wbc.control.policy.teleop_policy import TeleopPolicy
+from decoupled_wbc.control.policy.wbc_policy_factory import (
+    get_unitree_loco_startup_body_pose,
+)
 from decoupled_wbc.control.robot_model.instantiation.g1 import instantiate_g1_robot_model
 from decoupled_wbc.control.teleop.solver.hand.instantiation.g1_hand_ik_instantiation import (
     instantiate_g1_hand_ik_solver,
@@ -54,12 +57,9 @@ def main(config: TeleopConfig):
             config.lower_body_controller == "unitree_loco"
             and config.unitree_loco_arm_control_enabled
         ):
-            preparation_body_pose = robot_model.initial_body_pose.copy()
-            preparation_body_pose[robot_model.dof_index("left_elbow_joint")] = (
-                config.startup_final_elbow_angle
-            )
-            preparation_body_pose[robot_model.dof_index("right_elbow_joint")] = (
-                config.startup_final_elbow_angle
+            preparation_body_pose = get_unitree_loco_startup_body_pose(
+                robot_model,
+                config.startup_final_elbow_angle,
             )
             pre_activation_upper_body_pose = preparation_body_pose[
                 robot_model.get_joint_group_indices("upper_body")
