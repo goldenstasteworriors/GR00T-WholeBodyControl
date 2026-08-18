@@ -144,6 +144,16 @@ def _runtime_env_prefix(repo_root: Path, config: "DecoupledVLACollectionLaunchCo
     )
 
 
+def _teleop_numerical_thread_prefix() -> str:
+    """Keep small, high-rate teleop solves from spinning BLAS worker pools."""
+    return (
+        "OPENBLAS_NUM_THREADS=1 "
+        "OMP_NUM_THREADS=1 "
+        "MKL_NUM_THREADS=1 "
+        "NUMEXPR_NUM_THREADS=1 "
+    )
+
+
 def _allocate_profile_log_dir(repo_root: Path, dataset_name: str, base_dir: str) -> Path:
     safe_dataset = _sanitize_log_name(dataset_name)
     root = repo_root / base_dir
@@ -1108,7 +1118,12 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         + _aarch64_control_runtime_prefix()
         + _shell_join(_build_control_args(config, interface))
     )
-    teleop_cmd = prefix + runtime_env + _shell_join(_build_teleop_args(config, interface))
+    teleop_cmd = (
+        prefix
+        + runtime_env
+        + _teleop_numerical_thread_prefix()
+        + _shell_join(_build_teleop_args(config, interface))
+    )
     exporter_cmd = (
         prefix
         + runtime_env
