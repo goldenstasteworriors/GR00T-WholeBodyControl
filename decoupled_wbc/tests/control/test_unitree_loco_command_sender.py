@@ -49,7 +49,6 @@ def _make_sender() -> UnitreeLocoArmCommandSender:
     sender._arm_preparing = False
     sender._arm_preparation_started = 0.0
     sender._arm_preparation_complete = False
-    sender._arm_handoff_active = False
     sender._arm_handoff_q = None
     sender._arm_handoff_max_delta = 0.01
     return sender
@@ -298,34 +297,24 @@ def test_arm_sdk_rate_limits_left_arm_and_holds_measured_right_arm_during_takeov
     sender.publisher.Write.assert_called_once_with(sender.low_cmd)
 
 
-def test_arm_handoff_holds_right_arm_until_policy_target_matches_snapshot():
+def test_policy_targets_pass_through_directly_after_arm_preparation():
     sender = _make_sender()
     sender.active = True
     sender._arm_control_enabled = True
     sender._arm_preparation_complete = True
-    sender._arm_handoff_active = True
-    sender._arm_handoff_q = np.arange(29, dtype=np.float64) / 50.0
     _configure_upper_body_output(sender)
-    cmd_q = sender._arm_handoff_q.copy()
-    cmd_q[list(sender.RIGHT_ARM_MOTOR_INDICES)] = 0.0
-    cmd_dq = np.zeros(29)
-    cmd_tau = np.zeros(29)
+    cmd_q = np.arange(29, dtype=np.float64) / 10.0
+    cmd_dq = np.arange(29, dtype=np.float64) / 20.0
+    cmd_tau = np.arange(29, dtype=np.float64) / 30.0
 
     sender.send_command(cmd_q, cmd_dq, cmd_tau)
 
-    assert sender._arm_handoff_active
-    for motor_index in sender.RIGHT_ARM_MOTOR_INDICES:
-        assert (
-            sender.low_cmd.motor_cmd[motor_index].q
-            == sender._arm_handoff_q[motor_index]
-        )
-
-    cmd_q[list(sender.RIGHT_ARM_MOTOR_INDICES)] = sender._arm_handoff_q[
-        list(sender.RIGHT_ARM_MOTOR_INDICES)
-    ]
-    sender.send_command(cmd_q, cmd_dq, cmd_tau)
-
-    assert not sender._arm_handoff_active
+    for motor_index in sender.ARM_MOTOR_INDICES:
+        joint_index = sender.config["MOTOR2JOINT"][motor_index]
+        motor = sender.low_cmd.motor_cmd[motor_index]
+        assert motor.q == cmd_q[joint_index]
+        assert motor.dq == cmd_dq[joint_index]
+        assert motor.tau == cmd_tau[joint_index]
 
 
 def test_stable_locked_standing_requests_fsm_501_before_arm_preparation():
@@ -452,6 +441,7 @@ def test_arm_preparation_completes_in_fsm_501_without_requesting_another_fsm():
     assert sender.active
     assert sender._arm_preparation_complete
     assert not sender._arm_preparing
+    assert sender._arm_handoff_q is None
     assert sender._activation_stage == "active"
     sender.loco.SetFsmId.assert_not_called()
     sender._stable_for_required_duration.assert_called_once_with(

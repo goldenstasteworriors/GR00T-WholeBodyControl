@@ -209,7 +209,6 @@ class UnitreeLocoArmCommandSender:
         self._arm_preparing = False
         self._arm_preparation_started = 0.0
         self._arm_preparation_complete = False
-        self._arm_handoff_active = False
         self._arm_handoff_q = None
 
     @staticmethod
@@ -400,7 +399,6 @@ class UnitreeLocoArmCommandSender:
         self._arm_preparing = False
         self._arm_preparation_started = 0.0
         self._arm_preparation_complete = False
-        self._arm_handoff_active = False
         self._arm_handoff_q = None
 
     def operator_ready(self) -> bool:
@@ -442,7 +440,6 @@ class UnitreeLocoArmCommandSender:
         self._arm_preparing = True
         self._arm_preparation_started = now
         self._arm_preparation_complete = False
-        self._arm_handoff_active = False
         self._arm_handoff_q = self._latest_body_q.copy()
         self._set_activation_stage("prepare_arms", now)
         source = (
@@ -672,10 +669,10 @@ class UnitreeLocoArmCommandSender:
                 return
             self._arm_preparing = False
             self._arm_preparation_complete = True
-            self._arm_handoff_active = self._arm_handoff_q is not None
+            self._arm_handoff_q = None
             print(
-                "Unitree arm_sdk preparation pose ready; smoothly finishing the policy "
-                "target handoff if needed; waist is not updated by IK",
+                "Unitree arm_sdk preparation pose ready; policy targets now pass through "
+                "directly; waist is not updated by IK",
                 flush=True,
             )
             self._mark_active(now, fsm_id)
@@ -758,7 +755,6 @@ class UnitreeLocoArmCommandSender:
     def send_command(self, cmd_q: np.ndarray, cmd_dq: np.ndarray, cmd_tau: np.ndarray):
         if not self._arm_output_active():
             return
-        handoff_complete = self._arm_handoff_active
         for motor_index in self.ARM_MOTOR_INDICES:
             joint_index = self.config["MOTOR2JOINT"][motor_index]
             motor = self.low_cmd.motor_cmd[motor_index]
@@ -784,39 +780,12 @@ class UnitreeLocoArmCommandSender:
                 motor.dq = 0.0
                 motor.tau = 0.0
                 self._arm_handoff_q[joint_index] = motor.q
-            elif self._arm_handoff_active and hold_preparation_pose:
-                # Do not release the right-arm snapshot until the teleop policy
-                # has synchronized its own held target to this same pose.
-                target_q = float(cmd_q[joint_index])
-                motor.q = float(self._arm_handoff_q[joint_index])
-                motor.dq = 0.0
-                motor.tau = 0.0
-                if not np.isclose(motor.q, target_q, atol=1e-9, rtol=0.0):
-                    handoff_complete = False
-            elif self._arm_handoff_active:
-                target_q = float(cmd_q[joint_index])
-                previous_q = float(self._arm_handoff_q[joint_index])
-                motor.q = float(
-                    np.clip(
-                        target_q,
-                        previous_q - self._arm_handoff_max_delta,
-                        previous_q + self._arm_handoff_max_delta,
-                    )
-                )
-                motor.dq = 0.0
-                motor.tau = 0.0
-                self._arm_handoff_q[joint_index] = motor.q
-                if not np.isclose(motor.q, target_q, atol=1e-9, rtol=0.0):
-                    handoff_complete = False
             else:
                 motor.q = float(cmd_q[joint_index])
                 motor.dq = float(cmd_dq[joint_index])
                 motor.tau = float(cmd_tau[joint_index])
             motor.kp = float(self.config["MOTOR_KP"][motor_index])
             motor.kd = float(self.config["MOTOR_KD"][motor_index])
-        if self._arm_handoff_active and handoff_complete:
-            self._arm_handoff_active = False
-            print("Unitree arm_sdk policy-target handoff complete", flush=True)
         if self._arm_preparation_complete or self._weight_ramp_duration <= 0.0:
             weight = 1.0
         else:
