@@ -83,6 +83,12 @@ def _resolve_pico_fixed_side(config: "DecoupledVLACollectionLaunchConfig") -> st
     return config.pico_fixed_side
 
 
+def _resolve_inspire_hand_side(config: "DecoupledVLACollectionLaunchConfig") -> str:
+    if config.ref_gripper_bridge or config.left_hand_only:
+        return "left"
+    return "both"
+
+
 def _conda_base() -> Path:
     try:
         out = subprocess.check_output(["conda", "info", "--base"], text=True).strip()
@@ -985,6 +991,7 @@ def _build_inspire_hand_args(
     *,
     mode: str,
 ) -> list[str]:
+    side = _resolve_inspire_hand_side(config)
     args = [
         "python",
         "decoupled_wbc/scripts/inspire_modbus_hand.py",
@@ -994,14 +1001,12 @@ def _build_inspire_hand_args(
         config.inspire_hand_network,
         "--left-ip",
         config.inspire_left_ip,
-        "--right-ip",
-        config.inspire_right_ip,
         "--hand-task",
         config.hand_task,
         "--state-publish-frequency",
         str(config.inspire_hand_state_frequency),
         "--side",
-        "left" if config.left_hand_only else "both",
+        side,
         *_bool_arg("collect-tactile", config.collect_tactile),
         "--tactile-full-refresh-hz",
         str(config.tactile_full_refresh_hz),
@@ -1021,6 +1026,8 @@ def _build_inspire_hand_args(
             f"{_sanitize_log_name(config.dataset_name or config.task_prompt)}.jsonl"
         ),
     ]
+    if side == "both":
+        args += ["--right-ip", config.inspire_right_ip]
     if config.hand_task_config:
         args += ["--hand-task-config", config.hand_task_config]
     if mode == "command":
@@ -1096,7 +1103,13 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print(f"  REF gripper:   {' enabled' if config.ref_gripper_bridge else ' disabled'}")
     if config.inspire_hand_bridge:
         print(f"  Hand DDS net:  {config.inspire_hand_network}")
-        print(f"  Hand data:     {'left-only; right=open' if config.left_hand_only else 'both'}")
+        if config.ref_gripper_bridge:
+            print("  Hand I/O:      left Inspire only; right REF gripper")
+        else:
+            print(
+                "  Hand I/O:      "
+                f"{'left Inspire only' if config.left_hand_only else 'both Inspire hands'}"
+            )
         if config.inspire_hand_test_count:
             print(
                 "  Hand test:     "
