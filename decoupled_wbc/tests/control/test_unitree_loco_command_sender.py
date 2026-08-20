@@ -248,7 +248,7 @@ def test_arm_output_is_enabled_only_during_post_locomotion_preparation():
     assert not sender.active
 
 
-def test_arm_sdk_rate_limits_left_arm_and_holds_measured_right_arm_during_takeover():
+def test_arm_sdk_rate_limits_both_arms_during_takeover():
     sender = _make_sender()
     sender._arm_control_enabled = True
     sender._arm_preparing = True
@@ -278,7 +278,7 @@ def test_arm_sdk_rate_limits_left_arm_and_holds_measured_right_arm_during_takeov
     for expected, motor_index in zip(waist_before, range(12, 15)):
         motor = sender.low_cmd.motor_cmd[motor_index]
         assert (motor.q, motor.dq, motor.tau, motor.kp, motor.kd) == expected
-    for motor_index in sender.LEFT_ARM_MOTOR_INDICES:
+    for motor_index in sender.ARM_MOTOR_INDICES:
         expected = np.clip(
             cmd_q[motor_index],
             sender._latest_body_q[motor_index] - sender._arm_handoff_max_delta,
@@ -286,11 +286,6 @@ def test_arm_sdk_rate_limits_left_arm_and_holds_measured_right_arm_during_takeov
         )
         motor = sender.low_cmd.motor_cmd[motor_index]
         assert motor.q == expected
-        assert motor.dq == 0.0
-        assert motor.tau == 0.0
-    for motor_index in sender.RIGHT_ARM_MOTOR_INDICES:
-        motor = sender.low_cmd.motor_cmd[motor_index]
-        assert motor.q == sender._latest_body_q[motor_index]
         assert motor.dq == 0.0
         assert motor.tau == 0.0
     assert sender.low_cmd.motor_cmd[sender.ARM_WEIGHT_INDEX].q == 0.5

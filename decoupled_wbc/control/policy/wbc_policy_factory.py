@@ -16,9 +16,10 @@ WBC_VERSIONS = ["gear_wbc"]
 
 
 def get_unitree_loco_startup_body_pose(robot_model, startup_elbow_angle: float):
-    """Return the default body pose with only the left elbow raised."""
+    """Return the default body pose with both elbows raised equally."""
     startup_body_pose = robot_model.initial_body_pose.copy()
     startup_body_pose[robot_model.dof_index("left_elbow_joint")] = startup_elbow_angle
+    startup_body_pose[robot_model.dof_index("right_elbow_joint")] = startup_elbow_angle
     return startup_body_pose
 
 
@@ -29,7 +30,7 @@ def get_wbc_policy(
     init_time=time.monotonic(),
 ):
     # This target is used only before live teleoperation goals arrive. Raise
-    # the left elbow while leaving the complete right arm at the model default.
+    # both elbows to the same preparation angle.
     startup_elbow_angle = wbc_config.get(
         "startup_final_elbow_angle", -0.2617993877991494
     )

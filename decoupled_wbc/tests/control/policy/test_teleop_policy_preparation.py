@@ -9,7 +9,7 @@ from decoupled_wbc.control.policy.wbc_policy_factory import (
 from decoupled_wbc.control.teleop.streamers.pico_streamer import PicoStreamer
 
 
-def test_unitree_startup_pose_raises_only_left_elbow():
+def test_unitree_startup_pose_raises_both_elbows_equally():
     robot_model = Mock()
     robot_model.initial_body_pose = np.array([0.1, 0.2, 0.3, 0.4])
     robot_model.dof_index.side_effect = {
@@ -19,7 +19,10 @@ def test_unitree_startup_pose_raises_only_left_elbow():
 
     startup_pose = get_unitree_loco_startup_body_pose(robot_model, -0.2617993877991494)
 
-    np.testing.assert_allclose(startup_pose, [0.1, -0.2617993877991494, 0.3, 0.4])
+    np.testing.assert_allclose(
+        startup_pose,
+        [0.1, -0.2617993877991494, 0.3, -0.2617993877991494],
+    )
     np.testing.assert_allclose(robot_model.initial_body_pose, [0.1, 0.2, 0.3, 0.4])
 
 
@@ -57,6 +60,46 @@ def test_pico_left_stick_uses_only_dominant_strafe_axis():
     )
 
     np.testing.assert_allclose(command, [0.0, 0.9, 0.0])
+
+
+def test_pico_raw_right_trigger_is_forwarded_as_control_data():
+    streamer = PicoStreamer.__new__(PicoStreamer)
+    streamer._publish_smpl_visualization_frame = Mock()
+    streamer._process_xr_pose = Mock(return_value=np.eye(4))
+    streamer._joystick_navigation_command = Mock(return_value=np.zeros(3))
+    streamer._generate_finger_data = Mock(return_value=np.zeros((25, 4, 4)))
+    streamer._button_sampler = Mock()
+    streamer._button_sampler.consume_events.return_value = []
+    streamer._button_events_consumed = {
+        "ax": 0,
+        "by": 0,
+        "start_stop": 0,
+        "data_collection": 0,
+        "data_abort": 0,
+        "emergency_stop": 0,
+    }
+    streamer._data_collection_event_id = 0
+    streamer._data_abort_event_id = 0
+    streamer.combo_suppression_active = False
+    streamer.control_enabled = False
+    streamer.current_base_height = 0.5
+    pico_data = {
+        "left_pose": np.zeros(7),
+        "right_pose": np.zeros(7),
+        "head_pose": np.zeros(7),
+        "left_joystick": np.zeros(2),
+        "right_joystick": np.zeros(2),
+        "A": False,
+        "B": False,
+        "X": False,
+        "Y": False,
+        "left_grip": 0.0,
+        "right_trigger": 0.8,
+    }
+
+    output = streamer._generate_unified_raw_data(pico_data)
+
+    assert output.control_data["right_trigger"] == 0.8
 
 
 def test_configured_preparation_pose_is_not_overwritten_by_startup_feedback():
@@ -156,6 +199,7 @@ def test_paused_upper_body_does_not_zero_lower_body_navigation():
     streamer_output.ik_data = None
     streamer_output.control_data = {
         "navigate_cmd": np.array([0.2, -0.1, 0.3]),
+        "right_trigger": 0.75,
     }
     streamer_output.data_collection_data = {}
     policy.teleop_streamer.get_streamer_data.return_value = streamer_output
@@ -172,4 +216,5 @@ def test_paused_upper_body_does_not_zero_lower_body_navigation():
     action = policy.get_action()
 
     np.testing.assert_allclose(action["navigate_cmd"], [0.2, -0.1, 0.3])
+    assert action["right_trigger"] == 0.75
     np.testing.assert_allclose(action["target_upper_body_pose"], [0.4, -0.3])

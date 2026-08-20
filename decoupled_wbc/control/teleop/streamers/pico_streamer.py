@@ -523,6 +523,7 @@ class PicoStreamer(BaseStreamer):
         control_data = {
             "base_height_command": self.current_base_height,
             "navigate_cmd": [lin_vel_x, lin_vel_y, ang_vel_z],
+            "right_trigger": float(pico_data["right_trigger"]),
             "toggle_policy_action": False,
         }
         if set_policy_action is not None:

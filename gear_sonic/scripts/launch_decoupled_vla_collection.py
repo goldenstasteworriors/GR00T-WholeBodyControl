@@ -293,7 +293,7 @@ class DecoupledVLACollectionLaunchConfig:
     """Seconds to move all remaining joints to the normal initial pose."""
 
     startup_final_elbow_angle: float = -0.2617993877991494
-    """Left-elbow arm_sdk startup target; the right arm stays at its model default."""
+    """Dual-elbow arm_sdk startup target; both arms use the same angle."""
 
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher type for control loop."""
@@ -1038,8 +1038,6 @@ def _build_ref_gripper_args(config: DecoupledVLACollectionLaunchConfig) -> list[
     args = [
         "python",
         "decoupled_wbc/scripts/ref_gripper_dds_bridge.py",
-        "--network",
-        config.inspire_hand_network,
         "--hand-task",
         config.hand_task,
         "--ref-control-dir",
