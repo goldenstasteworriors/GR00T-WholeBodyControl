@@ -55,6 +55,7 @@ sim = [
 # Usage: pip install -e "gear_sonic[data_collection]"
 data_collection = [
     "pyzmq",
+    "pyusb>=1.2.1",
     "msgpack",
     "msgpack-numpy",
     "pin",

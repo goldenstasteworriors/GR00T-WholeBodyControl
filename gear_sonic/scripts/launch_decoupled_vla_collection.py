@@ -418,6 +418,12 @@ class DecoupledVLACollectionLaunchConfig:
     hand_task_config: str = ""
     """Optional inspire_hand_tasks.json path passed to pico_manager_thread_server.py."""
 
+    ref_gripper_bridge: bool = False
+    """Drive the right AgiBot REF USB gripper from the Pico right trigger."""
+
+    ref_gripper_control_dir: str = "/home/unitree/data_collection/USB_Fibre_Ubuntu"
+    """Directory containing ref_control.py and agibot_ref.py."""
+
     # Robot-onboard Inspire hand bridge
     inspire_hand_bridge: bool = False
     """Start the onboard DDS-to-Modbus bridge for the physical Inspire hand."""
@@ -534,6 +540,7 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
         repo_root / "decoupled_wbc/control/main/teleop/run_g1_control_loop.py",
         repo_root / "decoupled_wbc/control/main/teleop/run_teleop_policy_loop.py",
         repo_root / "decoupled_wbc/scripts/inspire_modbus_hand.py",
+        repo_root / "decoupled_wbc/scripts/ref_gripper_dds_bridge.py",
         repo_root / "gear_sonic/scripts/run_decoupled_vla_data_exporter.py",
     ]
     for path in required_files:
@@ -614,6 +621,16 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
             )
         if not (0.0 < config.inspire_hand_state_frequency <= 50.0):
             errors.append("--inspire-hand-state-frequency must be in (0, 50]")
+    if config.ref_gripper_bridge:
+        if config.sim:
+            errors.append("--ref-gripper-bridge is only valid on the real robot")
+        if not config.with_hands:
+            errors.append("--ref-gripper-bridge requires --with-hands")
+        ref_control_dir = Path(config.ref_gripper_control_dir).expanduser()
+        for filename in ("ref_control.py", "agibot_ref.py"):
+            path = ref_control_dir / filename
+            if not path.exists():
+                errors.append(f"REF gripper control file missing: {path}")
     if config.collect_tactile:
         if not config.inspire_hand_bridge:
             errors.append("--collect-tactile requires --inspire-hand-bridge")
@@ -1017,6 +1034,22 @@ def _build_inspire_hand_args(
     return args
 
 
+def _build_ref_gripper_args(config: DecoupledVLACollectionLaunchConfig) -> list[str]:
+    args = [
+        "python",
+        "decoupled_wbc/scripts/ref_gripper_dds_bridge.py",
+        "--network",
+        config.inspire_hand_network,
+        "--hand-task",
+        config.hand_task,
+        "--ref-control-dir",
+        config.ref_gripper_control_dir,
+    ]
+    if config.hand_task_config:
+        args += ["--hand-task-config", config.hand_task_config]
+    return args
+
+
 def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     repo_root = Path(__file__).resolve().parent.parent.parent
     interface = config.interface or ("sim" if config.sim else "real")
@@ -1051,6 +1084,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         f"{config.hand_task_config or _default_hand_task_config(repo_root)}"
     )
     print(f"  Inspire bridge:{' enabled' if config.inspire_hand_bridge else ' disabled'}")
+    print(f"  REF gripper:   {' enabled' if config.ref_gripper_bridge else ' disabled'}")
     if config.inspire_hand_bridge:
         print(f"  Hand DDS net:  {config.inspire_hand_network}")
         print(f"  Hand data:     {'left-only; right=open' if config.left_hand_only else 'both'}")
@@ -1110,6 +1144,17 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
             bridge_cmd = f"{test_cmd} && exec {bridge_cmd}"
         hand_cmd = prefix + runtime_env + _aarch64_control_runtime_prefix() + bridge_cmd
         _send_to_target(f"{SESSION_NAME}:inspire_hand", hand_cmd, wait=1.0)
+        subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
+
+    if config.ref_gripper_bridge:
+        subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "ref_gripper"])
+        gripper_cmd = (
+            prefix
+            + runtime_env
+            + _aarch64_control_runtime_prefix()
+            + _shell_join(_build_ref_gripper_args(config))
+        )
+        _send_to_target(f"{SESSION_NAME}:ref_gripper", gripper_cmd, wait=1.0)
         subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
 
     control_cmd = (
@@ -1182,6 +1227,8 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         print("  pico_data window:      optional PICO SMPL/VR3PT streamer")
     if config.inspire_hand_bridge:
         print("  inspire_hand window:   onboard Inspire DDS -> Modbus bridge")
+    if config.ref_gripper_bridge:
+        print("  ref_gripper window:    Pico right trigger -> REF USB gripper")
     if profile_log_dir is not None:
         print(f"  logs:                  {profile_log_dir}")
     print()
