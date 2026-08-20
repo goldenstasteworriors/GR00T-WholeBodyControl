@@ -61,7 +61,7 @@ def main() -> None:
 
     transport = PyUsbTransport()
     client = RefClient(transport, interface_crc=CAPTURED_INTERFACE_CRC)
-    client.initialize(expected_serial=DEFAULT_FIRMWARE_SERIAL)
+    client.initialize(check_schema=False, expected_serial=DEFAULT_FIRMWARE_SERIAL)
     client.prepare()
     client.set_pos(open_position)
     last_position = open_position
