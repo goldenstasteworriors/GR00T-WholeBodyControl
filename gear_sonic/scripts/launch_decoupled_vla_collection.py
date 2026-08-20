@@ -1147,14 +1147,26 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
 
     if config.ref_gripper_bridge:
-        subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "ref_gripper"])
+        if config.inspire_hand_bridge:
+            subprocess.run(
+                ["tmux", "split-window", "-t", f"{SESSION_NAME}:inspire_hand.0", "-h"],
+                check=True,
+            )
+            subprocess.run(
+                ["tmux", "select-pane", "-t", f"{SESSION_NAME}:inspire_hand.0", "-T", "inspire"]
+            )
+            gripper_target = f"{SESSION_NAME}:inspire_hand.1"
+        else:
+            subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "hand_io"])
+            gripper_target = f"{SESSION_NAME}:hand_io.0"
+        subprocess.run(["tmux", "select-pane", "-t", gripper_target, "-T", "ref_gripper"])
         gripper_cmd = (
             prefix
             + runtime_env
             + _aarch64_control_runtime_prefix()
             + _shell_join(_build_ref_gripper_args(config))
         )
-        _send_to_target(f"{SESSION_NAME}:ref_gripper", gripper_cmd, wait=1.0)
+        _send_to_target(gripper_target, gripper_cmd, wait=1.0)
         subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
 
     control_cmd = (
@@ -1226,9 +1238,12 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     if config.pico_data_streamer:
         print("  pico_data window:      optional PICO SMPL/VR3PT streamer")
     if config.inspire_hand_bridge:
-        print("  inspire_hand window:   onboard Inspire DDS -> Modbus bridge")
-    if config.ref_gripper_bridge:
-        print("  ref_gripper window:    Pico right trigger -> REF USB gripper")
+        if config.ref_gripper_bridge:
+            print("  inspire_hand window:   pane 0 Inspire; pane 1 REF gripper")
+        else:
+            print("  inspire_hand window:   onboard Inspire DDS -> Modbus bridge")
+    elif config.ref_gripper_bridge:
+        print("  hand_io window:        Pico right trigger -> REF USB gripper")
     if profile_log_dir is not None:
         print(f"  logs:                  {profile_log_dir}")
     print()
