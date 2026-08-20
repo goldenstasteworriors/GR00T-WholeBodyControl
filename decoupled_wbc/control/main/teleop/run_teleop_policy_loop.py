@@ -60,6 +60,7 @@ def main(config: TeleopConfig):
             preparation_body_pose = get_unitree_loco_startup_body_pose(
                 robot_model,
                 config.startup_final_elbow_angle,
+                raise_right_arm=config.startup_raise_right_arm,
             )
             pre_activation_upper_body_pose = preparation_body_pose[
                 robot_model.get_joint_group_indices("upper_body")

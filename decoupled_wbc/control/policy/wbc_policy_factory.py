@@ -15,11 +15,16 @@ from .g1_decoupled_whole_body_policy import G1DecoupledWholeBodyPolicy
 WBC_VERSIONS = ["gear_wbc"]
 
 
-def get_unitree_loco_startup_body_pose(robot_model, startup_elbow_angle: float):
-    """Return the default body pose with both elbows raised equally."""
+def get_unitree_loco_startup_body_pose(
+    robot_model,
+    startup_elbow_angle: float,
+    raise_right_arm: bool = True,
+):
+    """Return the default body pose with the selected elbows raised."""
     startup_body_pose = robot_model.initial_body_pose.copy()
     startup_body_pose[robot_model.dof_index("left_elbow_joint")] = startup_elbow_angle
-    startup_body_pose[robot_model.dof_index("right_elbow_joint")] = startup_elbow_angle
+    if raise_right_arm:
+        startup_body_pose[robot_model.dof_index("right_elbow_joint")] = startup_elbow_angle
     return startup_body_pose
 
 
@@ -29,13 +34,14 @@ def get_wbc_policy(
     wbc_config,
     init_time=time.monotonic(),
 ):
-    # This target is used only before live teleoperation goals arrive. Raise
-    # both elbows to the same preparation angle.
+    # This target is used only before live teleoperation goals arrive.
     startup_elbow_angle = wbc_config.get(
         "startup_final_elbow_angle", -0.2617993877991494
     )
     startup_body_pose = get_unitree_loco_startup_body_pose(
-        robot_model, startup_elbow_angle
+        robot_model,
+        startup_elbow_angle,
+        raise_right_arm=wbc_config.get("startup_raise_right_arm", True),
     )
     current_upper_body_pose = startup_body_pose[
         robot_model.get_joint_group_indices("upper_body")

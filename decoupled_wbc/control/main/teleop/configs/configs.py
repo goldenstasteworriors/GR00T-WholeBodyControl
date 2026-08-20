@@ -49,6 +49,7 @@ def override_wbc_config(
         "startup_elbow_pose_duration": config.startup_elbow_pose_duration,
         "startup_final_pose_duration": config.startup_final_pose_duration,
         "startup_final_elbow_angle": config.startup_final_elbow_angle,
+        "startup_raise_right_arm": config.startup_raise_right_arm,
         "keyboard_dispatcher_type": config.keyboard_dispatcher_type,
         "enable_gravity_compensation": config.enable_gravity_compensation,
         "gravity_compensation_joints": config.gravity_compensation_joints,
@@ -243,7 +244,10 @@ class BaseConfig(ArgsConfigTemplate):
     """Seconds to move all remaining joints to the normal initial pose."""
 
     startup_final_elbow_angle: float = -0.2617993877991494
-    """Dual-elbow arm_sdk startup target; -15 degrees raises both arms equally."""
+    """Arm SDK startup elbow target; -15 degrees raises an enabled arm."""
+
+    startup_raise_right_arm: bool = True
+    """Raise the right elbow to the startup target together with the left elbow."""
 
     env_name: str = "default"
     """Environment name."""

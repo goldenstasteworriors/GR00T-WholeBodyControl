@@ -26,6 +26,23 @@ def test_unitree_startup_pose_raises_both_elbows_equally():
     np.testing.assert_allclose(robot_model.initial_body_pose, [0.1, 0.2, 0.3, 0.4])
 
 
+def test_unitree_left_only_startup_pose_leaves_right_elbow_at_initial_angle():
+    robot_model = Mock()
+    robot_model.initial_body_pose = np.array([0.1, 0.2, 0.3, 0.4])
+    robot_model.dof_index.side_effect = {
+        "left_elbow_joint": 1,
+        "right_elbow_joint": 3,
+    }.__getitem__
+
+    startup_pose = get_unitree_loco_startup_body_pose(
+        robot_model,
+        -0.2617993877991494,
+        raise_right_arm=False,
+    )
+
+    np.testing.assert_allclose(startup_pose, [0.1, -0.2617993877991494, 0.3, 0.4])
+
+
 def test_pico_left_stick_tie_prefers_forward_backward_axis():
     streamer = PicoStreamer.__new__(PicoStreamer)
     streamer.navigation_range = 1.0

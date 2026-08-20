@@ -77,6 +77,12 @@ def _bool_arg(name: str, value: bool) -> list[str]:
     return [f"--{name}" if value else f"--no-{name}"]
 
 
+def _resolve_pico_fixed_side(config: "DecoupledVLACollectionLaunchConfig") -> str:
+    if config.pico_fixed_side == "auto":
+        return "right" if config.left_hand_only else "none"
+    return config.pico_fixed_side
+
+
 def _conda_base() -> Path:
     try:
         out = subprocess.check_output(["conda", "info", "--base"], text=True).strip()
@@ -293,7 +299,7 @@ class DecoupledVLACollectionLaunchConfig:
     """Seconds to move all remaining joints to the normal initial pose."""
 
     startup_final_elbow_angle: float = -0.2617993877991494
-    """Dual-elbow arm_sdk startup target; both arms use the same angle."""
+    """Arm SDK startup elbow target used for the left and optionally right arm."""
 
     keyboard_dispatcher_type: str = "raw"
     """Keyboard dispatcher type for control loop."""
@@ -310,8 +316,8 @@ class DecoupledVLACollectionLaunchConfig:
     pico_navigation_range: float = 1.0
     """Symmetric PICO x/y/yaw command range; 1.0 produces values in [-1, 1]."""
 
-    pico_fixed_side: str = "right"
-    """Upper-body side held at its measured A+X activation pose: left, right, or none."""
+    pico_fixed_side: str = "auto"
+    """Upper-body side held at A+X: auto, left, right, or none."""
 
     hand_control_device: str = "pico"
     """Decoupled hand teleop device."""
@@ -556,8 +562,8 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
         errors.append("--pico-input-source must be xrt or isaac-teleop")
     if config.pico_navigation_range <= 0.0:
         errors.append("--pico-navigation-range must be positive")
-    if config.pico_fixed_side not in {"left", "right", "none"}:
-        errors.append("--pico-fixed-side must be left, right, or none")
+    if config.pico_fixed_side not in {"auto", "left", "right", "none"}:
+        errors.append("--pico-fixed-side must be auto, left, right, or none")
 
     if config.lower_body_controller not in {"decoupled", "unitree_loco"}:
         errors.append("--lower-body-controller must be decoupled or unitree_loco")
@@ -797,6 +803,7 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         str(config.startup_final_pose_duration),
         "--startup-final-elbow-angle",
         str(config.startup_final_elbow_angle),
+        *_bool_arg("startup-raise-right-arm", not config.left_hand_only),
         "--keyboard-dispatcher-type",
         config.keyboard_dispatcher_type,
         *_bool_arg("keyboard-lower-body-control", config.keyboard_lower_body_control),
@@ -827,12 +834,13 @@ def _build_teleop_args(config: DecoupledVLACollectionLaunchConfig, interface: st
         *_bool_arg("unitree-loco-arm-control-enabled", config.unitree_loco_arm_control_enabled),
         "--startup-final-elbow-angle",
         str(config.startup_final_elbow_angle),
+        *_bool_arg("startup-raise-right-arm", not config.left_hand_only),
         "--body-control-device",
         config.body_control_device,
         "--pico-navigation-range",
         str(config.pico_navigation_range),
         "--pico-fixed-side",
-        config.pico_fixed_side,
+        _resolve_pico_fixed_side(config),
         "--hand-control-device",
         config.hand_control_device,
         "--body-streamer-ip",
@@ -1075,7 +1083,10 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print(f"  PICO fields:   {'streamer window enabled' if config.pico_data_streamer else 'disabled'}")
     print(f"  PICO ZMQ:      {config.sonic_zmq_host}:{config.sonic_zmq_port}")
     print(f"  PICO nav range:[-{config.pico_navigation_range}, {config.pico_navigation_range}]")
-    print(f"  PICO fixed side:{config.pico_fixed_side}")
+    print(
+        f"  PICO fixed side:{_resolve_pico_fixed_side(config)} "
+        f"(configured: {config.pico_fixed_side})"
+    )
     print(f"  Hand task:     {config.hand_task}")
     print(
         "  Hand config:   "
