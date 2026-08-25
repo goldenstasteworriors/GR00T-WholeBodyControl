@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FK Camera Tuner</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">ONBOARD / PURE FK / NO mj_step</p>
+        <h1>CAMERA ALIGNMENT DESK</h1>
+      </div>
+      <div class="status" aria-live="polite"><span id="statusDot"></span><span id="statusText">准备渲染</span></div>
+    </header>
+
+    <main class="layout">
+      <aside class="controls" aria-label="相机控制">
+        <section>
+          <h2>数据导航</h2>
+          <label>数据集<select id="dataset"></select></label>
+          <label>Episode<select id="episode"></select></label>
+          <div class="frame-control">
+            <label for="frame">视频帧 <output id="frameOutput">0</output></label>
+            <input id="frame" type="range" min="0" max="0" value="0" />
+          </div>
+          <label>状态帧偏移 <span class="inline-value" id="stateOffsetValue">0（固定）</span><input id="state_offset" type="range" min="0" max="0" step="1" value="0" disabled /></label>
+          <label>显示 mask<select id="mask_kind"><option value="left_arm">左臂（监督目标，含手）</option><option value="hands">双手掌/手指</option><option value="arms">双臂（含手）</option><option value="arm_body">双臂（去手）</option><option value="robot">完整机器人</option></select></label>
+        </section>
+
+        <section>
+          <h2>安装位移 / m</h2>
+          <div id="positionControls" class="parameter-stack"></div>
+        </section>
+        <section>
+          <h2>相机欧拉角 / rad</h2>
+          <p class="hint">MuJoCo intrinsic XYZ；先调 <code>rx</code> 观察俯仰。</p>
+          <div id="rotationControls" class="parameter-stack"></div>
+        </section>
+        <section class="orbit-section">
+          <h2>绕左手观察 / 诊断</h2>
+          <p class="hint">orbit 会同时移动相机光心并始终朝向当前帧左手。它用于检查手掌/手背可见性；确定后必须固化为静态安装位姿。</p>
+          <label for="view_mode">视角模式<select id="view_mode"><option value="raw">静态安装位姿</option><option value="orbit">绕当前左手观察</option></select></label>
+          <div id="orbitControls" class="parameter-stack"></div>
+          <div class="orbit-actions">
+            <button id="initializeOrbit" class="secondary" type="button">从当前相机初始化</button>
+            <button id="freezeOrbit" class="secondary" type="button">固化为安装位姿</button>
+          </div>
+          <output id="resolvedPose" class="resolved-pose" aria-live="polite">等待渲染</output>
+        </section>
+        <section>
+          <h2>针孔内参 / px</h2>
+          <div id="intrinsicControls" class="parameter-stack"></div>
+        </section>
+        <div class="action-row">
+          <button id="renderButton" class="primary">渲染当前参数 <kbd>R</kbd></button>
+          <button id="resetButton" class="secondary">重置</button>
+        </div>
+        <button id="saveButton" class="save">保存为预设</button>
+      </aside>
+
+      <section class="stage" aria-label="渲染对比">
+        <div class="stage-head">
+          <div><p class="eyebrow">LIVE COMPARISON</p><h2 id="frameTitle">RGB / FK Overlay</h2></div>
+          <p id="metrics">等待首帧</p>
+        </div>
+        <div class="image-grid">
+          <figure><figcaption>原始 RGB</figcaption><img id="rawImage" alt="原始机器人相机画面" /></figure>
+          <figure><figcaption id="overlayCaption">RGB + 手部 mask</figcaption><img id="overlayImage" alt="FK mask 叠加在原始画面上" /></figure>
+          <figure><figcaption>FK mesh rasterization</figcaption><img id="meshImage" alt="纯 FK 机器人网格渲染" /></figure>
+        </div>
+        <p class="legend"><span class="chip red"></span>robot / <span class="chip green"></span>hands / <span class="chip amber"></span>arm body。欧拉角只改变光轴；若要看到手掌另一侧，请使用绕左手观察改变相机光心。</p>
+      </section>
+    </main>
+    <template id="parameterTemplate">
+      <label class="parameter"><span class="parameter-label"><code></code><output></output></span><input type="range" /><input class="number" type="number" /></label>
+    </template>
+    <script src="app.js"></script>
+  </body>
+</html>
