@@ -9,8 +9,9 @@ const orbitControls = [
   ['orbit_distance', '距离 / m', 0.12, 1.5, 0.005, 'orbitControls'],
   ['orbit_roll', '画面滚转', -3.14, 3.14, 0.01, 'orbitControls'],
 ];
+const clientDefaults = { view_mode: 'raw', orbit_azimuth: -2.2, orbit_elevation: 0.4, orbit_distance: 0.55, orbit_roll: 0 };
 const allControls = [...controls, ...orbitControls];
-const state = { defaults: null, frameCount: 1, rendered: false, timer: null, lastRender: null };
+const state = { defaults: null, frameCount: 1, rendered: false, timer: null, lastRender: null, backendSupportsOrbit: false };
 const $ = (id) => document.getElementById(id);
 
 function setStatus(message, kind = 'ready') {
@@ -84,15 +85,18 @@ async function render() {
   $('frameTitle').textContent = `frame ${data.frame}  /  state ${data.state_index}`;
   $('metrics').textContent = `${data.mask_pixels.toLocaleString()} mask pixels · ${data.render_ms} ms · ${state.frameCount} frames`;
   const camera = data.resolved_camera;
-  $('resolvedPose').textContent = `pos [${camera.position.map((value) => value.toFixed(4)).join(', ')}]\neuler XYZ [${camera.euler_intrinsic_xyz_rad.map((value) => value.toFixed(4)).join(', ')}]`;
+  $('resolvedPose').textContent = camera
+    ? `pos [${camera.position.map((value) => value.toFixed(4)).join(', ')}]\neuler XYZ [${camera.euler_intrinsic_xyz_rad.map((value) => value.toFixed(4)).join(', ')}]`
+    : '当前服务为旧后端：原始 6DoF 自动渲染可用；重启服务后启用 orbit。';
   state.lastRender = data;
-  state.rendered = true; setStatus('已更新', 'ready');
+  state.rendered = true; setStatus(state.backendSupportsOrbit ? '已更新' : '已更新 · orbit 需重启服务', 'ready');
 }
 function reset() {
   const defaults = state.defaults; allControls.forEach(([key]) => setControlValue(key, defaults[key]));
   $('state_offset').value = defaults.state_offset; $('stateOffsetValue').textContent = defaults.state_offset; $('mask_kind').value = defaults.mask_kind; $('view_mode').value = defaults.view_mode; $('frame').value = 0; clampFrameToState(); render();
 }
 function initializeOrbit() {
+  if (!state.backendSupportsOrbit) { setStatus('重启后端服务后才能使用 orbit', 'error'); return; }
   if (!state.lastRender) return;
   const orbit = state.lastRender.orbit_equivalent;
   const values = { orbit_azimuth: orbit.azimuth, orbit_elevation: orbit.elevation, orbit_distance: orbit.distance, orbit_roll: 0 };
@@ -100,6 +104,7 @@ function initializeOrbit() {
   $('view_mode').value = 'orbit'; render();
 }
 function freezeOrbit() {
+  if (!state.backendSupportsOrbit) { setStatus('重启后端服务后才能固化 orbit', 'error'); return; }
   if (!state.lastRender || state.lastRender.view_mode !== 'orbit') { setStatus('请先进入绕左手观察模式', 'error'); return; }
   const camera = state.lastRender.resolved_camera;
   const values = { px: camera.position[0], py: camera.position[1], pz: camera.position[2], rx: camera.euler_intrinsic_xyz_rad[0], ry: camera.euler_intrinsic_xyz_rad[1], rz: camera.euler_intrinsic_xyz_rad[2] };
@@ -116,9 +121,17 @@ async function initialize() {
   try {
     setStatus('载入数据集…', 'busy');
     const response = await fetch('/api/datasets'); const data = await response.json(); if (!response.ok) throw new Error(data.error || '无法发现数据集');
-    state.defaults = data.defaults; $('state_offset').value = data.defaults.state_offset; $('stateOffsetValue').textContent = data.defaults.state_offset; $('mask_kind').value = data.defaults.mask_kind; $('dataset').innerHTML = data.datasets.map((path) => `<option value="${path}">${path}</option>`).join('');
+    const backendDefaults = data.defaults || {};
+    state.backendSupportsOrbit = backendDefaults.view_mode === 'raw' && Number.isFinite(Number(backendDefaults.orbit_distance));
+    state.defaults = { ...clientDefaults, ...backendDefaults };
+    $('state_offset').value = state.defaults.state_offset; $('stateOffsetValue').textContent = state.defaults.state_offset; $('mask_kind').value = state.defaults.mask_kind; $('view_mode').value = state.defaults.view_mode; $('dataset').innerHTML = data.datasets.map((path) => `<option value="${path}">${path}</option>`).join('');
     const preferred = data.datasets.find((path) => path === '8_13_shake_beaker_1'); if (preferred) $('dataset').value = preferred;
-    createControls(data.defaults); await loadEpisodes(); await loadInfo(); await render();
+    createControls(state.defaults);
+    if (!state.backendSupportsOrbit) {
+      $('view_mode').disabled = true; $('initializeOrbit').disabled = true; $('freezeOrbit').disabled = true;
+      orbitControls.forEach(([key]) => { $(key).disabled = true; $(`${key}_number`).disabled = true; });
+    }
+    await loadEpisodes(); await loadInfo(); await render();
   } catch (error) { setStatus(error.message, 'error'); }
 }
 $('dataset').addEventListener('change', async () => { try { await loadEpisodes(); await loadInfo(); await render(); } catch (error) { setStatus(error.message, 'error'); } });
