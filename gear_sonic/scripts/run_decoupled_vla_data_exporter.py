@@ -74,6 +74,15 @@ DEFAULT_INSPIRE_HAND_POSE_CONFIG = (
 class DecoupledVLADataExporterConfig:
     """CLI config for decoupled WBC -> Sonic VLA data export."""
 
+    receive_local: bool = False
+    """Use ThinkPad USB camera and local receive-time recorder only."""
+
+    receive_max_age: float = 0.1
+    """Stop a recording segment when local input age or loop gap exceeds this."""
+
+    realsense_serial: str = ""
+    """USB camera serial; omission requires exactly one attached RealSense."""
+
     dataset_name: str | None = None
     """Dataset name. Defaults to a timestamp."""
 
@@ -171,6 +180,16 @@ def load_inspire_hand_profiles(path: str) -> dict[str, np.ndarray]:
         if np.any(arr < 0.0) or np.any(arr > 1.0):
             raise ValueError(f"{path}: {name} values must be in [0.0, 1.0]")
         profiles[name] = arr
+    for key in ("grip", "grip_pressed"):
+        if key in data:
+            values = np.asarray(data[key], dtype=np.float64)
+            if (
+                values.shape != (6,)
+                or not np.all(np.isfinite(values))
+                or np.any((values < 0) | (values > 1))
+            ):
+                raise ValueError(f"Invalid hand profile: {key}")
+            profiles[key] = values
     return profiles
 
 
@@ -472,12 +491,13 @@ class DecoupledVLADataCollector:
         )
 
         self._episode_state = EpisodeState()
-        self._keyboard_listener = KeyboardListenerSubscriber()
-        self._state_subscriber = ROSMsgSubscriber(config.state_topic_name)
-        self._image_subscriber = ComposedCameraClientSensor(
-            server_ip=config.camera_host,
-            port=config.camera_port,
-        )
+        if not config.receive_local:
+            self._keyboard_listener = KeyboardListenerSubscriber()
+            self._state_subscriber = ROSMsgSubscriber(config.state_topic_name)
+            self._image_subscriber = ComposedCameraClientSensor(
+                server_ip=config.camera_host,
+                port=config.camera_port,
+            )
 
         self.latest_proprio_msg: dict | None = None
         self.latest_image_msg: dict | None = None
@@ -487,17 +507,18 @@ class DecoupledVLADataCollector:
         self._manager_toggle_dc = False
         self._manager_toggle_da = False
 
-        self._sonic_zmq_ctx = zmq.Context()
-        self._sonic_zmq_socket = self._sonic_zmq_ctx.socket(zmq.SUB)
-        self._sonic_zmq_socket.connect(
-            f"tcp://{config.sonic_zmq_host}:{config.sonic_zmq_port}"
-        )
-        self._sonic_zmq_socket.setsockopt(zmq.RCVTIMEO, 0)
-        self._sonic_zmq_socket.setsockopt(zmq.CONFLATE, 0)
-        self._sonic_zmq_socket.setsockopt(zmq.RCVHWM, 20)
-        self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "pose")
-        self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "planner")
-        self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "manager_state")
+        if not config.receive_local:
+            self._sonic_zmq_ctx = zmq.Context()
+            self._sonic_zmq_socket = self._sonic_zmq_ctx.socket(zmq.SUB)
+            self._sonic_zmq_socket.connect(
+                f"tcp://{config.sonic_zmq_host}:{config.sonic_zmq_port}"
+            )
+            self._sonic_zmq_socket.setsockopt(zmq.RCVTIMEO, 0)
+            self._sonic_zmq_socket.setsockopt(zmq.CONFLATE, 0)
+            self._sonic_zmq_socket.setsockopt(zmq.RCVHWM, 20)
+            self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "pose")
+            self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "planner")
+            self._sonic_zmq_socket.setsockopt_string(zmq.SUBSCRIBE, "manager_state")
 
         self.telemetry = Telemetry(window_size=100)
         self.sonic_timing_monitor = TimingThresholdMonitor(
@@ -832,6 +853,9 @@ class DecoupledVLADataCollector:
         legacy_action: np.ndarray,
     ) -> np.ndarray:
         """Match bridge profile selection for legacy open/grasp commands."""
+        if self.config.receive_local:
+            from gear_sonic.utils.data_collection.thinkpad_receive import hand_command_to_pose
+            return hand_command_to_pose(legacy_action, self._inspire_profiles)
         grasp = bool(
             np.max(np.abs(np.asarray(legacy_action, dtype=np.float64))) > 0.05
         )
@@ -1176,6 +1200,10 @@ class DecoupledVLADataCollector:
             pass
 
     def run(self) -> None:
+        if self.config.receive_local:
+            from gear_sonic.utils.data_collection.thinkpad_receive import run_local
+            run_local(self)
+            return
         try:
             while rclpy.ok():
                 t_start = time.monotonic()
@@ -1213,6 +1241,15 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
     if config.dataset_name is None:
         config.dataset_name = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
+    if config.receive_local:
+        if config.data_collection_frequency <= 0 or config.receive_max_age <= 0:
+            raise ValueError("Frequency and receive-max-age must be positive")
+        if config.record_wrist_cameras or config.require_sonic_pose:
+            raise ValueError("Local recorder supports ego RGB and robot state only")
+        output = Path(config.root_output_dir) / config.dataset_name
+        if config.overwrite_existing_dataset or output.exists():
+            raise ValueError("Local recorder requires a new dataset directory; never overwrites")
+
     rclpy.init(args=None)
     robot_config = poll_robot_config_ros(
         config.robot_config_service_name,
@@ -1243,10 +1280,11 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
             "decoupled_vla_exporter": asdict(config),
             "data_source": {
                 "robot_state": "decoupled_ros",
-                "pico_pose": "optional_sonic_zmq",
-                "camera": "gear_sonic_composed_camera",
+                "pico_pose": "disabled" if config.receive_local else "optional_sonic_zmq",
+                "camera": "thinkpad_usb_realsense" if config.receive_local else "gear_sonic_composed_camera",
             },
             "schema_compatibility": "g1_inspire_41dof",
+            "hand_command_profiles": {k: v.tolist() for k, v in inspire_profiles.items()},
             "hand_data_mode": "left_only" if config.left_hand_only else "both",
             "active_hands": ["left"] if config.left_hand_only else ["left", "right"],
             "right_hand_data": {

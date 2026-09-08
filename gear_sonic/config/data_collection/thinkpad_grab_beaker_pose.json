@@ -1,0 +1,35 @@
+{
+  "_source": "g1_bjutech_remote: gear_sonic/config/data_collection/inspire_hand_tasks.json grab_beaker, read-only snapshot 2026-09-08. Command mapping only; REF gripper measurements are not represented by these values.",
+  "open": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    0
+  ],
+  "grasp": [
+    0.37,
+    0.37,
+    0.37,
+    0.37,
+    1,
+    0
+  ],
+  "grip": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    0
+  ],
+  "grip_pressed": [
+    0.37,
+    0.37,
+    0.37,
+    0.37,
+    1,
+    0
+  ]
+}
