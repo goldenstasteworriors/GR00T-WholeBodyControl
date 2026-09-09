@@ -85,3 +85,7 @@ REF 夹爪仍由机器人桥接服务控制；现有 41 维格式并不含独立
 - [复用的 exporter](../../../gear_sonic/scripts/run_decoupled_vla_data_exporter.py)
 - [烧杯手部配置](../../../gear_sonic/config/data_collection/thinkpad_grab_beaker_pose.json)
 - [最初方案](thinkpad_wired_receive_time_collection.md)
+
+## 2026-09-09 REF 桥接
+
+ThinkPad 上的 PICO→REF USB 独立桥接已实现，见 [REF 桥接说明](thinkpad_ref_bridge.md)。它另存同机单调时间日志，尚未自动合入 LeRobot 字段；实测开口仍不可用。

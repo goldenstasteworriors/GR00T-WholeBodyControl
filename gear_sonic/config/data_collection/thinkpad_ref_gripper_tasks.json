@@ -1,0 +1,9 @@
+{
+  "grab_beaker": {
+    "right_gripper": {
+      "open": 0.4,
+      "pressed": 0.1
+    },
+    "source": "Read-only snapshot of g1_bjutech_remote gear_sonic/config/data_collection/inspire_hand_tasks.json, 2026-09-09"
+  }
+}

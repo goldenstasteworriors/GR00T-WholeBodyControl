@@ -219,3 +219,9 @@ models/
 # Downloaded from HuggingFace (hf download)
 sample_data/
 sonic_release/
+
+# ThinkPad REF bridge isolated tooling and runtime
+/.tools/ref-bridge/
+/.cache/ref-bridge/
+/.venv_ref_bridge/
+/.runtime/ref_bridge/
