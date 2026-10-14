@@ -10,6 +10,8 @@ mkdir -p "$TMPDIR" .runtime/src .runtime/wheels
 PYTHON="$ROOT/.venv_camera/bin/python"
 UV="$ROOT/.runtime/bin/uv"
 "$PYTHON" -c 'import sys; assert sys.version_info[:2] == (3, 10), sys.version'
+PYTHON_INCLUDE="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_path("include"))')"
+PYTHON_LIBRARY="$("$PYTHON" -c 'import sysconfig; from pathlib import Path; print(Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY"))')"
 SDK="$ROOT/.runtime/src/librealsense"
 REVISION=e196cefa896e312d79c2df400c7623aa1e9c62ac
 if [[ ! -d "$SDK" ]]; then
@@ -28,6 +30,7 @@ BUILD="$ROOT/.runtime/build-realsense"
 cmake -S "$SDK" -B "$BUILD" \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$ROOT/.venv_camera" \
     -DBUILD_PYTHON_BINDINGS=ON -DPYTHON_EXECUTABLE="$PYTHON" -DPython_EXECUTABLE="$PYTHON" \
+    -DPython_INCLUDE_DIR="$PYTHON_INCLUDE" -DPython_LIBRARY="$PYTHON_LIBRARY" \
     -DPYTHON_INSTALL_DIR="$ROOT/.venv_camera/lib/python3.10/site-packages" \
     -DFORCE_RSUSB_BACKEND=ON -DBUILD_WITH_CUDA=OFF -DBUILD_WITH_DDS=OFF \
     -DBUILD_EXAMPLES=OFF -DBUILD_GRAPHICAL_EXAMPLES=OFF -DBUILD_GLSL_EXTENSIONS=OFF \
