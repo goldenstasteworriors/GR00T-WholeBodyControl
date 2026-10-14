@@ -1,0 +1,33 @@
+diff --git a/main.cpp b/main.cpp
+index 149f395..1bc1268 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -49,6 +49,8 @@ public:
+         cmd_.id = id_;
+         cmd_.motorType = MotorType::M4010;
+         cmd_.mode = queryMotorMode(cmd_.motorType, MotorMode::BRAKE);
++        cmd_.kp = cmd_.kd = cmd_.q = cmd_.dq = cmd_.tau = 0.0f;
++        cmd_.timeout = 1;
+         state_.motorType = cmd_.motorType;
+         gear_ratio_ = queryGearRatio(cmd_.motorType);
+ 
+@@ -78,7 +80,7 @@ private:
+             cmd_.timeout = 0;
+         }
+ 
+-        serial_->sendRecv(&cmd_, &state_);
++        if (!serial_->sendRecv(&cmd_, &state_)) return;
+         if (pub_->trylock()) {
+             pub_->msg_.states()[0].q() = state_.q / gear_ratio_;
+             pub_->msg_.states()[0].dq() = state_.dq / gear_ratio_;
+@@ -183,7 +185,9 @@ private:
+                 MotorData data;
+                 cmd.motorType = MotorType::M4010;
+                 cmd.id = id;
+-                cmd.mode = queryMotorMode(cmd.motorType, MotorMode::FOC);
++                cmd.mode = queryMotorMode(cmd.motorType, MotorMode::BRAKE);
++                cmd.kp = cmd.kd = cmd.q = cmd.dq = cmd.tau = 0.0f;
++                cmd.timeout = 1;
+                 data.motorType = cmd.motorType;
+                 usleep(200);
+                 if (serial->sendRecv(&cmd, &data)) {

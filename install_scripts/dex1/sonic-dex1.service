@@ -1,0 +1,16 @@
+[Unit]
+Description=SONIC dual Unitree Dex1 DDS service
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/unitree/dex1_1_service
+Environment=LD_LIBRARY_PATH=/home/unitree/dex1_1_service/.deps/lib:/home/unitree/dex1_1_service/.deps/usr/lib/aarch64-linux-gnu:/home/unitree/dex1_1_service/lib
+ExecStart=/home/unitree/dex1_1_service/bin/dex1_1_gripper_server --network eth0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

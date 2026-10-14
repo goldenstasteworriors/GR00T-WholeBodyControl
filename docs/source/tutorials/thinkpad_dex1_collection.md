@@ -63,3 +63,40 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
 官方参考：
 [Dex1 服务](https://github.com/unitreerobotics/dex1_1_service)、
 [遥操作控制](https://github.com/unitreerobotics/xr_teleoperate/blob/main/teleop/robot_control/robot_hand_unitree.py)。
+
+## 2026-10-14 配置与验收记录
+
+- 新机器人服务：`sonic-dex1.service`，已启动并启用开机自启；
+  系统服务文件为 `/etc/systemd/system/sonic-dex1.service`。
+- 右侧 ID 0 → `/dev/ttyUSB1`；左侧 ID 1 → `/dev/ttyUSB2`。
+- ThinkPad 上 8 秒只读订阅：LowState 8348 条、左夹爪4001条、右夹爪4004条；
+  夹爪反馈位置约左0.9022 rad、右0.7203 rad。均为实时硬件反馈。
+- 离线测试已覆盖：缺失/过期反馈拒绝、0.18 rad 限幅、命令与原生状态的31维导出、
+  旧 Inspire 41维格式保留、ThinkPad 实际环境的导入与 CLI 参数解析。
+- 一键启动预检：机器人及双夹爪通过，`192.168.123.164:5555` 拒绝连接。
+  新机器人的相机 ZMQ 服务尚未部署，尚未验证图像、PICO 遥操作或完整录制。
+  没有启动身体控制、开合测试、T-pose 或覆盖旧数据集。
+- 未重启机器人验证自启；已检查 systemd 的 active/enabled 状态。
+
+机器人端官方服务基线为 `ced3216290bb22dae356213993786beeaa7143ab`，
+项目内 SDK 基线为 `63096d0ac0c5d2dec9d6e0c22cd5233410ca2f36`。
+机器人无 GitHub DNS 解析，使用本机通过 SSH 获取的官方仓库 Git bundle 部署。
+机器人 Git 提交为 `d221888`，包括零力矩探测和串口失败不发布旧状态的修正；
+补丁和服务文件备份在本采集仓库 `install_scripts/dex1/`。
+官方仓库不具备推送授权，修正通过采集仓库备份。
+
+libfmt-dev 6.1.2+ds-2、libserialport-dev/libserialport0 0.1.1-3 均解包在
+服务 `.deps` 内，不安装到系统。下载包校验与机器人 Ubuntu 包索引相符。
+SDK 使用 `-DBUILD_EXAMPLES=OFF`、`-DCMAKE_INSTALL_PREFIX=<服务目录>/.deps`
+配置安装；服务编译时通过 `-I`/`-L` 指向该前缀，临时编译目录也位于 `.deps/tmp`。
+systemd 服务中的 `LD_LIBRARY_PATH` 保证串口动态库可被找到。
+
+在 ThinkPad 登录机器人后可以查看或重启本服务（每行一条命令）：
+
+```bash
+ssh g1
+systemctl status sonic-dex1.service --no-pager
+sudo systemctl restart sonic-dex1.service
+```
+
+登录时若询问 ROS 版本，输入 `1`。无需修改 CUDA、显卡驱动、系统 Python 或 ROS 安装。

@@ -79,7 +79,10 @@ def _bool_arg(name: str, value: bool) -> list[str]:
 
 def _conda_base() -> Path:
     try:
-        out = subprocess.check_output(["conda", "info", "--base"], text=True).strip()
+        # ROS setup adds the active env's site-packages to PYTHONPATH. Conda
+        # itself runs in base and must not import those extension modules.
+        env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}}
+        out = subprocess.check_output(["conda", "info", "--base"], text=True, env=env).strip()
     except Exception as exc:
         raise RuntimeError("conda is required for this launcher") from exc
     return Path(out)
@@ -394,6 +397,7 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
             ["conda", "env", "list"],
             capture_output=True,
             text=True,
+            env={k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}},
         )
         if config.conda_env not in result.stdout:
             errors.append(
@@ -664,7 +668,10 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
             "--network", interface, "--camera-host", config.camera_host,
             "--camera-port", str(config.camera_port),
         ])
-        subprocess.run(["bash", "-c", check_cmd], check=True)
+        result = subprocess.run(["bash", "-c", check_cmd])
+        if result.returncode:
+            print("Dex1 preflight failed; collection was not started.")
+            raise SystemExit(result.returncode)
     if config.preflight_only:
         print("Preflight passed; no control process or dataset started.")
         return

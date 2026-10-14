@@ -210,6 +210,7 @@ data/
 bones_seed_smpl/
 sonic_release/
 # Training output logs
+.runtime/
 logs_rl/
 logs_eval/
 
