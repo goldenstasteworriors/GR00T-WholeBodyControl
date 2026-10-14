@@ -71,6 +71,8 @@ def override_wbc_config(
         wbc_config["MOTOR_KD"][14] = wbc_config["MOTOR_KD"][14] - 10
 
     if config.env_type == "sim" and config.with_hands:
+        if config.hand_type == "dex1":
+            raise ValueError("Dex1 currently supports real hardware only")
         wbc_config["ROBOT_SCENE"] = (
             "decoupled_wbc/control/robot_model/model_data/g1/scene_29dof_activated3dex.xml"
         )
@@ -82,6 +84,9 @@ def override_wbc_config(
         wbc_config["NUM_HAND_MOTORS"] = 0
         wbc_config["NUM_HAND_JOINTS"] = 0
         wbc_config["HAND_TYPE"] = "none"
+
+    if config.env_type == "real" and config.with_hands and config.hand_type:
+        wbc_config["HAND_TYPE"] = config.hand_type
 
     return wbc_config
 
@@ -125,6 +130,9 @@ class BaseConfig(ArgsConfigTemplate):
 
     with_hands: bool = True
     """Enable hand functionality. When False, robot operates without hands."""
+
+    hand_type: Literal["inspire", "dex3", "dex1"] | None = None
+    """Physical hand type; None retains the existing YAML default."""
 
     high_elbow_pose: bool = False
     """Enable high elbow pose configuration for default joint positions."""

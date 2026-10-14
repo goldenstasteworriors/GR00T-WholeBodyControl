@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import time
+from typing import Literal
 
 
 DEFAULT_CONDA_ENV = "decoupled_vla_collection"
@@ -103,6 +104,7 @@ def _conda_prefix(repo_root: Path, env_name: str) -> str:
         f"conda activate {shlex.quote(env_name)} && "
         'if [ -f "$CONDA_PREFIX/setup.bash" ]; then source "$CONDA_PREFIX/setup.bash"; fi && '
         f"cd {shlex.quote(str(repo_root))} && "
+        f"export PYTHONPATH={shlex.quote(str(repo_root))} && "
         "export PYTHONUNBUFFERED=1 && "
     )
 
@@ -197,6 +199,12 @@ class DecoupledVLACollectionLaunchConfig:
 
     with_hands: bool = True
     """Enable hand functionality in decoupled WBC."""
+
+    hand_type: Literal["inspire", "dex1"] = "inspire"
+    """Physical hands and dataset schema; Dex1 records 31 native DOFs."""
+
+    preflight_only: bool = False
+    """Check configuration and Dex1 DDS/camera connectivity without launching control."""
 
     high_elbow_pose: bool = False
     """Use high elbow pose in robot model."""
@@ -371,6 +379,11 @@ class DecoupledVLACollectionLaunchConfig:
 
 def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: Path) -> None:
     errors = []
+    if config.hand_type == "dex1":
+        if config.sim or not config.with_hands or config.inspire_hand_bridge or config.left_hand_only:
+            errors.append("Dex1 requires real hardware, both hands, and no Inspire bridge")
+        if config.interface not in {name for _, name in socket.if_nameindex()}:
+            errors.append("Dex1 requires --interface with an existing robot-facing network interface")
     if not shutil.which("tmux"):
         errors.append("tmux is not installed. Install with: sudo apt install tmux")
     if not shutil.which("conda"):
@@ -475,6 +488,8 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         "decoupled_wbc/control/main/teleop/run_g1_control_loop.py",
         "--interface",
         interface,
+        "--hand-type",
+        config.hand_type,
         "--simulator",
         simulator,
         "--env-name",
@@ -512,6 +527,8 @@ def _build_teleop_args(config: DecoupledVLACollectionLaunchConfig, interface: st
         "decoupled_wbc/control/main/teleop/run_teleop_policy_loop.py",
         "--interface",
         interface,
+        "--hand-type",
+        config.hand_type,
         "--simulator",
         simulator,
         "--env-name",
@@ -548,6 +565,8 @@ def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str
     args = [
         "python",
         "gear_sonic/scripts/run_decoupled_vla_data_exporter.py",
+        "--hand-type",
+        config.hand_type,
         "--task-prompt",
         config.task_prompt,
         "--root-output-dir",
@@ -639,6 +658,16 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     interface = config.interface or ("sim" if config.sim else "real")
 
     _check_prerequisites(config, repo_root)
+    if config.hand_type == "dex1":
+        check_cmd = _conda_prefix(repo_root, config.conda_env) + _shell_join([
+            "python", "gear_sonic/scripts/check_dex1_connection.py",
+            "--network", interface, "--camera-host", config.camera_host,
+            "--camera-port", str(config.camera_port),
+        ])
+        subprocess.run(["bash", "-c", check_cmd], check=True)
+    if config.preflight_only:
+        print("Preflight passed; no control process or dataset started.")
+        return
     _kill_existing_session()
 
     prefix = _conda_prefix(repo_root, config.conda_env)

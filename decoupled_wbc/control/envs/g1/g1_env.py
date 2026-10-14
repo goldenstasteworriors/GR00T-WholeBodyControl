@@ -8,6 +8,7 @@ from scipy.spatial.transform import Rotation as R
 from decoupled_wbc.control.base.humanoid_env import Hands, HumanoidEnv
 from decoupled_wbc.control.envs.g1.g1_body import G1Body
 from decoupled_wbc.control.envs.g1.g1_hand import G1InspireHand, G1ThreeFingerHand
+from decoupled_wbc.control.envs.g1.g1_dex1_hand import G1Dex1Hand
 from decoupled_wbc.control.envs.g1.sim.simulator_factory import SimulatorFactory, init_channel
 from decoupled_wbc.control.envs.g1.utils.joint_safety import JointSafetyMonitor
 from decoupled_wbc.control.robot_model.instantiation.g1 import instantiate_g1_robot_model
@@ -61,7 +62,7 @@ class G1Env(HumanoidEnv):
         if self.with_hands:
             self._hands = Hands()
             hand_type = config.get("HAND_TYPE", "dex3")
-            hand_cls = G1InspireHand if hand_type == "inspire" else G1ThreeFingerHand
+            hand_cls = {"inspire": G1InspireHand, "dex3": G1ThreeFingerHand, "dex1": G1Dex1Hand}[hand_type]
             self._hands.left = hand_cls(is_left=True)
             self._hands.right = hand_cls(is_left=False)
 
@@ -195,6 +196,9 @@ class G1Env(HumanoidEnv):
         if self.with_hands and left_hand_inspire_q is not None and right_hand_inspire_q is not None:
             obs["left_hand_inspire_q"] = left_hand_inspire_q
             obs["right_hand_inspire_q"] = right_hand_inspire_q
+        if self.with_hands and self.config.get("HAND_TYPE") == "dex1":
+            obs["left_hand_dex1_q"] = left_hand_obs["dex1_hand_q"]
+            obs["right_hand_dex1_q"] = right_hand_obs["dex1_hand_q"]
 
         if self.use_sim and self.sim:
             obs.update(self.sim.get_privileged_obs())

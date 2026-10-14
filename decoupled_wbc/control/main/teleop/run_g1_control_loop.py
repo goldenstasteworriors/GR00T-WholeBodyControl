@@ -232,6 +232,10 @@ def main(config: ControlLoopConfig):
                     time.sleep(0.5)
 
                 msg = deepcopy(obs)
+                if wbc_config.get("HAND_TYPE") == "dex1" and config.with_hands:
+                    # Store the actual slew-limited DDS targets from this step.
+                    msg["left_hand_dex1_action"] = env.hands().left.last_command.copy()
+                    msg["right_hand_dex1_action"] = env.hands().right.last_command.copy()
                 for key in obs.keys():
                     if key.endswith("_image"):
                         del msg[key]

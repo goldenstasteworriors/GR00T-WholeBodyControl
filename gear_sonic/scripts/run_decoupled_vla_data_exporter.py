@@ -46,6 +46,8 @@ from decoupled_wbc.control.utils.ros_utils import ROSMsgSubscriber
 from gear_sonic.camera.composed_camera import ComposedCameraClientSensor
 from gear_sonic.data.exporter import Gr00tDataExporter
 from gear_sonic.data.features_sonic_vla import (
+    get_features_sonic_dex1,
+    get_modality_config_sonic_dex1,
     get_features_sonic_inspire6,
     get_g1_robot_model,
     get_modality_config_sonic_inspire6,
@@ -76,6 +78,9 @@ class DecoupledVLADataExporterConfig:
 
     dataset_name: str | None = None
     """Dataset name. Defaults to a timestamp."""
+
+    hand_type: str = "inspire"
+    """Physical hand schema: inspire (41 DOF) or dex1 (31 DOF)."""
 
     task_prompt: str = "demo"
     """Language task prompt stored in the LeRobot dataset."""
@@ -467,8 +472,9 @@ class DecoupledVLADataCollector:
         self.audio_cue = audio_cue
         self.frequency = config.data_collection_frequency
         self.loop_period = 1.0 / self.frequency
-        self._inspire_profiles = load_inspire_hand_profiles(
-            config.inspire_hand_pose_config
+        self._inspire_profiles = (
+            load_inspire_hand_profiles(config.inspire_hand_pose_config)
+            if config.hand_type == "inspire" else None
         )
 
         self._episode_state = EpisodeState()
@@ -791,6 +797,12 @@ class DecoupledVLADataCollector:
 
     def _get_observation_state(self, proprio: dict, kinematic_state: np.ndarray) -> np.ndarray:
         body_indices = self.robot_model.get_body_actuated_joint_indices()
+        if self.config.hand_type == "dex1":
+            return np.concatenate([
+                kinematic_state[body_indices],
+                self._get_dex1_value(proprio, "left", "q"),
+                self._get_dex1_value(proprio, "right", "q"),
+            ])
         left_hand_q = self._get_inspire_hand_state(proprio, "left")
         right_hand_q = self._get_inspire_hand_state(proprio, "right")
         if self.config.left_hand_only:
@@ -804,6 +816,15 @@ class DecoupledVLADataCollector:
         ).astype(np.float64, copy=False)
 
     def _get_action_wbc(self, proprio: dict, observation_state: np.ndarray) -> np.ndarray:
+        if self.config.hand_type == "dex1":
+            if "action" not in proprio:
+                raise RuntimeError("Missing body action in Dex1 control-state message")
+            body_indices = self.robot_model.get_body_actuated_joint_indices()
+            return np.concatenate([
+                self._normalise_full_q(proprio["action"])[body_indices],
+                self._get_dex1_value(proprio, "left", "action"),
+                self._get_dex1_value(proprio, "right", "action"),
+            ])
         for key in ("action", "last_action", "q_des", "target_q"):
             if key in proprio:
                 legacy_action = self._normalise_full_q(proprio[key])
@@ -826,6 +847,14 @@ class DecoupledVLADataCollector:
                     ]
                 ).astype(np.float64, copy=False)
         return observation_state.copy()
+
+    @staticmethod
+    def _get_dex1_value(proprio: dict, side: str, field: str) -> np.ndarray:
+        key = f"{side}_hand_dex1_{field}"
+        value = np.asarray(proprio.get(key, []), dtype=np.float64)
+        if value.shape != (1,) or not np.all(np.isfinite(value)):
+            raise RuntimeError(f"Missing/invalid native Dex1 value: {key}")
+        return value
 
     def _legacy_hand_action_to_inspire(
         self,
@@ -1017,8 +1046,9 @@ class DecoupledVLADataCollector:
             side="right",
         )
 
-        frame_data["teleop.left_hand_joints"] = q[29:35].astype(np.float32)
-        frame_data["teleop.right_hand_joints"] = q[35:41].astype(np.float32)
+        hand_dof = 1 if self.config.hand_type == "dex1" else 6
+        frame_data["teleop.left_hand_joints"] = q[29:29 + hand_dof].astype(np.float32)
+        frame_data["teleop.right_hand_joints"] = q[29 + hand_dof:29 + 2 * hand_dof].astype(np.float32)
 
         frame_data["teleop.planner_mode"] = np.array(
             [planner_msg["planner_mode"]] if use_planner and planner_msg else [0],
@@ -1210,6 +1240,10 @@ class DecoupledVLADataCollector:
 
 
 def main(config: DecoupledVLADataExporterConfig) -> None:
+    if config.hand_type not in {"inspire", "dex1"}:
+        raise ValueError("hand_type must be inspire or dex1")
+    if config.hand_type == "dex1" and config.left_hand_only:
+        raise ValueError("Dex1 collection requires both physical grippers")
     if config.dataset_name is None:
         config.dataset_name = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
@@ -1226,9 +1260,16 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
 
     try:
         robot_model = get_g1_robot_model()
-        inspire_profiles = load_inspire_hand_profiles(config.inspire_hand_pose_config)
-        dataset_features = get_features_sonic_inspire6(robot_model)
-        modality_config = get_modality_config_sonic_inspire6(robot_model)
+        if config.hand_type == "dex1":
+            if robot_config.get("hand_type") != "dex1":
+                raise RuntimeError("Exporter/control hand_type mismatch; expected dex1")
+            inspire_profiles = None
+            dataset_features = get_features_sonic_dex1(robot_model)
+            modality_config = get_modality_config_sonic_dex1(robot_model)
+        else:
+            inspire_profiles = load_inspire_hand_profiles(config.inspire_hand_pose_config)
+            dataset_features = get_features_sonic_inspire6(robot_model)
+            modality_config = get_modality_config_sonic_inspire6(robot_model)
 
         if config.record_wrist_cameras:
             dataset_features.update(get_wrist_camera_features())
@@ -1246,7 +1287,9 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
                 "pico_pose": "optional_sonic_zmq",
                 "camera": "gear_sonic_composed_camera",
             },
-            "schema_compatibility": "g1_inspire_41dof",
+            "schema_compatibility": "g1_dex1_31dof" if config.hand_type == "dex1" else "g1_inspire_41dof",
+            "hand_type": config.hand_type,
+            "hand_position_unit": "rad" if config.hand_type == "dex1" else "normalized",
             "hand_data_mode": "left_only" if config.left_hand_only else "both",
             "active_hands": ["left"] if config.left_hand_only else ["left", "right"],
             "right_hand_data": {

@@ -426,6 +426,30 @@ def get_modality_config_sonic_inspire6(robot_model: RobotModel) -> dict:
     return modality
 
 
+def get_features_sonic_dex1(robot_model: RobotModel) -> dict:
+    """Native radians: 29 body + one left + one right Dex1 motor."""
+    features = copy.deepcopy(get_features_sonic_vla(robot_model))
+    names = list(robot_model.supplemental_info.body_actuated_joints) + [
+        "left_hand_dex1_motor", "right_hand_dex1_motor"
+    ]
+    for key in ("observation.state", "action.wbc"):
+        features[key] = {"dtype": "float64", "shape": (31,), "names": names}
+    for side in ("left", "right"):
+        features[f"teleop.{side}_hand_joints"] = {
+            "dtype": "float32", "shape": (1,), "names": [f"{side}_hand_dex1_motor"]
+        }
+    return features
+
+
+def get_modality_config_sonic_dex1(robot_model: RobotModel) -> dict:
+    modality = get_modality_config_sonic_inspire6(robot_model)
+    modality["state"]["left_hand"] = {"start": 29, "end": 30}
+    modality["state"]["right_hand"] = {"start": 30, "end": 31}
+    for side in ("left", "right"):
+        modality["action"][f"{side}_hand_joints"]["end"] = 1
+    return modality
+
+
 def get_wrist_camera_features() -> dict:
     """Features for optional wrist cameras (added when ``record_wrist_cameras`` is enabled)."""
     return {
