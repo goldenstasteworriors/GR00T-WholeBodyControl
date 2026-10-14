@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Optional SDK build, NOT needed by sonic_d435i_camera.service (RGB over UVC).
+# SDK import was verified; RSUSB capture timed out on the onboard D435i.
 # Build the official SDK against this robot's existing system libraries.
 # Requires the project's .venv_camera (Python 3.10), uv, CMake, C++ and libusb-dev.
 set -euo pipefail

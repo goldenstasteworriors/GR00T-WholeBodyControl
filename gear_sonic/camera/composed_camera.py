@@ -56,7 +56,7 @@ class ComposedCameraConfig:
     """Camera type for ego view: oak, oak_mono, realsense, zed, usb, or None."""
 
     ego_view_device_id: str | None = None
-    """Device ID for ego view camera (OAK MxID, RealSense serial, USB /dev/video index)."""
+    """Device ID (OAK MxID, RealSense serial, USB index or /dev/v4l/by-id path)."""
 
     head_camera: str | None = None
     """Camera type for head view."""
@@ -421,7 +421,8 @@ class ComposedCameraSensor(Sensor, SensorServer):
             from gear_sonic.camera.drivers.usb_camera import USBCameraConfig, USBCameraSensor
 
             usb_config = USBCameraConfig()
-            device_idx = int(device_id) if device_id else 0
+            usb_config.fps = self.config.fps
+            device_idx = (int(device_id) if device_id.isdecimal() else device_id) if device_id else 0
             print(f"Initializing USB camera for type: {camera_type}, device: {device_idx}")
             return USBCameraSensor(
                 config=usb_config, mount_position=mount_position, device_index=device_idx

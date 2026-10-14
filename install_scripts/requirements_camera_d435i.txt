@@ -1,8 +1,7 @@
 # RGB-only camera server; no training, OAK or CUDA dependencies.
 numpy==1.26.4
 opencv-python-headless==4.11.0.86
-# Jetson Ubuntu 20.04: build pyrealsense2 with build_d435i_sdk.sh.
-# PyPI ARM wheels require newer glibc; do not upgrade the robot's system libraries.
+# D435i RGB uses its existing UVC interface; no RealSense SDK is needed.
 pyzmq>=25,<28
 msgpack>=1,<2
 msgpack-numpy==0.4.8

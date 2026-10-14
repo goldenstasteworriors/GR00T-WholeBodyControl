@@ -24,7 +24,7 @@ class USBCameraConfig:
 
     image_dim: tuple = (640, 480)
     fps: int = 30
-    device_index: int = 0
+    device_index: int | str = 0
 
 
 class USBCameraSensor(Sensor):
@@ -34,7 +34,7 @@ class USBCameraSensor(Sensor):
         self,
         config: USBCameraConfig = USBCameraConfig(),
         mount_position: str = CameraMountPosition.EGO_VIEW.value,
-        device_index: int | None = None,
+        device_index: int | str | None = None,
     ):
         self.config = config
         self.mount_position = mount_position
