@@ -1,0 +1,9 @@
+# RGB-only camera server; no training, OAK or CUDA dependencies.
+numpy==1.26.4
+opencv-python-headless==4.11.0.86
+pyrealsense2==2.59.1.11053
+pyzmq>=25,<28
+msgpack>=1,<2
+msgpack-numpy==0.4.8
+tyro>=0.9,<1
+requests>=2.31,<3
