@@ -7,7 +7,7 @@ Type=simple
 User=unitree
 WorkingDirectory=/home/unitree/GR00T-WholeBodyControl
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/unitree/GR00T-WholeBodyControl/.venv_camera/bin/python -m gear_sonic.camera.composed_camera --ego-view-camera realsense --ego-view-device-id 254843062005 --fps 30 --port 5555 --profile-timing --profile-interval 10
+ExecStart=/home/unitree/GR00T-WholeBodyControl/.venv_camera/bin/python -m gear_sonic.camera.composed_camera --ego-view-camera realsense --ego-view-device-id 401622070741 --fps 30 --port 5555 --profile-timing --profile-interval 10
 Restart=on-failure
 RestartSec=5
 
