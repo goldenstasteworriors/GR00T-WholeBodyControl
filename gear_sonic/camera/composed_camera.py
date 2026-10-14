@@ -407,7 +407,9 @@ class ComposedCameraSensor(Sensor, SensorServer):
             realsense_config.fps = self.config.fps
             realsense_config.frame_timeout_ms = self.config.realsense_frame_timeout_ms
             print(f"Initializing RealSense sensor for camera type: {camera_type}")
-            return RealSenseSensor(config=realsense_config, mount_position=mount_position)
+            return RealSenseSensor(
+                config=realsense_config, mount_position=mount_position, device_id=device_id
+            )
 
         elif camera_type.endswith(".mp4"):
             from gear_sonic.camera.drivers.dummy import ReplayDummySensor

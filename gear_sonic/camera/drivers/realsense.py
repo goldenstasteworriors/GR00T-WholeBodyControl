@@ -46,6 +46,7 @@ class RealSenseSensor(Sensor, SensorServer):
         config: RealSenseConfig = RealSenseConfig(),
         id: int = 0,
         mount_position: str = CameraMountPosition.EGO_VIEW.value,
+        device_id: str | None = None,
     ):
         devices = rs.context().query_devices()
         if len(devices) == 0:
@@ -59,7 +60,11 @@ class RealSenseSensor(Sensor, SensorServer):
         self.pipeline = rs.pipeline()
         self.config = rs.config()
         devices = sorted(devices, key=lambda x: x.get_info(rs.camera_info.serial_number))
-        self.config.enable_device(devices[id].get_info(rs.camera_info.serial_number))
+        serials = [device.get_info(rs.camera_info.serial_number) for device in devices]
+        serial = device_id if device_id is not None else serials[id]
+        if serial not in serials:
+            raise RuntimeError(f"RealSense serial {serial!r} not found; available: {serials}")
+        self.config.enable_device(serial)
 
         try:
             self.config.enable_stream(
@@ -80,7 +85,7 @@ class RealSenseSensor(Sensor, SensorServer):
             self.start_server(port)
         print(
             f"Done initializing RealSense sensor: "
-            f"{devices[id].get_info(rs.camera_info.serial_number)}"
+            f"{serial}"
         )
 
     def read(self) -> dict[str, Any] | None:
