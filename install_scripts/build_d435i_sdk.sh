@@ -44,7 +44,7 @@ mkdir -p "$STAGE/pyrealsense2"
 cp "$SDK/wrappers/python/setup.py" "$SDK/wrappers/python/README.rst" "$STAGE/"
 cp -a "$SDK/wrappers/python/examples" "$STAGE/"
 cp "$SDK/wrappers/python/pyrealsense2/__init__.py" "$STAGE/pyrealsense2/"
-cp -L "$BUILD/wrappers/python/pyrealsense2.cpython-310-"*.so "$STAGE/pyrealsense2/"
+cp -L "$BUILD/Release/pyrealsense2.cpython-310-"*.so "$STAGE/pyrealsense2/"
 "$PYTHON" "$SDK/wrappers/python/find_librs_version.py" "$SDK" "$STAGE/pyrealsense2"
 (cd "$STAGE" && "$PYTHON" setup.py bdist_wheel --dist-dir "$ROOT/.runtime/wheels")
 "$UV" pip install --python "$PYTHON" --reinstall \
