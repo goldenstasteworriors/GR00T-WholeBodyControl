@@ -59,6 +59,50 @@ def check(network: str, duration: float = 5.0) -> bool:
             sub.Close()
 
 
+def check_camera(host: str, port: int, timeout: float = 5.0) -> bool:
+    """Require decodable ego-view frames with advancing capture timestamps."""
+    import msgpack
+    import msgpack_numpy
+    import zmq
+
+    from gear_sonic.camera.sensor_server import ImageMessageSchema
+
+    context = zmq.Context()
+    subscriber = context.socket(zmq.SUB)
+    subscriber.setsockopt(zmq.SUBSCRIBE, b"")
+    subscriber.setsockopt(zmq.CONFLATE, 1)
+    subscriber.setsockopt(zmq.LINGER, 0)
+    previous_stamp = None
+    advancing_frames = 0
+    try:
+        subscriber.connect(f"tcp://{host}:{port}")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not subscriber.poll(100):
+                continue
+            payload = msgpack.unpackb(subscriber.recv(), object_hook=msgpack_numpy.decode)
+            frame = ImageMessageSchema.deserialize(payload)
+            rgb = frame.images.get("ego_view")
+            stamp = float(frame.timestamps.get("ego_view", float("nan")))
+            if (not isinstance(rgb, np.ndarray) or rgb.ndim != 3 or rgb.shape[2] != 3
+                    or rgb.size == 0 or rgb.dtype != np.uint8 or not np.isfinite(stamp)):
+                raise ValueError("invalid ego_view RGB frame or timestamp")
+            if previous_stamp is not None and stamp > previous_stamp:
+                advancing_frames += 1
+            previous_stamp = stamp
+            if advancing_frames >= 5:
+                print(f"Camera image stream OK: {rgb.shape}, advancing capture timestamps")
+                return True
+        print(f"FAIL camera {host}:{port}: no continuously updating ego_view images")
+        return False
+    except Exception as exc:
+        print(f"FAIL camera {host}:{port}: {exc}")
+        return False
+    finally:
+        subscriber.close()
+        context.term()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--network", required=True)
@@ -70,12 +114,7 @@ def main():
         parser.error("duration must be in (0, 60]")
     ok = check(args.network, args.duration)
     if args.camera_host:
-        try:
-            with socket.create_connection((args.camera_host, args.camera_port), timeout=3):
-                print("Camera TCP endpoint reachable (image contents not checked)")
-        except OSError as exc:
-            print(f"FAIL camera {args.camera_host}:{args.camera_port}: {exc}")
-            ok = False
+        ok = check_camera(args.camera_host, args.camera_port) and ok
     raise SystemExit(0 if ok else 1)
 
 
