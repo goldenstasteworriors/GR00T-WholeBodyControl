@@ -38,8 +38,8 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
 ```
 
 预检通过后去掉 `--preflight-only` 才会启动真实控制。Dex1 模式启动前
-自动检查身体/双夹爪 DDS 和相机 TCP 端口。TCP 可达不代表相机图像已经
-验证。预检失败不会杀掉已有 tmux 会话、释放机器人运动模式或覆盖数据集。
+自动检查身体/双夹爪 DDS，并要求收到可解码、捕获时间戳持续更新的相机 RGB 帧。
+预检失败不会杀掉已有 tmux 会话、释放机器人运动模式或覆盖数据集。
 不要把旧 Inspire 数据集与新的 Dex1 数据集混用；默认不覆盖已有数据。
 
 `--pico-vis-vr3pt` 可按原流程额外添加。`--startup-t-pose` 会影响真实机器人的
@@ -100,3 +100,51 @@ sudo systemctl restart sonic-dex1.service
 ```
 
 登录时若询问 ROS 版本，输入 `1`。无需修改 CUDA、显卡驱动、系统 Python 或 ROS 安装。
+
+## 机载 D435i RGB 配置（2026-10-14 后续检查）
+
+相机直接连接机器人。现有 USB/UVC 驱动已通过本机实测：90/90 帧有效，
+640×480 RGB，29.996 FPS。固定的 USB 视频接口 ID 为 `254843062005`；
+使用 `/dev/v4l/by-id/` 路径，避免重启后 `/dev/video8` 编号改变。
+采集使用 `ego_view` 彩色图像，不包含深度、红外或 IMU。
+
+机器人相机工作区及虚拟环境（各行一个路径）：
+
+```text
+/home/unitree/GR00T-WholeBodyControl
+/home/unitree/GR00T-WholeBodyControl/.venv_camera
+```
+
+独立环境使用 uv 管理的 Python 3.10.22；uv、Python、缓存和编译临时文件均在
+项目 `.runtime/` 内。RGB 服务依赖列在 `install_scripts/requirements_camera_d435i.txt`，
+不依赖 PyTorch、CUDA、OAK SDK 或 RealSense SDK。服务模板为
+`systemd/sonic_d435i_camera.service`，使用 `unitree` 用户和 ZMQ 端口5555。
+
+**部署状态：** 生成最终 UVC 服务配置时，ThinkPad 的 `10.90.234.236` SSH
+突然超时且 ping 不通。因此最终配置尚未完成远端同步确认，尚未安装/启用相机
+systemd 服务，也尚未验证 ThinkPad 收图和完整启动预检。恢复连接后需要先检查
+是否已有前台相机进程，再完成服务安装和验收；不能仅凭本机出图宣称采集链路通过。
+
+后续机器人端安装命令如下，每行一条命令；必须先结束本次前台相机测试，
+避免同时占用相机或5555端口：
+
+```bash
+cd /home/unitree/GR00T-WholeBodyControl
+sudo install -m 0644 systemd/sonic_d435i_camera.service /etc/systemd/system/sonic_d435i_camera.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now sonic_d435i_camera.service
+systemctl status sonic_d435i_camera.service --no-pager
+```
+
+技术记录：官方 PyPI ARM wheel 与机器人 Ubuntu 20.04 的系统库不兼容。
+已按[官方源码构建说明](https://github.com/realsenseai/librealsense/blob/v2.55.1/wrappers/python/readme.md)
+编译 SDK v2.55.1（源码 `e196cefa896e312d79c2df400c7623aa1e9c62ac`），
+本地 wheel 可导入，但 RSUSB 模式捕获持续超时，因此最终 RGB 服务采用已验证的 UVC 驱动。
+`install_scripts/build_d435i_sdk.sh` 仅保留为可选构建记录，不是当前 RGB 服务的安装前提。
+SDK 返回设备序列号 `401622070741`，它与 USB 视频接口 ID 不同。
+没有改动固件、内核、系统库、CUDA 或显卡驱动。
+
+ThinkPad 端额外验证：冻结捕获时间戳的模拟图像流被预检正确拒绝；
+SDK 编译期间3秒 DDS 复检收到身体3130条、左夹爪1501条、右夹爪1500条，全部有效。
+相机与采集端的系统时钟存在约数分钟差异，当前预检只检查时间戳持续前进；
+跨机器时间戳之差不能直接当作传输延迟。尚未修改系统时钟或验证严格时间同步。
