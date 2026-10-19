@@ -750,8 +750,8 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
             raise SystemExit(result.returncode)
     if (config.pico_preflight and not config.sim and config.enable_real_device
             and "pico" in (config.body_control_device, config.hand_control_device)):
-        subprocess.run(["bash", str(repo_root / "scripts/thinkpad_pico_services.sh"), "start"],
-                       check=True)
+        # Service placement belongs to the selected deployment topology. A
+        # read-only preflight must not start a second service on the wrong host.
         pico_check = (_conda_prefix(repo_root, config.conda_env)
                       + "timeout 20s python -m gear_sonic.scripts.check_pico_connection --timeout 10")
         result = subprocess.run(["bash", "-c", pico_check])
