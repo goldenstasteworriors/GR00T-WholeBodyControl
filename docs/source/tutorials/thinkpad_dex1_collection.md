@@ -1,5 +1,10 @@
 # ThinkPad 双 Dex1 采集
 
+**2026-10-19 拓扑复核：用户要求 PICO 直连机器人，恢复机器人端 DHCP/PICO 服务。
+下文“ThinkPad PICO”章节是此前误选的部署方案，不再作为当前启动指引。
+本次启动的 ThinkPad DHCP 和 PC Service 已停止，夹爪网页保留。
+最新阻塞项与验证范围见文末“机载 PICO 拓扑复核”。不要直接照搬旧机器人路径。**
+
 多场景夹爪配置、PICO 有线/无线服务和最新预检见本文末尾。
 
 当前入口默认录制 D435i 主视角和左右腕三路 RGB；最新配置、同步限制与直接编辑
@@ -505,3 +510,30 @@ PC Service 启动、重复启动复用和 SDK 连接本机60061成功；
 已用 ThinkPad sudo 验证启动：仅监听指定有线网卡、只提供静态租约、DNS关闭。
 用户选择稍后连接实物，尚未完成头显有线链路验收。
 没有启动身体控制或真实夹爪动作。
+
+## 机载 PICO 拓扑复核（2026-10-19）
+
+已重新阅读 data_collection.md、decoupled_vla_collection.md、vr_teleop_setup.md、
+onboard_pico_services.sh、机载 wrapper、当前 launcher/teleop/exporter、Dex1 与相机实现，
+并对照旧机载流程提交681ba4c、4145765及实际两台机器状态。
+
+| 项目 | 核查结果 |
+| --- | --- |
+| 旧部署拓扑 | 机器人 eth0 上 DHCP + ARM64 PC Service；PICO 指向192.168.123.164；旧机载 wrapper 在机器人采集并保存 |
+| 当前用户接线 | PICO USB转网口直连机器人；不应擅自改成 ThinkPad 作为服务端 |
+| 新机器人目录 | /home/unitree/data_collection/GR00T-WholeBodyControl 不存在；现有项目是 /home/unitree/GR00T-WholeBodyControl |
+| 新机器人部署 | 只有相机环境、相机服务和 Dex1 服务；无旧采集 Conda、ARM64 PICO runtime及其 Qt 环境 |
+| SDK 地址 | 项目绑定 init() 无远端参数；实际连接127.0.0.1:60061。只将头显改连机器人，ThinkPad SDK 不会自动读取机器人服务 |
+| 错误自动启动 | 上一轮预检强制启动 ThinkPad 服务，现已移除；预检仅检查数据，不选择服务部署位置 |
+| 重复 DHCP | 此前在 ThinkPad 新建的 DHCP/PC Service 已停止；没有关闭机器人现有热点服务 |
+| 旧脚本端口检测 | 机器人热点 dnsmasq 监听10.42.0.1，旧脚本检查任意UDP67会误拒绝有线DHCP；恢复时须限定实际绑定地址冲突 |
+| Dex1 场景 | default 保留用户的松开[5.4,5.4]、按下[2.5,2.5]；原JSON未删，命名场景正常 |
+| Dex1 输入链路 | 实际 PICO 指尖编码→手部IK→Dex1目标，无动作测试左右两侧及0.5阈值通过 |
+| 三路视角 | D435i主视角、JR0001左腕、JR0002右腕，左右通过实物遮挡确认 |
+| 相机同步 | 软件读取完成时间分组，最大30ms，不是曝光硬同步；实际独立组率尚未稳定30Hz |
+| 数据写盘 | 补测连续两条三视频episode保存通过；原生31维手部格式、场景名路径和四个实际角度元数据传递通过 |
+| 尚未验收 | 新机器人PICO实物有线链路、真实身体/PICO遥操作、真实夹爪开合及正式机器人episode |
+
+计算位置需明确后再恢复：若完全恢复旧机载方式，需在新机器人部署完整采集环境；
+若采集继续在 ThinkPad，需显式解决机器人 PC Service 与 ThinkPad SDK 的数据通路，
+不能仅修改IP或启动DHCP就声称已经打通。未自行安装 Conda、系统Qt或更改驱动。
