@@ -97,14 +97,16 @@ class TimestampSynchronizer:
                     break
                 frames.popleft()
                 self.dropped += 1
-        latest = None
         while all(self.buffers.values()):
             stamps = {mount: float(frames[0]["timestamps"][mount])
                       for mount, frames in self.buffers.items()}
             if max(stamps.values()) - min(stamps.values()) <= self.max_skew_s + 1e-9:
-                latest = {mount: frames.popleft() for mount, frames in self.buffers.items()}
+                # Preserve subsequent valid groups for the next publish. Draining
+                # all matches here needlessly halves output when camera phases
+                # cause two groups to become ready in the same server poll.
+                return {mount: frames.popleft() for mount, frames in self.buffers.items()}
             else:
                 oldest = min(stamps, key=stamps.get)
                 self.buffers[oldest].popleft()
                 self.dropped += 1
-        return latest
+        return None
