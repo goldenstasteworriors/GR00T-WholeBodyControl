@@ -15,7 +15,7 @@ def validate_profile(data):
         values = data.get(key)
         if not isinstance(values, (list, tuple)) or len(values) != 2:
             raise ValueError(f"{key} requires two angles: left, right")
-        if any(isinstance(v, (bool, str)) for v in values):
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in values):
             raise ValueError(f"{key} requires numeric angles")
         values = [float(v) for v in values]
         if any(not math.isfinite(v) or not 0 <= v <= 5.4 for v in values):

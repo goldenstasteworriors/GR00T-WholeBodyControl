@@ -392,6 +392,16 @@ class DecoupledVLACollectionLaunchConfig:
 def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: Path) -> None:
     errors = []
     if config.hand_type == "dex1":
+        import fcntl
+
+        for side in ("left", "right"):
+            lock_path = repo_root / ".runtime" / f"dex1-{side}.lock"
+            if lock_path.exists():
+                with lock_path.open("a") as command_lock:
+                    try:
+                        fcntl.flock(command_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        errors.append(f"Dex1 {side} is being controlled; stop the web/exercise control first")
         for name in ("dex1_released_q", "dex1_pressed_q"):
             values = getattr(config, name)
             if len(values) != 2 or any(not 0.0 <= value <= 5.4 for value in values):

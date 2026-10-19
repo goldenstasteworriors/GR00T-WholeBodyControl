@@ -68,6 +68,7 @@ class GripperControl:
             return dict(hands=states, enabled=self.owner is not None,
                         mine=self.owner == client, speed=self.speed, error=self.error,
                         profile=self.profile, profile_path=str(self.profile_path),
+                        profile_saved=self.profile_path.exists(),
                         collection_args=f"--hand-type dex1 --dex1-profile {self.profile_path}")
 
     def action(self, action, data, client):
@@ -214,7 +215,10 @@ def main():
             hands[side] = G1Dex1Hand(is_left=side == "left")
         control = GripperControl(hands, path)
         server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(control))
-        signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+        def interrupt_handler(*_args):
+            raise KeyboardInterrupt
+
+        signal.signal(signal.SIGTERM, interrupt_handler)
         print(f"Dex1 web: http://127.0.0.1:{args.port} (read-only until enabled)", flush=True)
         print(f"Collection profile: {path}", flush=True)
         try:
