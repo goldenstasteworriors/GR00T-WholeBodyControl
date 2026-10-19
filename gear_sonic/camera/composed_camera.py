@@ -28,6 +28,7 @@ import cv2  # noqa: F401 — imported early to avoid TSL segfault with camera SD
 import numpy as np
 
 from gear_sonic.camera.sensor import Sensor
+from gear_sonic.camera.synchronization import TimestampSynchronizer
 from gear_sonic.camera.sensor_server import (
     CameraMountPosition,
     ImageMessageSchema,
@@ -97,8 +98,14 @@ class ComposedCameraConfig:
     profile_interval: float = 1.0
     """Seconds between timing profile log lines."""
 
-    queue_size: int = 3
+    queue_size: int = 6
     """Per-camera image queue depth."""
+
+    sync_max_skew_ms: float = 30.0
+    """Maximum timestamp spread between cameras on this capture host, in ms."""
+
+    sync_max_age_ms: float = 250.0
+    """Discard older source frames before forming a camera group, in ms."""
 
     use_mjpeg: bool = False
     """Use on-device MJPEG encoding on OAK cameras to reduce USB bandwidth."""
@@ -141,6 +148,10 @@ class ComposedCameraSensor(Sensor, SensorServer):
         self._observation_spaces: dict[str, Any] = {}
 
         camera_configs = self._get_camera_configs()
+        self.synchronizer = TimestampSynchronizer(
+            tuple(camera_configs), config.sync_max_skew_ms / 1000,
+            config.sync_max_age_ms / 1000, config.queue_size,
+        )
 
         for _idx, (mount_position, camera_config) in enumerate(camera_configs.items()):
             camera_queue = queue.Queue(maxsize=config.queue_size)
@@ -178,9 +189,13 @@ class ComposedCameraSensor(Sensor, SensorServer):
                 print(f"[{mount_position}] Camera init timeout, proceeding anyway...")
 
         if config.run_as_server:
-            print("Waiting for all cameras to be ready before starting server...")
-            self._wait_for_all_cameras_ready(timeout=60.0)
-            self.start_server(config.port)
+            try:
+                print("Waiting for all cameras to be ready before starting server...")
+                self._wait_for_all_cameras_ready(timeout=60.0)
+                self.start_server(config.port)
+            except Exception:
+                self.close()
+                raise
 
     def _get_camera_configs(self) -> dict[str, dict]:
         camera_configs = {}
@@ -238,10 +253,7 @@ class ComposedCameraSensor(Sensor, SensorServer):
             if not camera_queue.empty() or mount_position in self._observation_spaces:
                 ready_cameras.add(mount_position)
         missing = expected_cameras - ready_cameras
-        print(
-            f"[WARNING] Timeout waiting for all cameras. "
-            f"Missing: {missing}. Starting anyway with: {ready_cameras}"
-        )
+        raise RuntimeError(f"Camera startup failed; missing frames from: {sorted(missing)}")
 
     def _camera_worker_wrapper(
         self,
@@ -440,20 +452,15 @@ class ComposedCameraSensor(Sensor, SensorServer):
                 raise RuntimeError(error_msg)
 
     def read(self):
-        """Read frames from all cameras. Returns None unless ALL cameras have frames."""
+        """Return a complete timestamp-aligned group, without reusing source frames."""
         self._check_for_errors()
-
-        expected_cameras = set(self.camera_queues.keys())
-        message = {}
-
         for mount_position, camera_queue in self.camera_queues.items():
-            frame = self._get_latest_from_queue(camera_queue)
-            if frame is not None:
-                message[mount_position] = frame
-
-        if set(message.keys()) == expected_cameras:
-            return message
-        return None
+            try:
+                while True:
+                    self.synchronizer.push(mount_position, camera_queue.get_nowait())
+            except queue.Empty:
+                pass
+        return self.synchronizer.pop(time.time())
 
     def _get_latest_from_queue(self, camera_queue: queue.Queue) -> dict[str, Any] | None:
         latest = None
@@ -475,7 +482,7 @@ class ComposedCameraSensor(Sensor, SensorServer):
                     camera_queue.get_nowait()
             except queue.Empty:
                 pass
-        if self.config.run_as_server:
+        if self.config.run_as_server and hasattr(self, "socket"):
             self.stop_server()
 
     def serialize(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -587,7 +594,7 @@ class ComposedCameraClientSensor(Sensor, SensorClient):
 
         print("Initialized composed camera client sensor")
 
-    def read(self, blocking: bool = False, **kwargs) -> dict[str, Any] | None:
+    def read(self, blocking: bool = False, new_only: bool = False, **kwargs) -> dict[str, Any] | None:
         self._start_time = time.time()
         current_time = time.time()
 
@@ -597,6 +604,9 @@ class ComposedCameraClientSensor(Sensor, SensorClient):
                 return None
         else:
             message = self.receive_message_nonblocking(timeout_ms=0)
+
+        if message is None and new_only:
+            return None
 
         if message is not None:
             self.idx += 1
@@ -744,8 +754,13 @@ if __name__ == "__main__":
 
     if config.run_as_server:
         composed_camera = ComposedCameraSensor(config)
-        print("Running composed camera server...")
-        composed_camera.run_server()
+        try:
+            print("Running composed camera server...")
+            composed_camera.run_server()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            composed_camera.close()
     else:
         composed_client = ComposedCameraClientSensor(server_ip="localhost", port=config.port)
         try:
