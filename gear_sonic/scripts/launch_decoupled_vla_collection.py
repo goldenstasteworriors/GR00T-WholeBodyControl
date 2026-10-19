@@ -225,6 +225,9 @@ class DecoupledVLACollectionLaunchConfig:
     preflight_only: bool = False
     """Check configuration and Dex1 DDS/camera connectivity without launching control."""
 
+    pico_preflight: bool = True
+    """Require live headset/controllers before launching real PICO control."""
+
     high_elbow_pose: bool = False
     """Use high elbow pose in robot model."""
 
@@ -742,6 +745,16 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         result = subprocess.run(["bash", "-c", check_cmd])
         if result.returncode:
             print("Dex1 preflight failed; collection was not started.")
+            raise SystemExit(result.returncode)
+    if (config.pico_preflight and not config.sim and config.enable_real_device
+            and "pico" in (config.body_control_device, config.hand_control_device)):
+        subprocess.run(["bash", str(repo_root / "scripts/thinkpad_pico_services.sh"), "start"],
+                       check=True)
+        pico_check = (_conda_prefix(repo_root, config.conda_env)
+                      + "timeout 20s python -m gear_sonic.scripts.check_pico_connection --timeout 10")
+        result = subprocess.run(["bash", "-c", pico_check])
+        if result.returncode:
+            print("PICO preflight failed; no robot control or dataset was started.")
             raise SystemExit(result.returncode)
     if config.preflight_only:
         print("Preflight passed; no control process or dataset started.")
