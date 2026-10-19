@@ -212,6 +212,9 @@ class DecoupledVLACollectionLaunchConfig:
     dex1_pressed_q: tuple[float, float] = (0.0, 0.0)
     """Left/right Dex1 angles (rad) with trigger pressed (>0.5)."""
 
+    dex1_profile: str = ""
+    """JSON saved by the gripper web tool; overrides the two Dex1 angle pairs."""
+
     preflight_only: bool = False
     """Check configuration and Dex1 DDS/camera connectivity without launching control."""
 
@@ -673,6 +676,20 @@ def _build_pico_data_args(config: DecoupledVLACollectionLaunchConfig) -> list[st
 def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     repo_root = Path(__file__).resolve().parent.parent.parent
     interface = config.interface or ("sim" if config.sim else "real")
+
+    if config.dex1_profile:
+        from gear_sonic.utils.dex1_profile import load_profile
+
+        if config.hand_type != "dex1":
+            raise ValueError("--dex1-profile requires --hand-type dex1")
+        profile_path = Path(config.dex1_profile).expanduser()
+        if not profile_path.is_absolute():
+            profile_path = repo_root / profile_path
+        profile = load_profile(profile_path)
+        config.dex1_released_q = tuple(profile["released_q"])
+        config.dex1_pressed_q = tuple(profile["pressed_q"])
+        print(f"Dex1 profile: {profile_path}; released={config.dex1_released_q}, "
+              f"pressed={config.dex1_pressed_q}", flush=True)
 
     _check_prerequisites(config, repo_root)
     if config.hand_type == "dex1":

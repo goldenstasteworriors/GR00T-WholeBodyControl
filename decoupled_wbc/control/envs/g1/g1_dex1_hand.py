@@ -107,14 +107,25 @@ class G1Dex1Hand:
                 time.sleep(0.02)
         self._state()
 
-    def close(self):
+    def release_control(self):
+        """Drop gains and command ownership while continuing to observe DDS."""
         try:
             if self.cmd_pub is not None:
                 motor = unitree_go_msg_dds__MotorCmd_()
                 motor.q = motor.dq = motor.tau = motor.kp = motor.kd = 0.0
-                self.cmd_pub.Write(MotorCmds_([motor]))
-                self.cmd_pub.Close()
+                try:
+                    self.cmd_pub.Write(MotorCmds_([motor]))
+                finally:
+                    self.cmd_pub.Close()
         finally:
-            self.state_sub.Close()
+            self.cmd_pub = None
+            self.last_command = None
             if self._command_lock is not None:
                 self._command_lock.close()
+                self._command_lock = None
+
+    def close(self):
+        try:
+            self.release_control()
+        finally:
+            self.state_sub.Close()
