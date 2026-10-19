@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import math
 import re
 import shlex
 import shutil
@@ -397,6 +398,10 @@ class DecoupledVLACollectionLaunchConfig:
 
 def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: Path) -> None:
     errors = []
+    if not math.isfinite(config.camera_sync_tolerance_ms) or config.camera_sync_tolerance_ms < 0:
+        errors.append("camera_sync_tolerance_ms must be finite and nonnegative")
+    if not math.isfinite(config.camera_max_hold_ms) or config.camera_max_hold_ms <= 0:
+        errors.append("camera_max_hold_ms must be finite and positive")
     if config.hand_type == "dex1":
         import fcntl
 

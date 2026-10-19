@@ -70,7 +70,7 @@ class TimestampSynchronizer:
         if not mounts or len(set(mounts)) != len(mounts):
             raise ValueError("Expected unique camera mounts")
         if (not math.isfinite(max_skew_s) or not math.isfinite(max_age_s)
-                or not 0 <= max_skew_s <= max_age_s or queue_size < 1):
+                or not 0 <= max_skew_s <= max_age_s or max_age_s <= 0 or queue_size < 1):
             raise ValueError("Expected 0 <= sync skew <= max age and positive queue size")
         self.buffers = {mount: deque(maxlen=queue_size) for mount in mounts}
         self.last_seen = {mount: float("-inf") for mount in mounts}
