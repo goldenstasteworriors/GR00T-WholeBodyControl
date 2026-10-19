@@ -4,7 +4,37 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import tempfile
+
+
+DEFAULT_PROFILES_DIR = ".runtime/dex1_profiles"
+
+
+def preset_path(directory, name):
+    """Resolve a named preset without allowing paths outside its directory."""
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name):
+        raise ValueError("场景名需为1–64位字母、数字、下划线或连字符")
+    directory = Path(directory).resolve()
+    path = directory / f"{name}.json"
+    if path.is_symlink():
+        raise ValueError("场景配置不能是符号链接")
+    return path
+
+
+def list_presets(directory):
+    directory = Path(directory)
+    if not directory.exists():
+        return []
+    names = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            preset_path(directory, path.stem)
+        except ValueError:
+            continue
+        if path.is_file():
+            names.append(path.stem)
+    return names
 
 
 def validate_profile(data):

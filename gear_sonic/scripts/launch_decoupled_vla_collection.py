@@ -216,6 +216,12 @@ class DecoupledVLACollectionLaunchConfig:
     dex1_profile: str = ""
     """JSON saved by the gripper web tool; overrides the two Dex1 angle pairs."""
 
+    dex1_preset: str = ""
+    """Named gripper preset, for example red_bottle; exclusive with dex1_profile."""
+
+    dex1_profiles_dir: str = ".runtime/dex1_profiles"
+    """Directory holding named Dex1 JSON presets, relative to this repository."""
+
     preflight_only: bool = False
     """Check configuration and Dex1 DDS/camera connectivity without launching control."""
 
@@ -699,6 +705,16 @@ def _build_pico_data_args(config: DecoupledVLACollectionLaunchConfig) -> list[st
 def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     repo_root = Path(__file__).resolve().parent.parent.parent
     interface = config.interface or ("sim" if config.sim else "real")
+
+    if config.dex1_preset:
+        from gear_sonic.utils.dex1_profile import preset_path
+
+        if config.dex1_profile:
+            raise ValueError("Choose either --dex1-preset or --dex1-profile")
+        directory = Path(config.dex1_profiles_dir).expanduser()
+        if not directory.is_absolute():
+            directory = repo_root / directory
+        config.dex1_profile = str(preset_path(directory, config.dex1_preset))
 
     if config.dex1_profile:
         from gear_sonic.utils.dex1_profile import load_profile
