@@ -501,6 +501,7 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
 实际前端 JavaScript 通过模拟DOM与HTTP后端测试（未完成浏览器布局验收）。
 真实 ThinkPad 的 default 场景加载、身体/双Dex1/三相机只读预检通过。
 PC Service 启动、重复启动复用和 SDK 连接本机60061成功；
-当前未收到头显数据，检查正确返回未就绪。DHCP 参数语法检查通过；
-ThinkPad sudo 密码验证未通过，尚未完成 DHCP 启动和实物有线链路验收。
+当前未收到头显数据，检查正确返回未就绪。DHCP 参数语法检查通过，
+已用 ThinkPad sudo 验证启动：仅监听指定有线网卡、只提供静态租约、DNS关闭。
+用户选择稍后连接实物，尚未完成头显有线链路验收。
 没有启动身体控制或真实夹爪动作。
