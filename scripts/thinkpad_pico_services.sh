@@ -69,12 +69,15 @@ start_wired() {
         fi
         sudo -v
         sudo dnsmasq --conf-file=/dev/null --port=0 --no-resolv --no-hosts \
+            --user="$(id -un)" --group="$(id -gn)" \
             --interface="$INTERFACE" --except-interface=lo --bind-interfaces \
             --dhcp-range=192.168.123.0,static,255.255.255.0 \
             --dhcp-host="${PICO_MAC},set:pico,${PICO_IP}" --dhcp-ignore=tag:!pico \
             --dhcp-option=3 --dhcp-option=6 \
             --dhcp-leasefile="${STATE_DIR}/dnsmasq.leases" --pid-file="$PID_FILE" \
             --log-dhcp --log-facility="${STATE_DIR}/dnsmasq.log"
+        sleep 1
+        dhcp_pid >/dev/null || { echo "DHCP failed; inspect ${STATE_DIR}/dnsmasq.log" >&2; exit 1; }
     fi
     start_service
     status

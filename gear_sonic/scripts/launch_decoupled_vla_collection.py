@@ -653,6 +653,8 @@ def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str
     ]
     if config.dataset_name:
         args += ["--dataset-name", config.dataset_name]
+    if config.hand_type == "dex1":
+        args += ["--dex1-preset", config.dex1_preset, "--dex1-profile", config.dex1_profile]
     return args
 
 

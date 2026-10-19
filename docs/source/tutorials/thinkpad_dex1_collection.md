@@ -1,5 +1,7 @@
 # ThinkPad 双 Dex1 采集
 
+多场景夹爪配置、PICO 有线/无线服务和最新预检见本文末尾。
+
 当前入口默认录制 D435i 主视角和左右腕三路 RGB；最新配置、同步限制与直接编辑
 夹爪 JSON 的方法见本文末尾的“三相机同步采集”章节。下方单路相机测量为历史记录。
 
@@ -382,3 +384,123 @@ Parquet 为30行，记录的最大组内时间差29.451ms。只读身体、双 D
 **尚未达到稳定30个独立同步组/秒**；采样频率不应被理解为独立相机组频率。
 同步器与采集端验证覆盖缺路、陈旧/冻结时间戳、异常帧、组内时间差和断流后的结束保存。
 没有启动身体控制、真实夹爪动作或 PICO 正式录制。
+
+## 多场景夹爪配置与 ThinkPad PICO（2026-10-19）
+
+网页新增“已存场景”和“保存名称”。例如保存为 red_bottle、middle_beaker、
+small_cup；每组独立保存松开/按下扳机的左右四个角度。换名称可另存，加载已有
+场景后可以更新；加载和保存均不发送动作，试位置仍需启用控制并单独点击。
+切换场景不会热更新已运行的采集进程。旧 --dex1-profile 文件方式继续兼容，
+不能与 --dex1-preset 同时使用。
+
+命名配置目录：
+
+```text
+/home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard/.runtime/dex1_profiles
+```
+
+当前用户已有配置已复制为 default.json：松开[5.4,5.4]，按下[2.5,2.5]。
+原 dex1_gripper_profile.json 保留。其它场景需按实测另存，没有预设未经标定的角度。
+各 JSON 仍采用 version=1、unit=rad、released_q、pressed_q 格式；
+也可直接编辑目录中的不同 JSON 文件。场景名只允许字母、数字、下划线和连字符。
+
+采集选场景示例（单行参数，不与 --dex1-profile 同用）：
+
+```bash
+--hand-type dex1 --dex1-preset default
+```
+
+### PICO 的服务与连接位置
+
+本流程在 ThinkPad 上运行 PC Service 和采集，而不是在机器人上运行 PICO 服务。
+PicoStreamer 原本会自动启动或复用本机 /opt/apps/roboticsservice/RoboticsServiceProcess；
+--no-pico-data-streamer 只关闭可选的附加姿态数据进程，不关闭遥操作或扳机输入。
+本轮增加独立服务命令和只读头显检查，并在真实 PICO 采集前默认要求检查通过，
+避免仅机器人/相机在线就启动身体控制。--preflight-only 现在也检查 PICO；
+--no-pico-preflight 仅供不启动控制的独立诊断使用。
+
+[官方连接说明](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client)
+要求头显与 PC 网络互通、启动 PC Service，在 XRoboToolkit 中连接并开启 Send。
+Wi-Fi 和有线以太网都走这一网络链路；普通 USB 充电/数据线不属于本流程的有线方式。
+
+推荐有线拓扑：
+
+```text
+PICO USB-C → USB转网口 → 同网段交换机/机器人同网段网口
+ThinkPad 有线网口 → 同一网络（192.168.123.222）
+机器人 → 同一网络（192.168.123.164）
+PICO 应用 PC Service → 192.168.123.222
+```
+
+接机器人网口时必须确认该端口与上述网段实际互通，不是所有接口都默认互通。
+不要给 PICO 填192.168.123.164；那是机载 PICO 服务流程，与本次 ThinkPad 采集不同。
+
+先在 ThinkPad 项目目录运行，每行一条命令：
+
+```bash
+bash scripts/thinkpad_pico_services.sh start-wired
+bash scripts/thinkpad_pico_services.sh status
+```
+
+start-wired 需要 ThinkPad sudo 密码。它不修改网卡地址、路由、NetworkManager、
+系统配置文件，只运行项目管理的 DHCP 和 PC Service。DHCP 仅向原 PICO 转网口
+MAC dc:04:5a:1d:93:3b 分配192.168.123.200，不提供默认网关或DNS。
+更换转接器时必须按实际MAC设置 PICO_ETH_MAC，不应凭型号猜测。
+
+如果使用 Wi-Fi，只启动服务，不需要上述项目 DHCP：
+
+```bash
+bash scripts/thinkpad_pico_services.sh start
+```
+
+头显与 ThinkPad 连同一可互通 Wi-Fi，PICO 的 PC Service 地址填 ThinkPad 的
+Wi-Fi IPv4（本次读取为10.7.39.74，可能变化，以 status 为准）。
+校园网可能隔离客户端，同一SSID不能保证可互通。
+
+PICO 应用连接后显示 WORKING，开启头显、左右手柄 tracking 和 Send。
+只读验证命令（不启动机器人控制）：
+
+```bash
+python -m gear_sonic.scripts.check_pico_connection --timeout 10
+```
+
+出现 PICO OK 才说明收到持续更新的头显和双手柄姿态及有效扳机值。
+进程存在不等于头显已连接。不要同时连接机载服务和 ThinkPad 服务。
+
+服务停止命令，只在结束采集后执行：
+
+```bash
+bash scripts/thinkpad_pico_services.sh stop
+```
+
+### 多场景三相机采集
+
+下面反斜杠表示跨行续写；先保存自己的场景，再选对应名称：
+
+```bash
+python gear_sonic/scripts/launch_decoupled_vla_collection.py \
+  --interface enx00e04c36c4e8 \
+  --hand-type dex1 \
+  --dex1-preset default \
+  --camera-host 192.168.123.164 \
+  --record-wrist-cameras \
+  --camera-sync-tolerance-ms 30 \
+  --camera-max-hold-ms 250 \
+  --data-exporter-frequency 30 \
+  --task-prompt "grab the red bottle" \
+  --dataset-name pour_water_between_beakers_dex1_three_camera \
+  --hand-task grab_middle_beaker \
+  --no-pico-data-streamer \
+  --preflight-only
+```
+
+预检通过后删除最后一行和上一行末尾反斜杠，才会启动真实控制。
+场景名称及解析后的 JSON 路径保存进 exporter 元数据，控制元数据保留实际四个角度。
+
+本轮验收：多场景保存、切换、更新、禁止误覆盖其它场景、名称路径校验及无动作通过；
+实际前端 JavaScript 通过模拟DOM与HTTP后端测试（未完成浏览器布局验收）。
+真实 ThinkPad 的 default 场景加载、身体/双Dex1/三相机只读预检通过。
+PC Service 启动、重复启动复用和 SDK 连接本机60061成功；
+当前未收到头显数据，检查正确返回未就绪。DHCP 参数语法检查通过；
+ThinkPad sudo 密码验证未通过，尚未完成 DHCP 启动和实物有线链路验收。
+没有启动身体控制或真实夹爪动作。

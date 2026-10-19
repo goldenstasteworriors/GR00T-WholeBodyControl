@@ -84,6 +84,12 @@ class DecoupledVLADataExporterConfig:
     hand_type: str = "inspire"
     """Physical hand schema: inspire (41 DOF) or dex1 (31 DOF)."""
 
+    dex1_preset: str = ""
+    """Selected gripper preset name, stored for dataset provenance."""
+
+    dex1_profile: str = ""
+    """Resolved gripper JSON path; actual angles come from the control configuration."""
+
     task_prompt: str = "demo"
     """Language task prompt stored in the LeRobot dataset."""
 
