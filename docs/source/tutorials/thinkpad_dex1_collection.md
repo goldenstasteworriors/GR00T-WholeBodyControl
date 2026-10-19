@@ -1,5 +1,8 @@
 # ThinkPad 双 Dex1 采集
 
+当前入口默认录制 D435i 主视角和左右腕三路 RGB；最新配置、同步限制与直接编辑
+夹爪 JSON 的方法见本文末尾的“三相机同步采集”章节。下方单路相机测量为历史记录。
+
 工作区：`/home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard`。
 新机器人 DDS 地址为 `192.168.123.164`；ThinkPad 的有线网卡为
 `enx00e04c36c4e8`，地址为 `192.168.123.222`。不要继续使用旧的
@@ -288,3 +291,94 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
 后台覆盖速度斜坡、控制权、反馈过期和1秒心跳超时停止。已检查桌面及390像素宽布局。
 保存的测试配置实际经过身体/双夹爪/相机预检，并验证占用夹爪时采集提前拒绝启动。
 验证过程没有对真实机器人发送夹爪或身体动作，也没有保存示例值为用户的正式配置。
+
+## 三相机同步采集与直接填写夹爪 JSON（2026-10-19）
+
+可以直接在 ThinkPad 编辑配置，不必经过网页。下面每行一条命令：
+
+```bash
+cd /home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard
+mkdir -p .runtime
+nano .runtime/dex1_gripper_profile.json
+```
+
+文件内容示例（整体复制；数值请替换为你测试得到的角度）：
+
+```json
+{
+  "version": 1,
+  "unit": "rad",
+  "released_q": [4.2, 4.4],
+  "pressed_q": [0.8, 0.9]
+}
+```
+
+每个数组第一项是左夹爪，第二项是右夹爪。released_q 对应松开扳机，
+pressed_q 对应按下扳机；允许范围为0至5.4 rad，数值越大越打开。
+JSON 不支持注释，最后一项后不能加逗号。nano 中按 Ctrl+O、回车保存，Ctrl+X 退出。
+文件在启动时读取；修改后需重启采集才能生效。上面的四个角度只是格式示例，
+没有写入用户的正式配置，也不代表实物抓取标定结果。
+
+三路相机全部连接机器人，已通过遮挡左腕镜头确认左右：
+
+| 数据视角 | 设备 | 固定 USB 视频接口 |
+| --- | --- | --- |
+| ego_view | D435i 彩色 | 254843062005 / video-index0 |
+| left_wrist | JR0001 | JR0001 / video-index0 |
+| right_wrist | JR0002 | JR0002 / video-index0 |
+
+机器人上的 sonic_d435i_camera.service 已更新为三路服务，端口仍为5555。
+服务按机器人同一主机时钟将帧分组，组内时间差不得超过30ms；
+采集端必须收到完整、持续更新的三路 RGB 组，才能写入数据。
+缺一路、格式错误或接收后超过250ms没有新组时暂停添加帧，恢复后继续。
+冻结时间戳不会刷新有效期。服务器也丢弃超过250ms的源帧。
+
+同步时间戳是 USB 图像在主机读取完成的时间，**不是传感器曝光时间**。
+这是软件时间同步，不是硬件触发、几何标定或严格的相机与身体状态曝光同步。
+机器人与 ThinkPad 时钟存在偏差，因此接收新鲜度使用 ThinkPad 的单调时钟，
+不直接相减两台机器的墙上时钟。
+
+完整三路预检命令如下；反斜杠表示跨行续写。先保存自己的夹爪配置：
+
+```bash
+python gear_sonic/scripts/launch_decoupled_vla_collection.py \
+  --interface enx00e04c36c4e8 \
+  --hand-type dex1 \
+  --dex1-profile .runtime/dex1_gripper_profile.json \
+  --camera-host 192.168.123.164 \
+  --record-wrist-cameras \
+  --camera-sync-tolerance-ms 30 \
+  --camera-max-hold-ms 250 \
+  --data-exporter-frequency 30 \
+  --task-prompt "grab the red bottle" \
+  --dataset-name pour_water_between_beakers_dex1_three_camera \
+  --hand-task grab_middle_beaker \
+  --no-pico-data-streamer \
+  --preflight-only
+```
+
+预检通过后，删除最后一行并去掉上一行末尾的反斜杠，即可正式采集。
+网页须先停止夹爪控制。默认不覆盖已有数据；新任务使用新的 dataset-name。
+record-wrist-cameras 已默认开启，显式写出便于检查；兼容旧单路采集时才使用
+--no-record-wrist-cameras。
+
+三路预览命令（单行运行，不发送机器人动作）：
+
+```bash
+python -m gear_sonic.scripts.run_camera_viewer --camera-host 192.168.123.164 --camera-port 5555
+```
+
+每个样本保存 observation.images.ego_view、observation.images.left_wrist、
+observation.images.right_wrist 三张 RGB，分别编码为三条视频；不拼接成单张图片。
+此外保存 observation.camera_timestamps（三路顺序为主视角、左腕、右腕）、
+observation.camera_sync_skew_ms 和 observation.camera_receive_age_ms，方便检查同步质量。
+身体与 Dex1 的 state/action 仍是31维。源相机配置30Hz，采样30Hz时允许短暂复用
+一整组三图，不会将不同同步组的左右图拼到一起；连续视频帧不保证都是独立曝光。
+
+验收：三路真实图像各30帧写入同一 episode，三条 MP4 均可解码为30帧640×480；
+Parquet 为30行，记录的最大组内时间差29.451ms。只读身体、双 Dex1、三路相机的
+启动器预检通过。修复同步器一次取出多组却只发布最后一组的问题后，20秒实测
+375个不同同步组，约18.74组/秒，最大组内时间差29.761ms，无无效组。
+**尚未达到稳定30个独立同步组/秒**；采样频率不应被理解为独立相机组频率。
+同步器与采集端验证覆盖缺路、陈旧/冻结时间戳、异常帧、组内时间差和断流后的结束保存。
+没有启动身体控制、真实夹爪动作或 PICO 正式录制。
