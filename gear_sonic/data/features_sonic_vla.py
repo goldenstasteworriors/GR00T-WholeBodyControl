@@ -466,6 +466,22 @@ def get_wrist_camera_features() -> dict:
     }
 
 
+def get_camera_sync_features() -> dict:
+    """Auxiliary audit fields; do not change the robot state/action dimensions."""
+    return {
+        "observation.camera_timestamps": {
+            "dtype": "float64", "shape": (3,),
+            "names": ["ego_view", "left_wrist", "right_wrist"],
+        },
+        "observation.camera_sync_skew_ms": {
+            "dtype": "float32", "shape": (1,), "names": ["inter_view_skew_ms"],
+        },
+        "observation.camera_receive_age_ms": {
+            "dtype": "float32", "shape": (1,), "names": ["receive_monotonic_age_ms"],
+        },
+    }
+
+
 def get_wrist_camera_modality_config() -> dict:
     """Modality config entries for optional wrist cameras."""
     return {

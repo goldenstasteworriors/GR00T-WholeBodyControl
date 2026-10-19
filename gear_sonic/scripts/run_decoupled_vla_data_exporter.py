@@ -44,6 +44,7 @@ from decoupled_wbc.control.main.constants import ROBOT_CONFIG_TOPIC, STATE_TOPIC
 from decoupled_wbc.control.utils.keyboard_dispatcher import KeyboardListenerSubscriber
 from decoupled_wbc.control.utils.ros_utils import ROSMsgSubscriber
 from gear_sonic.camera.composed_camera import ComposedCameraClientSensor
+from gear_sonic.camera.synchronization import ImageBundleBuffer, THREE_CAMERA_MOUNTS
 from gear_sonic.data.exporter import Gr00tDataExporter
 from gear_sonic.data.features_sonic_vla import (
     get_features_sonic_dex1,
@@ -52,6 +53,7 @@ from gear_sonic.data.features_sonic_vla import (
     get_g1_robot_model,
     get_modality_config_sonic_inspire6,
     get_wrist_camera_features,
+    get_camera_sync_features,
     get_wrist_camera_modality_config,
 )
 from gear_sonic.utils.data_collection.episode_state import EpisodeState
@@ -136,8 +138,14 @@ class DecoupledVLADataExporterConfig:
     require_sonic_pose: bool = False
     """When True, skip recording frames until a fresh PICO pose message is available."""
 
-    record_wrist_cameras: bool = False
-    """Record left_wrist/right_wrist camera streams if the camera server provides them."""
+    record_wrist_cameras: bool = True
+    """Require ego_view + both wrist images in every validated camera group."""
+
+    camera_sync_tolerance_ms: float = 30.0
+    """Maximum timestamp spread across the three camera views."""
+
+    camera_max_hold_ms: float = 250.0
+    """Stop recording on camera disconnect after this receive-monotonic hold time."""
 
     text_to_speech: bool = False
     """Use optional text-to-speech voice feedback; local tone cues are separate."""
@@ -487,6 +495,11 @@ class DecoupledVLADataCollector:
 
         self.latest_proprio_msg: dict | None = None
         self.latest_image_msg: dict | None = None
+        self._camera_buffer = ImageBundleBuffer(
+            THREE_CAMERA_MOUNTS if config.record_wrist_cameras else ("ego_view",),
+            config.camera_sync_tolerance_ms / 1000, config.camera_max_hold_ms / 1000,
+        )
+        self._last_camera_warning = float("-inf")
         self.latest_sonic_msg: dict | None = None
         self.latest_planner_msg: dict | None = None
         self.current_stream_mode = 0
@@ -1145,6 +1158,16 @@ class DecoupledVLADataCollector:
                         f"not found. Available images: {list(images.keys())}"
                     )
                 frame_data[feature_name] = images[image_key]
+        if self.config.record_wrist_cameras:
+            stamps = self.latest_image_msg["timestamps"]
+            values = np.array([stamps[mount] for mount in THREE_CAMERA_MOUNTS], dtype=np.float64)
+            frame_data["observation.camera_timestamps"] = values
+            frame_data["observation.camera_sync_skew_ms"] = np.array(
+                [(values.max() - values.min()) * 1000], dtype=np.float32
+            )
+            frame_data["observation.camera_receive_age_ms"] = np.array(
+                [(time.monotonic() - self._camera_buffer.received_at) * 1000], dtype=np.float32
+            )
 
     def _finalize_frame(self, t_start: float) -> bool:
         if self._episode_state.get_state() == self._episode_state.NEED_TO_SAVE:
@@ -1160,11 +1183,14 @@ class DecoupledVLADataCollector:
     def _add_data_frame(self) -> bool:
         t_start = time.monotonic()
 
-        if self.latest_proprio_msg is None or self.latest_image_msg is None:
-            return False
-
         if self._episode_state.get_state() != self._episode_state.RECORDING:
             return self._finalize_frame(t_start)
+
+        if self.latest_proprio_msg is None or self._camera_buffer.current(time.monotonic()) is None:
+            if time.monotonic() - self._last_camera_warning > 2:
+                print("[Camera] Waiting for a complete, fresh, synchronized image group", flush=True)
+                self._last_camera_warning = time.monotonic()
+            return False
 
         if self.config.require_sonic_pose:
             _, _, smpl_fresh = self._fresh_sonic_pose()
@@ -1217,9 +1243,15 @@ class DecoupledVLADataCollector:
                         self._poll_sonic_zmq_messages()
 
                     with self.telemetry.timer("poll_image"):
-                        img_msg = self._image_subscriber.read()
+                        img_msg = self._image_subscriber.read(new_only=True)
                         if img_msg is not None:
-                            self.latest_image_msg = img_msg
+                            try:
+                                self._camera_buffer.update(img_msg, time.monotonic())
+                            except (ValueError, TypeError) as exc:
+                                if time.monotonic() - self._last_camera_warning > 2:
+                                    print(f"[Camera] Rejected image group: {exc}", flush=True)
+                                    self._last_camera_warning = time.monotonic()
+                        self.latest_image_msg = self._camera_buffer.current(time.monotonic())
 
                     with self.telemetry.timer("check_recording_commands"):
                         self._check_recording_commands()
@@ -1273,6 +1305,7 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
 
         if config.record_wrist_cameras:
             dataset_features.update(get_wrist_camera_features())
+            dataset_features.update(get_camera_sync_features())
             wrist_modality = get_wrist_camera_modality_config()
             for key, value in wrist_modality.items():
                 modality_config.setdefault(key, {}).update(value)
@@ -1289,6 +1322,14 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
             },
             "schema_compatibility": "g1_dex1_31dof" if config.hand_type == "dex1" else "g1_inspire_41dof",
             "hand_type": config.hand_type,
+            "camera_sync": {
+                "views": list(THREE_CAMERA_MOUNTS) if config.record_wrist_cameras else ["ego_view"],
+                "timestamp_clock": "capture_host_wall_time",
+                "max_skew_ms": config.camera_sync_tolerance_ms,
+                "max_receive_hold_ms": config.camera_max_hold_ms,
+                "method": "bounded_software_timestamp_grouping",
+                "usb_timestamp_semantics": "host_read_completion_not_exposure",
+            },
             "hand_position_unit": "rad" if config.hand_type == "dex1" else "normalized",
             "hand_data_mode": "left_only" if config.left_hand_only else "both",
             "active_hands": ["left"] if config.left_hand_only else ["left", "right"],

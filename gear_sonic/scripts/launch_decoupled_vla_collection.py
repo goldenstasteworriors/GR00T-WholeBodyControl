@@ -314,8 +314,14 @@ class DecoupledVLACollectionLaunchConfig:
     require_sonic_pose: bool = False
     """Skip frames until fresh PICO/SMPL ZMQ pose is available."""
 
-    record_wrist_cameras: bool = False
-    """Record wrist camera streams if provided by the camera server."""
+    record_wrist_cameras: bool = True
+    """Require synchronized ego_view, left_wrist and right_wrist images."""
+
+    camera_sync_tolerance_ms: float = 30.0
+    """Maximum inter-view timestamp spread accepted by preflight and exporter."""
+
+    camera_max_hold_ms: float = 250.0
+    """Maximum time to retain a received camera group when no new group arrives."""
 
     text_to_speech: bool = False
     """Enable optional voice feedback in the exporter; tone cues remain enabled by default."""
@@ -607,6 +613,8 @@ def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str
         config.camera_host,
         "--camera-port",
         str(config.camera_port),
+        "--camera-sync-tolerance-ms", str(config.camera_sync_tolerance_ms),
+        "--camera-max-hold-ms", str(config.camera_max_hold_ms),
         "--sonic-zmq-host",
         config.sonic_zmq_host,
         "--sonic-zmq-port",
@@ -707,6 +715,8 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
             "python", "gear_sonic/scripts/check_dex1_connection.py",
             "--network", interface, "--camera-host", config.camera_host,
             "--camera-port", str(config.camera_port),
+            "--camera-sync-tolerance-ms", str(config.camera_sync_tolerance_ms),
+            *_bool_arg("record-wrist-cameras", config.record_wrist_cameras),
         ])
         result = subprocess.run(["bash", "-c", check_cmd])
         if result.returncode:

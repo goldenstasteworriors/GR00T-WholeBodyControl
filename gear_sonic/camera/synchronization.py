@@ -28,6 +28,41 @@ def validate_rgb_bundle(data, mounts, max_skew_s, shape=(480, 640, 3)):
     return tuple(stamps)
 
 
+class ImageBundleBuffer:
+    """Hold a validated group briefly, using receive monotonic time for freshness.
+
+    Capture and receiver wall clocks need not agree. Repeated capture timestamps
+    do not refresh this buffer's age.
+    """
+
+    def __init__(self, mounts, max_skew_s=0.03, max_hold_s=0.25):
+        if (not math.isfinite(max_skew_s) or not math.isfinite(max_hold_s)
+                or max_skew_s < 0 or max_hold_s <= 0):
+            raise ValueError("Invalid camera skew or hold limit")
+        self.mounts = tuple(mounts)
+        self.max_skew_s = max_skew_s
+        self.max_hold_s = max_hold_s
+        self.latest = None
+        self.stamps = None
+        self.received_at = float("-inf")
+
+    def update(self, data, now):
+        try:
+            stamps = validate_rgb_bundle(data, self.mounts, self.max_skew_s)
+        except (ValueError, TypeError):
+            self.latest = None
+            raise
+        if self.stamps is not None and not all(a > b for a, b in zip(stamps, self.stamps)):
+            return False
+        self.latest = data
+        self.stamps = stamps
+        self.received_at = now
+        return True
+
+    def current(self, now):
+        return self.latest if now - self.received_at <= self.max_hold_s else None
+
+
 class TimestampSynchronizer:
     """Consume each source once, retaining incomplete groups across polls."""
 
