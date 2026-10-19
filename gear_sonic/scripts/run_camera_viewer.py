@@ -127,7 +127,7 @@ def main(config: CameraViewerConfig):
             t_start = time.monotonic()
 
             read_start = time.perf_counter()
-            image_data = client.read(blocking=False)
+            image_data = client.read(blocking=False, new_only=True)
             read_ms = (time.perf_counter() - read_start) * 1000.0
             if image_data is None or not image_data.get("images"):
                 elapsed = time.monotonic() - t_start

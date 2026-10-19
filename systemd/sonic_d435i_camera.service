@@ -1,5 +1,5 @@
 [Unit]
-Description=SONIC onboard D435i RGB camera (ZMQ 5555)
+Description=SONIC synchronized D435i and dual wrist RGB cameras (ZMQ 5555)
 After=network.target
 
 [Service]
@@ -7,7 +7,7 @@ Type=simple
 User=unitree
 WorkingDirectory=/home/unitree/GR00T-WholeBodyControl
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/unitree/GR00T-WholeBodyControl/.venv_camera/bin/python -m gear_sonic.camera.composed_camera --ego-view-camera usb --ego-view-device-id /dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_435i_Intel_R__RealSense_TM__Depth_Camera_435i_254843062005-video-index0 --fps 30 --port 5555 --profile-timing --profile-interval 10
+ExecStart=/home/unitree/GR00T-WholeBodyControl/.venv_camera/bin/python -m gear_sonic.camera.composed_camera --ego-view-camera usb --ego-view-device-id /dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_435i_Intel_R__RealSense_TM__Depth_Camera_435i_254843062005-video-index0 --left-wrist-camera usb --left-wrist-device-id /dev/v4l/by-id/usb-JR0001_JR0001_JR0001-video-index0 --right-wrist-camera usb --right-wrist-device-id /dev/v4l/by-id/usb-JR0002_JR0002_JR0002-video-index0 --fps 30 --port 5555 --sync-max-skew-ms 30 --sync-max-age-ms 250 --profile-timing --profile-interval 10
 Restart=on-failure
 RestartSec=5
 

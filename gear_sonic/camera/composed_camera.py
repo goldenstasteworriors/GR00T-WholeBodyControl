@@ -250,7 +250,7 @@ class ComposedCameraSensor(Sensor, SensorServer):
 
         ready_cameras = set()
         for mount_position, camera_queue in self.camera_queues.items():
-            if not camera_queue.empty() or mount_position in self._observation_spaces:
+            if not camera_queue.empty():
                 ready_cameras.add(mount_position)
         missing = expected_cameras - ready_cameras
         raise RuntimeError(f"Camera startup failed; missing frames from: {sorted(missing)}")
@@ -462,15 +462,6 @@ class ComposedCameraSensor(Sensor, SensorServer):
                 pass
         return self.synchronizer.pop(time.time())
 
-    def _get_latest_from_queue(self, camera_queue: queue.Queue) -> dict[str, Any] | None:
-        latest = None
-        try:
-            while True:
-                latest = camera_queue.get_nowait()
-        except queue.Empty:
-            pass
-        return latest
-
     def close(self):
         for shutdown_event in self.shutdown_events.values():
             shutdown_event.set()
@@ -534,7 +525,9 @@ class ComposedCameraSensor(Sensor, SensorServer):
                         if timestamps
                         else 0.0
                     )
-                    profile_samples.append((read_ms, serialize_ms, send_ms, max_age_ms))
+                    sync_skew_ms = ((max(timestamps.values()) - min(timestamps.values())) * 1000
+                                    if timestamps else 0.0)
+                    profile_samples.append((read_ms, serialize_ms, send_ms, max_age_ms, sync_skew_ms))
 
                 if idx % 10 == 0:
                     print(f"Image sending FPS: {10 / (time.monotonic() - fps_print_time):.2f}")
@@ -552,7 +545,9 @@ class ComposedCameraSensor(Sensor, SensorServer):
                             f"serialize={arr[:, 1].mean():.2f}ms "
                             f"send={arr[:, 2].mean():.2f}ms "
                             f"image_age={arr[:, 3].mean():.1f}ms "
-                            f"image_age_max={arr[:, 3].max():.1f}ms"
+                            f"image_age_max={arr[:, 3].max():.1f}ms "
+                            f"sync_skew_max={arr[:, 4].max():.1f}ms "
+                            f"sync_dropped={self.synchronizer.dropped}"
                         )
                     else:
                         print("[CameraServerProfile] no complete camera messages")
