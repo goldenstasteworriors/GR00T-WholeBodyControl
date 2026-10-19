@@ -209,3 +209,82 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
 上述自定义角度完整预检通过；三个实际采集组件的导入、完整生成参数和 CLI 解析通过；
 无硬件命令的模拟验证覆盖自定义角度映射、0.18 rad限幅、无效目标/过期反馈拒绝、
 同侧命令互斥和退出撤增益。尚未执行夹爪真实动作及完整 tmux 采集录制验收。
+
+## 网页调节夹爪并保存采集配置
+
+网页后台运行在连接机器人网线的 ThinkPad 上；可以使用 ThinkPad 本机浏览器，
+也可以从当前工作站通过 SSH 转发访问。后台仅监听本机回环地址，不需要安装新的 Web 依赖。
+本次已在 ThinkPad 的 `dex1_gripper_web` tmux 会话启动，默认只读。
+
+浏览器地址：
+
+```text
+http://127.0.0.1:8766
+```
+
+如果使用当前工作站而不是 ThinkPad 浏览器，先建立下面的 SSH 转发。
+这是一个持续运行的命令，保留终端；本次已经建立转发时无需重复执行：
+
+```bash
+ssh -N -L 127.0.0.1:8766:127.0.0.1:8766 -- thinkpad
+```
+
+今后需要重新启动网页后台时，在 ThinkPad 逐行运行下面命令。
+如果现有网页服务仍在运行，可以直接使用，不要重复启动同一端口。
+
+```bash
+cd /home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard
+conda activate decoupled_vla_collection
+source "$CONDA_PREFIX/setup.bash"
+export PYTHONPATH="$PWD"
+python -m gear_sonic.scripts.run_dex1_gripper_web --network enx00e04c36c4e8 --port 8766
+```
+
+操作顺序：
+
+1. 确认实际反馈在线，退出正在运行的采集控制。清空夹爪周围后，点击“启用夹爪控制”。
+   启用时以实际角度为目标，不跳到默认开口。
+2. 分别拖动左右滑块或填写目标角度，点击该侧“应用目标”。默认以0.3 rad/s缓慢移动。
+   拖动滑块或改数字本身不会发送动作。页面的大数字是实际反馈，调节框是目标值。
+3. 找到合适的松开位置后，在表格“松开扳机”一行，分别点击两侧“记下实际位置”；
+   找到合适的夹持位置后，在“按下扳机”一行同样记录。四个角度也可以直接编辑。
+4. 用“试松开扳机位置”和“试按下扳机位置”预览两种状态，再点击“保存采集配置”。
+   保存不产生运动。“下载 JSON”可另外导出一份副本。
+5. 把夹持物放稳后点击“停止控制”，再启动采集。停止、网页关闭/切到后台或心跳中断时，
+   后台会撤掉位置保持增益；夹爪不再主动保持夹持。
+
+配置默认保存在 ThinkPad 项目磁盘上，重启后保留，不是系统临时目录：
+
+```text
+/home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard/.runtime/dex1_gripper_profile.json
+```
+
+网页“复制参数”会提供该文件的完整路径。配置包含 version、unit、released_q、pressed_q；
+两个角度数组均按左、右排序。`--dex1-profile` 会覆盖命令行中的两组直接角度参数，
+建议只选一种方式。配置在采集启动时读取；之后网页保存的修改在下次启动采集时生效，
+不会热更新正在运行的机器人控制。
+
+完整采集预检命令如下，反斜杠表示跨行续写。先在网页保存自己的配置，再运行：
+
+```bash
+python gear_sonic/scripts/launch_decoupled_vla_collection.py \
+  --interface enx00e04c36c4e8 \
+  --hand-type dex1 \
+  --dex1-profile .runtime/dex1_gripper_profile.json \
+  --camera-host 192.168.123.164 \
+  --task-prompt "grab the red bottle" \
+  --dataset-name pour_water_between_beakers_dex1_20261019 \
+  --hand-task grab_middle_beaker \
+  --no-pico-data-streamer \
+  --preflight-only
+```
+
+预检通过、现场准备好后，去掉最后一行和上一行末尾的反斜杠，即为正式采集命令。
+若网页仍持有夹爪控制，采集会在启动身体控制前拒绝启动；点击网页“停止控制”后再试。
+网页可保持打开用于只读观察。
+
+2026-10-19 验证：真实网页收到左右约0.90/0.72 rad反馈，默认只读；模拟夹爪完成网页启用、
+左右独立调节、读取实际位置、两种扳机状态预览、保存配置和停止流程；无效输入被拒绝且错误持续可见；
+后台覆盖速度斜坡、控制权、反馈过期和1秒心跳超时停止。已检查桌面及390像素宽布局。
+保存的测试配置实际经过身体/双夹爪/相机预检，并验证占用夹爪时采集提前拒绝启动。
+验证过程没有对真实机器人发送夹爪或身体动作，也没有保存示例值为用户的正式配置。
