@@ -63,8 +63,14 @@ class G1Env(HumanoidEnv):
             self._hands = Hands()
             hand_type = config.get("HAND_TYPE", "dex3")
             hand_cls = {"inspire": G1InspireHand, "dex3": G1ThreeFingerHand, "dex1": G1Dex1Hand}[hand_type]
-            self._hands.left = hand_cls(is_left=True)
-            self._hands.right = hand_cls(is_left=False)
+            for index, side in enumerate(("left", "right")):
+                hand_args = {}
+                if hand_type == "dex1":
+                    hand_args = dict(
+                        released_q=config.get("dex1_released_q", (5.4, 5.4))[index],
+                        pressed_q=config.get("dex1_pressed_q", (0.0, 0.0))[index],
+                    )
+                setattr(self._hands, side, hand_cls(is_left=side == "left", **hand_args))
 
         # Initialize simulator if in simulation mode
         self.use_sim = self.config.get("ENV_TYPE") == "sim"

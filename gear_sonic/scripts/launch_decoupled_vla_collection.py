@@ -206,6 +206,12 @@ class DecoupledVLACollectionLaunchConfig:
     hand_type: Literal["inspire", "dex1"] = "inspire"
     """Physical hands and dataset schema; Dex1 records 31 native DOFs."""
 
+    dex1_released_q: tuple[float, float] = (5.4, 5.4)
+    """Left/right Dex1 angles (rad) with trigger released; 0 closed, 5.4 open."""
+
+    dex1_pressed_q: tuple[float, float] = (0.0, 0.0)
+    """Left/right Dex1 angles (rad) with trigger pressed (>0.5)."""
+
     preflight_only: bool = False
     """Check configuration and Dex1 DDS/camera connectivity without launching control."""
 
@@ -383,6 +389,10 @@ class DecoupledVLACollectionLaunchConfig:
 def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: Path) -> None:
     errors = []
     if config.hand_type == "dex1":
+        for name in ("dex1_released_q", "dex1_pressed_q"):
+            values = getattr(config, name)
+            if len(values) != 2 or any(not 0.0 <= value <= 5.4 for value in values):
+                errors.append(f"{name} requires left/right angles in [0, 5.4] rad")
         if config.sim or not config.with_hands or config.inspire_hand_bridge or config.left_hand_only:
             errors.append("Dex1 requires real hardware, both hands, and no Inspire bridge")
         if config.interface not in {name for _, name in socket.if_nameindex()}:
@@ -521,6 +531,9 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         *_bool_arg("with-hands", config.with_hands),
         *_bool_arg("high-elbow-pose", config.high_elbow_pose),
     ]
+    if config.hand_type == "dex1":
+        args += ["--dex1-released-q", *(str(q) for q in config.dex1_released_q),
+                 "--dex1-pressed-q", *(str(q) for q in config.dex1_pressed_q)]
     return args
 
 

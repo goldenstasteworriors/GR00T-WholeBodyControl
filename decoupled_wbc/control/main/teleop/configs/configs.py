@@ -87,6 +87,11 @@ def override_wbc_config(
 
     if config.env_type == "real" and config.with_hands and config.hand_type:
         wbc_config["HAND_TYPE"] = config.hand_type
+    for name in ("dex1_released_q", "dex1_pressed_q"):
+        values = getattr(config, name)
+        if len(values) != 2 or any(not 0.0 <= value <= 5.4 for value in values):
+            raise ValueError(f"{name} requires left/right angles in [0, 5.4] rad")
+        wbc_config[name] = values
 
     return wbc_config
 
@@ -133,6 +138,12 @@ class BaseConfig(ArgsConfigTemplate):
 
     hand_type: Literal["inspire", "dex3", "dex1"] | None = None
     """Physical hand type; None retains the existing YAML default."""
+
+    dex1_released_q: tuple[float, float] = (5.4, 5.4)
+    """Left/right Dex1 angles (rad) with trigger released; 0 closed, 5.4 open."""
+
+    dex1_pressed_q: tuple[float, float] = (0.0, 0.0)
+    """Left/right Dex1 angles (rad) with trigger pressed (>0.5)."""
 
     high_elbow_pose: bool = False
     """Enable high elbow pose configuration for default joint positions."""
