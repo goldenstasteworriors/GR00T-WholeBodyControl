@@ -13,6 +13,7 @@
 cd /home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard
 conda activate decoupled_vla_collection
 source "$CONDA_PREFIX/setup.bash"
+export PYTHONPATH="$PWD"
 python gear_sonic/scripts/check_dex1_connection.py --network enx00e04c36c4e8
 ```
 
@@ -120,10 +121,11 @@ sudo systemctl restart sonic-dex1.service
 不依赖 PyTorch、CUDA、OAK SDK 或 RealSense SDK。服务模板为
 `systemd/sonic_d435i_camera.service`，使用 `unitree` 用户和 ZMQ 端口5555。
 
-**部署状态：** 生成最终 UVC 服务配置时，ThinkPad 的 `10.90.234.236` SSH
-突然超时且 ping 不通。因此最终配置尚未完成远端同步确认，尚未安装/启用相机
-systemd 服务，也尚未验证 ThinkPad 收图和完整启动预检。恢复连接后需要先检查
-是否已有前台相机进程，再完成服务安装和验收；不能仅凭本机出图宣称采集链路通过。
+**2026-10-19 部署状态：** 已恢复 ThinkPad 连接并完成代码同步。
+机器人相机服务已安装，状态为 active/enabled，重启计数0；ThinkPad 连续接收
+241帧不同图像，640×480 RGB，实测30.012 FPS。
+身体、双 Dex1、真实相机图像的一键启动预检均通过。
+尚未执行真实身体控制、PICO 操作录制和夹爪动作验收；需要现场确认机器人放置与夹爪周围状态。
 
 后续机器人端安装命令如下，每行一条命令；必须先结束本次前台相机测试，
 避免同时占用相机或5555端口：
@@ -148,3 +150,62 @@ ThinkPad 端额外验证：冻结捕获时间戳的模拟图像流被预检正�
 SDK 编译期间3秒 DDS 复检收到身体3130条、左夹爪1501条、右夹爪1500条，全部有效。
 相机与采集端的系统时钟存在约数分钟差异，当前预检只检查时间戳持续前进；
 跨机器时间戳之差不能直接当作传输延迟。尚未修改系统时钟或验证严格时间同步。
+
+## Dex1 开口测试与扳机角度（2026-10-19）
+
+角度单位 rad，官方控制范围为0（闭合）到5.4（打开），不是开口宽度毫米。
+左右手可以分别配置；实物合适的角度应先用操作工具测定。
+PICO 扳机值大于0.5视为按下，其余视为松开，保留原来的二值扳机逻辑。
+
+永久操作工具为 `gear_sonic/scripts/exercise_dex1_grippers.py`，按用户要求保留，
+不是验证后应删除的临时测试脚本。以下命令每行一条，均在上述 ThinkPad 工作区和采集环境内运行。
+
+只读查看两只夹爪角度，不创建命令发布器：
+
+```bash
+python -m gear_sonic.scripts.exercise_dex1_grippers --network enx00e04c36c4e8 --duration 5
+```
+
+实际动作示例（现场清空夹爪周围，并先退出采集控制进程）：
+
+```bash
+python -m gear_sonic.scripts.exercise_dex1_grippers --network enx00e04c36c4e8 --left-q 1.2 --right-q 1.0 --speed 0.3 --execute --return-to-start
+```
+
+`--left-q`、`--right-q` 指定本次测试的目标角度；省略某侧即不控制该侧。
+`--speed` 是目标斜坡速度，默认0.5 rad/s，最大1 rad/s；`--duration` 是每段到达目标的超时，默认15秒。
+`--return-to-start` 会在到达后返回初始角度。超时、过期反馈、Ctrl+C或正常结束都会撤掉位置增益。
+保留每次目标相对反馈的±0.18 rad限制。当前项目内的夹爪操作与采集控制共用进程锁，
+避免同时控制同一只夹爪；其它计算机或不使用本项目的发布器不受这个文件锁约束。
+
+采集时这两个参数各接收两个数，顺序均为**左、右**：
+
+- `--dex1-released-q`：松开扳机的目标，默认5.4、5.4。
+- `--dex1-pressed-q`：按下扳机的目标，默认0、0。
+
+下面为自定义角度的完整预检示例；反斜杠表示跨行续写。示例角度用于说明参数，
+不代表已经对当前容器完成抓取标定。
+
+```bash
+python gear_sonic/scripts/launch_decoupled_vla_collection.py \
+  --interface enx00e04c36c4e8 \
+  --hand-type dex1 \
+  --dex1-released-q 4.5 4.6 \
+  --dex1-pressed-q 0.8 0.9 \
+  --camera-host 192.168.123.164 \
+  --task-prompt "grab the red bottle" \
+  --dataset-name pour_water_between_beakers_dex1_20261019 \
+  --hand-task grab_middle_beaker \
+  --no-pico-data-streamer \
+  --preflight-only
+```
+
+确认实际抓取角度和现场条件后去掉最后一行的 `--preflight-only`，并去掉上一行末尾的反斜杠，
+即可启动采集。角度沿 launcher → control CLI → WBC 配置 → 各侧硬件对象传递，
+并随控制配置保存到数据集元数据；数据集仍记录真实状态和实际限幅命令，31维格式保持一致。
+不需要修改 Inspire 的六指姿态 JSON。
+
+本次验证：双夹爪工具只读运行通过；5秒身体5219条、左2503条、右2501条反馈，全部有效；
+上述自定义角度完整预检通过；三个实际采集组件的导入、完整生成参数和 CLI 解析通过；
+无硬件命令的模拟验证覆盖自定义角度映射、0.18 rad限幅、无效目标/过期反馈拒绝、
+同侧命令互斥和退出撤增益。尚未执行夹爪真实动作及完整 tmux 采集录制验收。
