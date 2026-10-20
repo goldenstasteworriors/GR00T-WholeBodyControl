@@ -38,7 +38,10 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
   --hand-task grab_middle_beaker \
   --no-pico-data-streamer \
   --no-startup-t-pose \
-  --profile-timing
+  --profile-timing \
+  --camera-viewer \
+  --ros-domain-id 73 \
+  --save-profile-logs
 ```
 
 服务首次启动后需连接头显。
@@ -73,6 +76,28 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
 | 19 检查文件 | 三路视频与Parquet存在 | 本步骤不发动作 |
 | 20 结束控制 | 现场接管后退出控制进程 | 不自动恢复官方站立 |
 | 21 关闭PC Service | 显示服务已停止 | 应先确保控制已退出 |
+
+## 三路实时预览
+
+启动时默认开启预览。
+右下窗格显示接收日志。
+图像显示在独立窗口。
+
+```text
+SONIC Camera Viewer
+```
+
+三列依次为头、左腕、右腕。
+预览按Q退出，采集仍运行。
+只接收一份机器人图像流。
+本机转发给预览和录制。
+日志显示本机地址属于正常。
+不修改图像或原时间戳。
+时钟差值不等于网络延迟。
+
+采集内部ROS使用域73。
+机器人SDK仍使用域0。
+独立ROS调试需选择域73。
 
 ## 当前夹爪配置
 
@@ -118,6 +143,8 @@ pressed_q: [2.5, 2.5]
 A+X 单独切换上身遥操作。
 关闭策略不会恢复官方服务。
 当前未实测模式交接与站立。
+初始等待继续发送同一目标。
+不改变目标角和原到达时刻。
 
 ## 反引号软件停止
 
@@ -408,7 +435,7 @@ Ctrl+b、d 只退出界面。
 bash scripts/thinkpad_pico_services.sh stop
 ```
 
-## 验证记录
+## 早期只读验证记录
 
 2026-10-20 只读预检：
 身体、双夹爪、三图通过。
@@ -421,14 +448,41 @@ PICO 时间戳逐帧递增。
 本次扳机值始终为零。
 尚未验证扳机变化及开合。
 测试数据不能用于训练。
-尚未启动真实身体控制。
-完整动作录制尚未验收。
+以上为早期只读测试记录。
+运动模式仍未进行验收。
 
 联合只读测试数据：
 
 ```text
 /home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard/outputs/thinkpad_pico_readonly_test_20261020_57ee48bd
 ```
+
+## 实际采集入口验收
+
+身体控制待机持续正常。
+身体及遥控消息约50Hz。
+策略开启状态始终为false。
+仅发送两次c测试录制。
+未发送运动模式组合键。
+真实状态和下发目标均31维。
+静止录制88行并回读通过。
+三路视频各88帧可解码。
+最大三图时间差29.83ms。
+最大接收缓存约56ms。
+该调试数据不能用于训练。
+正式采集请换数据集名称。
+
+调试录制数据：
+
+```text
+/home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard/outputs/debug_thinkpad_dex1_three_camera_20261020_150244
+```
+
+Balance包含双腿及三关节腰。
+腰部默认参考角均为0 rad。
+动作残差会叠加到默认角。
+默认关闭的是腰部上身IK。
+未改参考角、初姿或模型权重。
 
 实现位置：
 
