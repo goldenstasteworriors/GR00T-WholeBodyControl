@@ -41,6 +41,7 @@ def override_wbc_config(
         "model_path": config.wbc_model_path,
         "enable_waist": config.enable_waist,
         "with_hands": config.with_hands,
+        "diagnostic_read_only": config.diagnostic_read_only,
         "verbose": config.verbose,
         "verbose_timing": config.verbose_timing,
         "upper_body_max_joint_speed": config.upper_body_joint_speed,
@@ -125,6 +126,9 @@ class BaseConfig(ArgsConfigTemplate):
     """Frequency of the simulation loop."""
 
     # Robot Configuration
+    diagnostic_read_only: bool = False
+    """Read real feedback and compute targets without releasing modes or writing actuators."""
+
     enable_waist: bool = False
     """Whether to include waist joints in IK."""
 

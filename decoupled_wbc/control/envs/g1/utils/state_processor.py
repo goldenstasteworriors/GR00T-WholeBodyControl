@@ -22,7 +22,7 @@ class BodyStateProcessor:
         self.config = config
 
         # Enter debug mode for real robot
-        if self.config["ENV_TYPE"] == "real":
+        if self.config["ENV_TYPE"] == "real" and not config.get("diagnostic_read_only", False):
             msc = MotionSwitcherClient()
             msc.SetTimeout(5.0)
             msc.Init()

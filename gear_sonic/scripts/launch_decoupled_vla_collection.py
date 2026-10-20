@@ -174,6 +174,9 @@ class DecoupledVLACollectionLaunchConfig:
     sim: bool = False
     """Run against MuJoCo sim. Default is real robot."""
 
+    diagnostic_read_only: bool = False
+    """Measure the real pipeline without changing robot modes or publishing actuator commands."""
+
     conda_env: str = DEFAULT_CONDA_ENV
     """Conda environment that contains decoupled_wbc, gear_sonic, ROS2 and PICO deps."""
 
@@ -601,6 +604,7 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         *_bool_arg("enable-waist", config.enable_waist),
         *_bool_arg("with-hands", config.with_hands),
         *_bool_arg("high-elbow-pose", config.high_elbow_pose),
+        *_bool_arg("diagnostic-read-only", config.diagnostic_read_only),
     ]
     if config.hand_type == "dex1":
         args += ["--dex1-released-q", *(str(q) for q in config.dex1_released_q),

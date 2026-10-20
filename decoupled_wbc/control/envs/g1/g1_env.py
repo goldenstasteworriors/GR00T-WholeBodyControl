@@ -254,6 +254,8 @@ class G1Env(HumanoidEnv):
             action = safety_result["action"]
 
         # Map action from joint order to actuator order
+        if self.config.get("diagnostic_read_only", False):
+            return
         body_actuator_q = self.robot_model.get_body_actuated_joints(action["q"])
 
         self.body().queue_action(
@@ -280,6 +282,8 @@ class G1Env(HumanoidEnv):
             if self._damping_stopped:
                 return
             self._damping_stopped = True
+            if self.config.get("diagnostic_read_only", False):
+                return
             sender = self.body().body_command_sender
             sender.send_damping()
             if self.with_hands and self.config.get("HAND_TYPE") == "dex1":
@@ -287,7 +291,8 @@ class G1Env(HumanoidEnv):
                     getattr(self.hands(), side).release_control()
 
     def send_damping(self):
-        self.body().body_command_sender.send_damping()
+        if not self.config.get("diagnostic_read_only", False):
+            self.body().body_command_sender.send_damping()
 
     def restart_initialization(self):
         with self._action_lock:

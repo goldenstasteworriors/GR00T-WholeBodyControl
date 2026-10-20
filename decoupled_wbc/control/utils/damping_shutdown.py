@@ -48,6 +48,8 @@ class DampingShutdown:
             self.env.damping_stop()
             report["confirmed"] = True
             report["confirmation_scope"] = "low_level_damping_published; no official FSM handover"
+            if self.env.config.get("diagnostic_read_only", False):
+                report["confirmation_scope"] = "diagnostic_read_only; no actuator commands published"
         except Exception as error:
             report["error"] = str(error)
         report["elapsed_s"] = time.monotonic() - started
