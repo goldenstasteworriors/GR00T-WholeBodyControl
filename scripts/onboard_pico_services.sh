@@ -33,7 +33,7 @@ dhcp_pid() {
     [[ "$pid" =~ ^[0-9]+$ ]] || return 1
     [[ -r "/proc/${pid}/cmdline" ]] || return 1
     tr '\0' ' ' < "/proc/${pid}/cmdline" \
-        | grep -Fq "/usr/sbin/dnsmasq" || return 1
+        | grep -Fq -- "--pid-file=${DHCP_PID_FILE}" || return 1
     echo "$pid"
 }
 
@@ -43,8 +43,13 @@ dhcp_running() {
 
 pc_service_running() {
     tmux has-session -t "$SESSION_NAME" 2>/dev/null || return 1
-    tmux list-panes -t "$SESSION_NAME" -F '#{pane_current_command}' \
-        | grep -Eq '(^|/)RoboticsServiceProcess$'
+    local pid
+    while read -r pid; do
+        if [[ "$(basename "$(readlink "/proc/${pid}/exe" 2>/dev/null || true)")" == "RoboticsServiceProcess" ]]; then
+            return 0
+        fi
+    done < <(tmux list-panes -t "$SESSION_NAME" -F '#{pane_pid}')
+    return 1
 }
 
 status() {
@@ -108,6 +113,8 @@ start() {
         # tty-scoped tickets, so let dnsmasq daemonize directly instead.
         sudo -v
         sudo -n /usr/sbin/dnsmasq \
+            --conf-file=/dev/null --no-hosts --no-resolv \
+            --user="$(id -un)" --group="$(id -gn)" \
             --interface="$INTERFACE" \
             --bind-interfaces \
             --port=0 \
@@ -115,7 +122,8 @@ start() {
             --log-facility="$DHCP_LOG_FILE" \
             --pid-file="$DHCP_PID_FILE" \
             --dhcp-range=192.168.123.0,static,255.255.255.0,12h \
-            --dhcp-host="${PICO_MAC},${PICO_IP}" \
+            --dhcp-host="${PICO_MAC},set:pico,${PICO_IP}" \
+            --dhcp-ignore=tag:!pico --dhcp-option=3 --dhcp-option=6 \
             --dhcp-leasefile="$LEASE_FILE"
         sleep 1
         if ! dhcp_running; then
