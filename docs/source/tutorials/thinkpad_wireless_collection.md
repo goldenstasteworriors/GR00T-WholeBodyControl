@@ -652,3 +652,47 @@ PICO未连接，未开启遥控。
 .runtime/initialization_damping_test_20261020/lowcmd_monitor.json
 .runtime/collection_damping_stop.json
 ```
+
+## 当前版本非PICO测试
+
+使用完整主循环及实际模型。
+执行器替换为内存接口。
+禁止创建真实SDK收发通道。
+未发送真实机器人执行命令。
+本测试不需要PICO连接。
+左上d急停后进程仍存活。
+连续检查30帧阻尼命令。
+全部身体电机Kp=0、Kd=8。
+首次恢复只进入初始化。
+初始化期间不会启用站立。
+腰部三关节目标均回到零。
+正常控制腰部Kd恢复为5。
+第二次恢复才启用策略输出。
+该输出仅发送到内存执行器。
+退出前阻尼发送约0.54秒。
+真实机器人站立仍未实测。
+
+测试结果位于ThinkPad项目下：
+
+```text
+.runtime/no_pico_control_integration/acceptance.json
+.runtime/no_pico_control_integration/commands.json
+```
+
+四窗格只读诊断也已通过。
+d后保持同一进程及会话。
+一次恢复只回到ready。
+该验证没有启用站立。
+最后退出的只读阻尼流程通过。
+
+只读PC性能测量记录：
+
+| 项目 | 本次结果 |
+|---|---|
+| 控制循环 | 约50Hz |
+| 策略计算p95 | 约3.31ms |
+| SDK读完至目标算完p95 | 约27.10ms |
+| 有线ping平均往返 | 约0.80ms，10次无丢包 |
+
+此处不含电机实际执行时延。
+PICO后续排查按要求暂停。
