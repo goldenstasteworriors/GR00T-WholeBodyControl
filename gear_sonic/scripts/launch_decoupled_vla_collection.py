@@ -139,6 +139,7 @@ def _aarch64_control_runtime_prefix() -> str:
 def _runtime_env_prefix(repo_root: Path, config: "DecoupledVLACollectionLaunchConfig") -> str:
     hand_task_config = Path(config.hand_task_config).expanduser() if config.hand_task_config else _default_hand_task_config(repo_root)
     return (
+        f"export DECOUPLED_WBC_TMUX_SESSION={shlex.quote(SESSION_NAME)} && "
         f"export SONIC_HAND_TASK={shlex.quote(config.hand_task)} && "
         f"export SONIC_HAND_TASK_CONFIG={shlex.quote(str(hand_task_config))} && "
     )
