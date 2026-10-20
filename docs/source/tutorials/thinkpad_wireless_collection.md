@@ -187,7 +187,7 @@ SIGKILL及断电无法执行清理。
 独立终端可请求阻尼退出。
 
 ```bash
-kill -USR1 "$(tmux show-environment -t decoupled_vla_collection -v DECOUPLED_WBC_CONTROL_PID)"
+kill -USR1 "$(tmux show-environment -t decoupled_vla_collection DECOUPLED_WBC_CONTROL_PID | cut -d= -f2)"
 ```
 
 停止确认记录：

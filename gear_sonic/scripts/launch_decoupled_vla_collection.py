@@ -522,11 +522,11 @@ def _kill_existing_session() -> None:
     if exists.returncode:
         return
     pid = subprocess.run([
-        "tmux", "show-environment", "-t", SESSION_NAME, "-v", "DECOUPLED_WBC_CONTROL_PID",
+        "tmux", "show-environment", "-t", SESSION_NAME, "DECOUPLED_WBC_CONTROL_PID",
     ], capture_output=True, text=True)
     if pid.returncode:
         raise RuntimeError("Existing session has no damping-stop handler; stop it before relaunching")
-    os.kill(int(pid.stdout.strip()), signal.SIGUSR1)
+    os.kill(int(pid.stdout.strip().split("=", 1)[1]), signal.SIGUSR1)
     # Wait for the requested damping shutdown, not an inactivity watchdog.
     while subprocess.run(["tmux", "has-session", "-t", SESSION_NAME], capture_output=True).returncode == 0:
         time.sleep(0.05)
@@ -537,7 +537,7 @@ def _create_tmux_session() -> None:
     subprocess.run(["tmux", "set-option", "-t", SESSION_NAME, "-g", "mouse", "on"])
     stop_cmd = (
         'kill -USR1 $(tmux show-environment -t '
-        f'{shlex.quote(SESSION_NAME)} -v DECOUPLED_WBC_CONTROL_PID)'
+        f'{shlex.quote(SESSION_NAME)} DECOUPLED_WBC_CONTROL_PID | cut -d= -f2)'
     )
     subprocess.run(["tmux", "bind-key", "-T", "root", "C-\\", "run-shell", "-b", stop_cmd], check=True)
     # Closing/detaching the last client also follows the damping exit path.
