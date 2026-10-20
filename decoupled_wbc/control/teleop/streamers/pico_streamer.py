@@ -295,9 +295,30 @@ class PicoStreamer(BaseStreamer):
                 pass
 
     def get(self) -> StreamerOutput:
+        read_started = time.monotonic_ns()
         pico_data = self._get_pico_data()
-
+        read_finished = time.monotonic_ns()
         raw_data = self._generate_unified_raw_data(pico_data)
+        source_ns = int(pico_data["timestamp"])
+        previous_source = getattr(self, "_latency_source_ns", None)
+        previous_seen = getattr(self, "_latency_seen_ns", read_finished)
+        if source_ns != previous_source:
+            self._latency_source_interval_ms = (
+                (source_ns - previous_source) / 1e6 if previous_source is not None else None
+            )
+            self._latency_seen_interval_ms = (
+                (read_finished - previous_seen) / 1e6 if previous_source is not None else None
+            )
+            self._latency_source_ns = source_ns
+            self._latency_seen_ns = read_finished
+        raw_data.control_data["latency_trace"] = {
+            "pico_source_timestamp_ns": source_ns,
+            "pico_sdk_read_started_ns": read_started,
+            "pico_sdk_read_finished_ns": read_finished,
+            "pico_frame_first_seen_ns": self._latency_seen_ns,
+            "pico_source_interval_ms": self._latency_source_interval_ms,
+            "pico_observed_interval_ms": self._latency_seen_interval_ms,
+        }
         return raw_data
 
     def __del__(self):

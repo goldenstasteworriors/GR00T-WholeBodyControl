@@ -8,6 +8,7 @@ LOCO_NAV_TASK_STATUS_TOPIC = "NavigationPolicy/task_status"
 LOWER_BODY_POLICY_STATUS_TOPIC = "ControlPolicy/lower_body_policy_status"
 JOINT_SAFETY_STATUS_TOPIC = "ControlPolicy/joint_safety_status"
 SIM_RESET_TOPIC = "Sim/reset"
+PIPELINE_LATENCY_TOPIC = "ControlPolicy/pipeline_latency"
 
 
 DEFAULT_NAV_CMD = [0.0, 0.0, 0.0]

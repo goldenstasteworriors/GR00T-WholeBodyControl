@@ -141,6 +141,7 @@ def _runtime_env_prefix(repo_root: Path, config: "DecoupledVLACollectionLaunchCo
     return (
         f"export DECOUPLED_WBC_TMUX_SESSION={shlex.quote(SESSION_NAME)} && "
         f"export ROS_DOMAIN_ID={config.ros_domain_id} && "
+        f"export DECOUPLED_PROFILE_TIMING={int(config.profile_timing)} && "
         f"export SONIC_HAND_TASK={shlex.quote(config.hand_task)} && "
         f"export SONIC_HAND_TASK_CONFIG={shlex.quote(str(hand_task_config))} && "
     )
@@ -955,6 +956,17 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     if config.camera_viewer:
         _send_to_target(f"{SESSION_NAME}:collection.3", viewer_cmd, wait=1.0)
     _send_to_target(f"{SESSION_NAME}:collection.1", exporter_cmd, wait=1.0)
+    if config.profile_timing:
+        subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "latency"], check=True)
+        latency_path = (profile_log_dir / "latency.json" if profile_log_dir is not None
+                        else repo_root / ".runtime" / "collection_latency.json")
+        latency_cmd = prefix + runtime_env + _shell_join([
+            "python", "gear_sonic/scripts/run_collection_latency_monitor.py",
+            "--duration", "0", "--output-json", str(latency_path),
+            "--ros-domain-id", str(config.ros_domain_id),
+        ])
+        _send_to_target(f"{SESSION_NAME}:latency", latency_cmd, wait=0.5)
+        subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
     subprocess.run(["tmux", "select-pane", "-t", f"{SESSION_NAME}:collection.1"])
 
     print()
@@ -983,6 +995,8 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print("    Ctrl+\\          stay in damping mode from any pane")
     print("    ] (control)     reinitialize after stop; press again after ready to stand")
     print("    Last client closing/detaching also requests damping stop")
+    if config.profile_timing:
+        print("    Ctrl+b, w       select latency window for p50/p95/max timing")
     print("=" * 72)
 
     try:

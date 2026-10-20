@@ -115,13 +115,15 @@ class ROSMsgSubscriber:
         )
 
     def _callback(self, msg: ByteMultiArray):
-        self._msg = msg
+        import time
+        self._msg = (msg, time.monotonic_ns())
 
     def get_msg(self) -> Optional[dict]:
-        msg = self._msg
-        if msg is None:
+        sample = self._msg
+        if sample is None:
             return None
         self._msg = None
+        msg, self.last_message_received_ns = sample
         return msgpack.unpackb(b"".join(msg.data), object_hook=mnp.decode)
 
 

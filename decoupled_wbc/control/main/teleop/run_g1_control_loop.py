@@ -2,6 +2,7 @@ from copy import deepcopy
 import os
 import time
 
+import numpy as np
 import tyro
 
 from decoupled_wbc.control.envs.g1.g1_env import G1Env
@@ -15,6 +16,7 @@ from decoupled_wbc.control.main.constants import (
     ROBOT_CONFIG_TOPIC,
     SIM_RESET_TOPIC,
     STATE_TOPIC_NAME,
+    PIPELINE_LATENCY_TOPIC,
 )
 from decoupled_wbc.control.main.teleop.configs.configs import ControlLoopConfig
 from decoupled_wbc.control.policy.wbc_policy_factory import get_wbc_policy
@@ -30,6 +32,7 @@ from decoupled_wbc.control.utils.keyboard_dispatcher import (
 )
 from decoupled_wbc.control.utils.damping_shutdown import DampingShutdown
 from decoupled_wbc.control.utils.collection_mode import CollectionMode
+from decoupled_wbc.control.utils.pipeline_latency import pipeline_metrics
 from decoupled_wbc.control.utils.ros_utils import (
     ROSManager,
     ROSMsgPublisher,
@@ -64,6 +67,10 @@ def main(config: ControlLoopConfig):
     lower_body_policy_status_pub = ROSMsgPublisher(LOWER_BODY_POLICY_STATUS_TOPIC)
     joint_safety_status_pub = ROSMsgPublisher(JOINT_SAFETY_STATUS_TOPIC)
     sim_reset_pub = ROSMsgPublisher(SIM_RESET_TOPIC)
+    latency_pub = (
+        ROSMsgPublisher(PIPELINE_LATENCY_TOPIC)
+        if os.environ.get("DECOUPLED_PROFILE_TIMING") == "1" else None
+    )
 
     # Initialize telemetry
     telemetry = Telemetry(window_size=100)
@@ -116,8 +123,11 @@ def main(config: ControlLoopConfig):
         last_teleop_cmd = None
         last_data_collection_event_id = 0
         last_data_abort_event_id = 0
+        last_goal_received_ns = None
+        previous_loop_ns = None
         while ros_manager.ok() and not shutdown.requested.is_set():
             t_start = time.monotonic()
+            loop_started_ns = time.monotonic_ns()
             with telemetry.timer("total_loop"):
                 # Step simulator if in sync mode
                 with telemetry.timer("step_simulator"):
@@ -132,11 +142,13 @@ def main(config: ControlLoopConfig):
                 # Measure policy setup time
                 with telemetry.timer("policy_setup"):
                     upper_body_cmd = upper_body_policy_subscriber.get_msg()
+                    goal_read_ns = time.monotonic_ns()
 
                     t_now = time.monotonic()
 
                     wbc_goal = {}
                     if upper_body_cmd:
+                        last_goal_received_ns = upper_body_policy_subscriber.last_message_received_ns
                         wbc_goal = upper_body_cmd.copy()
                         last_teleop_cmd = upper_body_cmd.copy()
                         if config.ik_indicator:
@@ -162,6 +174,8 @@ def main(config: ControlLoopConfig):
                 with telemetry.timer("queue_action"):
                     if shutdown.requested.is_set():
                         break
+                    if shutdown.estop_requested.is_set():
+                        mode.enter_damping(shutdown.estop_reason)
                     if mode.state == "damped":
                         env.send_damping()
                     else:
@@ -280,6 +294,30 @@ def main(config: ControlLoopConfig):
                     }
                 )
                 data_exp_pub.publish(msg)
+                if latency_pub is not None:
+                    sender = env.body().body_command_sender
+                    trace = last_teleop_cmd.get("latency_trace", {})
+                    metrics = pipeline_metrics(
+                        trace, received_ns=last_goal_received_ns, goal_read_ns=goal_read_ns,
+                        send_started_ns=getattr(sender, "last_send_started_ns", None),
+                        send_finished_ns=getattr(sender, "last_send_finished_ns", None),
+                    )
+                    timings = telemetry.get_last_timing()
+                    for name in ("observe", "policy_setup", "policy_action", "queue_action", "publish_status"):
+                        if name in timings:
+                            metrics[name + "_ms"] = timings[name] * 1000
+                    metrics["control_work_ms"] = (time.monotonic_ns() - loop_started_ns) / 1e6
+                    if previous_loop_ns is not None:
+                        metrics["control_period_ms"] = (loop_started_ns - previous_loop_ns) / 1e6
+                    previous_loop_ns = loop_started_ns
+                    body_indices = robot_model.get_joint_group_indices("body")
+                    error = wbc_action["q"][body_indices] - obs["q"][body_indices]
+                    latency_pub.publish({
+                        "timestamp_ns": loop_started_ns, "metrics_ms": metrics,
+                        "control_mode": mode.state,
+                        "pico_source_timestamp_ns": trace.get("pico_source_timestamp_ns"),
+                        "tracking_error_rms_rad": float(np.sqrt(np.mean(error ** 2))),
+                    })
                 end_time = time.monotonic()
 
             if env.sim and (not env.sim.sim_thread or not env.sim.sim_thread.is_alive()):

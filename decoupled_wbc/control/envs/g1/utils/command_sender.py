@@ -108,8 +108,10 @@ class BodyCommandSender:
                 # Do not reuse the position-controller gains for this mode.
                 motor.kd = 8.0
             self.low_cmd.crc = self.crc.Crc(self.low_cmd)
+            self.last_send_started_ns = time.monotonic_ns()
             if not self.lowcmd_publisher_.Write(self.low_cmd):
                 raise RuntimeError("Failed to publish body damping command")
+            self.last_send_finished_ns = time.monotonic_ns()
 
     def resume_position_control(self):
         with self._command_lock:

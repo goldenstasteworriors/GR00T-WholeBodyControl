@@ -15,6 +15,7 @@ class DampingShutdown:
         self.requested = threading.Event()
         self.estop_requested = threading.Event()
         self.estop_reason = ""
+        self.transition_lock = threading.RLock()
         self.reason = "control_exit"
         self.session = os.environ.get("DECOUPLED_WBC_TMUX_SESSION")
 
@@ -36,6 +37,9 @@ class DampingShutdown:
     def request_estop(self, reason):
         self.estop_reason = reason
         self.estop_requested.set()
+        # The first damping packet does not wait for observation or inference.
+        with self.transition_lock:
+            self.env.enter_damping()
 
     def finish(self):
         started = time.monotonic()

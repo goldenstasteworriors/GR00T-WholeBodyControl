@@ -35,6 +35,12 @@ class CollectionMode:
         print(f"[CollectionMode] damped: {reason}; program remains running", flush=True)
 
     def advance(self, now):
+        with self.shutdown.transition_lock:
+            if self.shutdown.estop_requested.is_set():
+                return
+            self._advance(now)
+
+    def _advance(self, now):
         if self.state == "damped":
             lower = self.policy.lower_body_policy
             lower.use_policy_action = False

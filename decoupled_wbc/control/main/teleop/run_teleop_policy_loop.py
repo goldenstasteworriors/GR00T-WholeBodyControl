@@ -84,6 +84,7 @@ def main(config: TeleopConfig):
         while rclpy.ok():
             with telemetry.timer("total_loop"):
                 t_start = time.monotonic()
+                loop_started_ns = time.monotonic_ns()
                 robot_state = robot_state_subscriber.get_msg()
                 lower_body_policy_status = lower_body_policy_status_subscriber.get_msg()
                 if lower_body_policy_status is not None:
@@ -109,6 +110,9 @@ def main(config: TeleopConfig):
                 # Add timing information to the message
                 t_now = time.monotonic()
                 data["timestamp"] = t_now
+                trace = data.setdefault("latency_trace", {})
+                trace["teleop_loop_started_ns"] = loop_started_ns
+                trace["teleop_action_finished_ns"] = time.monotonic_ns()
 
                 # Set target completion time - longer for initial pose, then match control frequency.
                 if iteration == 0:
@@ -118,6 +122,7 @@ def main(config: TeleopConfig):
 
                 # Publish the teleop command
                 with telemetry.timer("publish_teleop_command"):
+                    trace["teleop_publish_ns"] = time.monotonic_ns()
                     control_publisher.publish(data)
 
                 # For the initial pose, wait the full duration before continuing
