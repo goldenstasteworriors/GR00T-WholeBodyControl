@@ -274,12 +274,8 @@ class G1Env(HumanoidEnv):
             self.hands().left.queue_action({"hand_q": left_hand_actuator_q})
             self.hands().right.queue_action({"hand_q": right_hand_actuator_q})
 
-    def damping_stop(self):
-        """Stop custom targets, then hand control to Unitree's damping FSM."""
-        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
-        from unitree_sdk2py.g1.loco.g1_loco_api import ROBOT_API_ID_LOCO_GET_FSM_ID
-        import json
-
+    def enter_damping(self):
+        """Latch off position commands without closing the DDS publisher."""
         with self._action_lock:
             if self._damping_stopped:
                 return
@@ -290,22 +286,24 @@ class G1Env(HumanoidEnv):
                 for side in ("left", "right"):
                     getattr(self.hands(), side).release_control()
 
-        # This fixed shutdown burst is only run for a requested stop/exit.
-        # It is not a communication watchdog or an automatic mode switch.
+    def send_damping(self):
+        self.body().body_command_sender.send_damping()
+
+    def restart_initialization(self):
+        with self._action_lock:
+            self.body().body_command_sender.resume_position_control()
+            self._damping_stopped = False
+            self.safety_monitor.startup_counter = 0
+            self.safety_monitor.initial_positions = None
+            self.safety_monitor.startup_complete = False
+
+    def damping_stop(self):
+        """Publish a final damping burst before exiting low-level control."""
+        self.enter_damping()
         for _ in range(25):
-            sender.send_damping()
+            self.send_damping()
             time.sleep(0.02)
-        sender.lowcmd_publisher_.Close()
-        if self.config["ENV_TYPE"] == "real":
-            client = LocoClient()
-            client.SetTimeout(2.0)
-            client.Init()
-            # Damp() discards the SDK return code; call its underlying API.
-            code = client.SetFsmId(1)
-            status, payload = client._Call(ROBOT_API_ID_LOCO_GET_FSM_ID, "{}")
-            fsm = json.loads(payload).get("data") if status == 0 else None
-            if code != 0 or status != 0 or fsm != 1:
-                raise RuntimeError(f"Unitree damping unconfirmed: set={code}, get={status}, fsm={fsm}")
+        self.body().body_command_sender.lowcmd_publisher_.Close()
 
     def action_space(self) -> gym.Space:
         return gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.robot_model.num_dofs,))

@@ -13,6 +13,8 @@ class DampingShutdown:
     def __init__(self, env):
         self.env = env
         self.requested = threading.Event()
+        self.estop_requested = threading.Event()
+        self.estop_reason = ""
         self.reason = "control_exit"
         self.session = os.environ.get("DECOUPLED_WBC_TMUX_SESSION")
 
@@ -22,13 +24,18 @@ class DampingShutdown:
             self.requested.set()
 
     def install_signals(self):
-        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGUSR1):
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, lambda number, frame: self.request(f"signal:{number}"))
+        signal.signal(signal.SIGUSR1, lambda number, frame: self.request_estop("signal:SIGUSR1"))
         if self.session:
             subprocess.run([
                 "tmux", "set-environment", "-t", self.session,
                 "DECOUPLED_WBC_CONTROL_PID", str(os.getpid()),
             ], check=True)
+
+    def request_estop(self, reason):
+        self.estop_reason = reason
+        self.estop_requested.set()
 
     def finish(self):
         started = time.monotonic()
@@ -36,6 +43,7 @@ class DampingShutdown:
         try:
             self.env.damping_stop()
             report["confirmed"] = True
+            report["confirmation_scope"] = "low_level_damping_published; no official FSM handover"
         except Exception as error:
             report["error"] = str(error)
         report["elapsed_s"] = time.monotonic() - started

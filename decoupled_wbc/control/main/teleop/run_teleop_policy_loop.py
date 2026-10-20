@@ -79,7 +79,6 @@ def main(config: TeleopConfig):
     time_to_get_to_initial_pose = 2  # seconds
 
     telemetry = Telemetry(window_size=100)
-    pending_policy_action = None
 
     try:
         while rclpy.ok():
@@ -93,15 +92,8 @@ def main(config: TeleopConfig):
                     )
                     if hasattr(teleop_policy, "set_lower_body_policy_active"):
                         teleop_policy.set_lower_body_policy_active(lower_body_policy_active)
-                    if (
-                        pending_policy_action is not None
-                        and lower_body_policy_active == pending_policy_action
-                    ):
-                        print(
-                            "Lower-body policy request acknowledged: "
-                            f"{'enabled' if lower_body_policy_active else 'disabled'}"
-                        )
-                        pending_policy_action = None
+                    if hasattr(teleop_policy, "set_collection_status"):
+                        teleop_policy.set_collection_status(lower_body_policy_status)
                 if iteration == 0 and robot_state is None:
                     # Do not publish the nominal low-elbow pose while the
                     # control loop is still moving to its startup pose.  The
@@ -113,20 +105,6 @@ def main(config: TeleopConfig):
                 # Get the current teleop action
                 with telemetry.timer("get_action"):
                     data = teleop_policy.get_action()
-
-                requested_policy_action = data.get("set_policy_action")
-                if requested_policy_action is not None:
-                    pending_policy_action = bool(requested_policy_action)
-                    print(
-                        "Lower-body policy request queued: "
-                        f"{'enable' if pending_policy_action else 'disable'}"
-                    )
-                if pending_policy_action is not None:
-                    # This is a state transition, not a best-effort one-frame event.
-                    # Repeat it until the control loop reports the requested state.
-                    data["set_policy_action"] = pending_policy_action
-                    if not pending_policy_action:
-                        data["emergency_stop"] = True
 
                 # Add timing information to the message
                 t_now = time.monotonic()

@@ -29,6 +29,7 @@ from decoupled_wbc.control.utils.keyboard_dispatcher import (
     restore_terminal,
 )
 from decoupled_wbc.control.utils.damping_shutdown import DampingShutdown
+from decoupled_wbc.control.utils.collection_mode import CollectionMode
 from decoupled_wbc.control.utils.ros_utils import (
     ROSManager,
     ROSMsgPublisher,
@@ -87,9 +88,10 @@ def main(config: ControlLoopConfig):
     shutdown.install_signals()
     try:
         wbc_policy = get_wbc_policy("g1", robot_model, wbc_config)
+        mode = CollectionMode(env, wbc_policy, robot_model, wbc_config, shutdown)
 
         keyboard_listener_pub = KeyboardListenerPublisher()
-        keyboard_estop = KeyboardEStop(shutdown.request)
+        keyboard_estop = KeyboardEStop(shutdown.request_estop)
         sim_reset_keyboard_pub = SimResetKeyboardPublisher(sim_reset_pub)
         if config.keyboard_dispatcher_type == "raw":
             dispatcher = KeyboardDispatcher()
@@ -100,6 +102,7 @@ def main(config: ControlLoopConfig):
                 f"Invalid keyboard dispatcher: {config.keyboard_dispatcher_type}, please use 'raw' or 'ros'"
             )
         dispatcher.register(keyboard_estop)
+        dispatcher.register(mode)
         dispatcher.register(env)
         dispatcher.register(wbc_policy)
         dispatcher.register(keyboard_listener_pub)
@@ -138,11 +141,11 @@ def main(config: ControlLoopConfig):
                         last_teleop_cmd = upper_body_cmd.copy()
                         if config.ik_indicator:
                             env.set_ik_indicator(upper_body_cmd)
-                    if wbc_goal.get("emergency_stop", False):
-                        shutdown.request("teleop_emergency_stop")
-                        break
+                    mode.update(wbc_goal, t_now)
                     # Send goal to policy
-                    if wbc_goal:
+                    if wbc_goal and mode.state == "running":
+                        for key in ("set_policy_action", "toggle_policy_action", "emergency_stop"):
+                            wbc_goal.pop(key, None)
                         wbc_goal["interpolation_garbage_collection_time"] = t_now - 2 * (
                             1 / config.control_frequency
                         )
@@ -150,13 +153,19 @@ def main(config: ControlLoopConfig):
 
                 # Measure policy action calculation time
                 with telemetry.timer("policy_action"):
-                    wbc_action = wbc_policy.get_action(time=t_now)
+                    if mode.state == "damped":
+                        wbc_action = {"q": obs["q"].copy()}
+                    else:
+                        wbc_action = wbc_policy.get_action(time=t_now)
 
                 # Measure action queue time
                 with telemetry.timer("queue_action"):
                     if shutdown.requested.is_set():
                         break
-                    env.queue_action(wbc_action)
+                    if mode.state == "damped":
+                        env.send_damping()
+                    else:
+                        env.queue_action(wbc_action)
 
                 # Publish status information for InteractiveModeController
                 with telemetry.timer("publish_status"):
@@ -172,6 +181,7 @@ def main(config: ControlLoopConfig):
                         policy_use_action = False
 
                     policy_status_msg = {"use_policy_action": policy_use_action, "timestamp": t_now}
+                    policy_status_msg.update(mode.status())
                     lower_body_policy_status_pub.publish(policy_status_msg)
 
                     # Get joint safety status from G1Env (which already runs the safety monitor)
@@ -238,32 +248,37 @@ def main(config: ControlLoopConfig):
                     time.sleep(0.5)
 
                 msg = deepcopy(obs)
+                msg.update(mode.status())
                 if wbc_config.get("HAND_TYPE") == "dex1" and config.with_hands:
                     # Store the actual slew-limited DDS targets from this step.
-                    msg["left_hand_dex1_action"] = env.hands().left.last_command.copy()
-                    msg["right_hand_dex1_action"] = env.hands().right.last_command.copy()
+                    for side in ("left", "right"):
+                        command = getattr(env.hands(), side).last_command
+                        msg[f"{side}_hand_dex1_action"] = (
+                            command.copy() if command is not None else obs[f"{side}_hand_dex1_q"].copy()
+                        )
                 for key in obs.keys():
                     if key.endswith("_image"):
                         del msg[key]
 
                 # exporting data
-                if last_teleop_cmd:
-                    msg.update(
-                        {
-                            "action": wbc_action["q"],
-                            "action.eef": last_teleop_cmd.get("wrist_pose", DEFAULT_WRIST_POSE),
-                            "base_height_command": last_teleop_cmd.get(
-                                "base_height_command", DEFAULT_BASE_HEIGHT
-                            ),
-                            "navigate_command": last_teleop_cmd.get(
-                                "navigate_cmd", DEFAULT_NAV_CMD
-                            ),
-                            "timestamps": {
-                                "main_loop": time.time(),
-                                "proprio": time.time(),
-                            },
-                        }
-                    )
+                if last_teleop_cmd is None:
+                    last_teleop_cmd = {}
+                msg.update(
+                    {
+                        "action": wbc_action["q"],
+                        "action.eef": last_teleop_cmd.get("wrist_pose", DEFAULT_WRIST_POSE),
+                        "base_height_command": last_teleop_cmd.get(
+                            "base_height_command", DEFAULT_BASE_HEIGHT
+                        ),
+                        "navigate_command": last_teleop_cmd.get(
+                            "navigate_cmd", DEFAULT_NAV_CMD
+                        ),
+                        "timestamps": {
+                            "main_loop": time.time(),
+                            "proprio": time.time(),
+                        },
+                    }
+                )
                 data_exp_pub.publish(msg)
                 end_time = time.monotonic()
 
@@ -279,7 +294,7 @@ def main(config: ControlLoopConfig):
     except ros_manager.exceptions() as e:
         print(f"ROSManager interrupted by user: {e}")
     finally:
-        # Damping and the official FSM acknowledgment precede session teardown.
+        # A final low-level damping burst precedes session teardown.
         # Do not depend on native DDS/ROS destructors to complete this stop.
         report = shutdown.finish()
         restore_terminal()

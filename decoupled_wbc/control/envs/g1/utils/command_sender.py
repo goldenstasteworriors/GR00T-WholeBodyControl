@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from typing import Dict
 
 import numpy as np
@@ -110,6 +111,10 @@ class BodyCommandSender:
             if not self.lowcmd_publisher_.Write(self.low_cmd):
                 raise RuntimeError("Failed to publish body damping command")
 
+    def resume_position_control(self):
+        with self._command_lock:
+            self._damping = False
+
     def _send_position_command(self, cmd_q, cmd_dq, cmd_tau):
         for i in range(self.config["NUM_MOTORS"]):
             motor_index = self.config["JOINT2MOTOR"][i]
@@ -131,7 +136,9 @@ class BodyCommandSender:
             self.low_cmd.motor_cmd[motor_index].kd = self.robot_kd[motor_index]
 
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
+        self.last_send_started_ns = time.monotonic_ns()
         self.lowcmd_publisher_.Write(self.low_cmd)
+        self.last_send_finished_ns = time.monotonic_ns()
 
 
 def make_hand_mode(motor_index: int) -> int:

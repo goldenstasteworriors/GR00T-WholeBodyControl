@@ -15,12 +15,7 @@ from .g1_decoupled_whole_body_policy import G1DecoupledWholeBodyPolicy
 WBC_VERSIONS = ["gear_wbc"]
 
 
-def get_wbc_policy(
-    robot_type,
-    robot_model,
-    wbc_config,
-    init_time=time.monotonic(),
-):
+def get_startup_upper_body_policy(robot_model, wbc_config, init_time):
     # This target is used only before live teleoperation goals arrive. Keep the
     # adjustment here rather than in robot defaults or teleop retargeting so it
     # cannot affect subsequent operator commands.
@@ -31,21 +26,24 @@ def get_wbc_policy(
     current_upper_body_pose = startup_body_pose[
         robot_model.get_joint_group_indices("upper_body")
     ]
+    if wbc_config.get("upper_body_policy_type", "interpolation") == "identity":
+        return IdentityPolicy()
+    return InterpolationPolicy(
+        init_time=init_time,
+        init_values={
+            "target_upper_body_pose": current_upper_body_pose,
+            "base_height_command": np.array([DEFAULT_BASE_HEIGHT]),
+            "navigate_cmd": np.array([DEFAULT_NAV_CMD]),
+        },
+        max_change_rate=wbc_config["upper_body_max_joint_speed"],
+    )
+
+
+def get_wbc_policy(robot_type, robot_model, wbc_config, init_time=None):
+    init_time = time.monotonic() if init_time is None else init_time
 
     if robot_type == "g1":
-        upper_body_policy_type = wbc_config.get("upper_body_policy_type", "interpolation")
-        if upper_body_policy_type == "identity":
-            upper_body_policy = IdentityPolicy()
-        else:
-            upper_body_policy = InterpolationPolicy(
-                init_time=init_time,
-                init_values={
-                    "target_upper_body_pose": current_upper_body_pose,
-                    "base_height_command": np.array([DEFAULT_BASE_HEIGHT]),
-                    "navigate_cmd": np.array([DEFAULT_NAV_CMD]),
-                },
-                max_change_rate=wbc_config["upper_body_max_joint_speed"],
-            )
+        upper_body_policy = get_startup_upper_body_policy(robot_model, wbc_config, init_time)
 
         lower_body_policy_type = wbc_config.get("VERSION", "gear_wbc")
         if lower_body_policy_type not in ["gear_wbc"]:

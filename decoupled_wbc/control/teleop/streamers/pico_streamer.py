@@ -86,6 +86,7 @@ class PicoStreamer(BaseStreamer):
         # collection command cannot be lost between equal-rate ROS loops.
         self._data_collection_event_id = 0
         self._data_abort_event_id = 0
+        self._start_stop_event_id = 0
         self._button_sampler.start()
         self.enable_smpl_visualization = enable_smpl_visualization
         self._smpl_context = mp.get_context("spawn")
@@ -430,20 +431,16 @@ class PicoStreamer(BaseStreamer):
         elif self.combo_suppression_active and not face_button_pressed:
             self.combo_suppression_active = False
 
-        set_policy_action = None
         set_teleop_active = None
         toggle_activation = False
-        emergency_stop = False
         if start_stop_event:
-            self.control_enabled = not self.control_enabled
-            set_policy_action = self.control_enabled
-            emergency_stop = not self.control_enabled
+            self._start_stop_event_id = time.monotonic_ns()
             print(
                 "[PicoStreamer] A+B+X+Y detected: "
-                f"{'starting policy' if self.control_enabled else 'stopping policy'}",
+                f"start/stop event {self._start_stop_event_id}",
                 flush=True,
             )
-            if emergency_stop:
+            if self.control_enabled:
                 set_teleop_active = False
                 lin_vel_x = 0.0
                 lin_vel_y = 0.0
@@ -472,11 +469,8 @@ class PicoStreamer(BaseStreamer):
             "base_height_command": self.current_base_height,
             "navigate_cmd": [lin_vel_x, lin_vel_y, ang_vel_z],
             "toggle_policy_action": False,
+            "start_stop_event_id": self._start_stop_event_id,
         }
-        if set_policy_action is not None:
-            control_data["set_policy_action"] = set_policy_action
-        if emergency_stop:
-            control_data["emergency_stop"] = True
 
         teleop_data = {
             "toggle_activation": toggle_activation,

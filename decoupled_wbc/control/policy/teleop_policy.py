@@ -111,6 +111,23 @@ class TeleopPolicy(Policy):
             self._resume_ramp_deadline = None
             print("Upper-body teleop stopped because the lower-body policy is inactive")
 
+    def set_collection_status(self, status):
+        epoch = status.get("initialization_epoch", 0)
+        mode = status.get("control_mode")
+        if epoch != getattr(self, "_collection_initialization_epoch", 0) or (
+            mode == "ready" and getattr(self, "_last_collection_mode", None) != "ready"
+        ):
+            self._collection_initialization_epoch = epoch
+            self._startup_reference_synced = False
+        self._last_collection_mode = mode
+        if mode == "damped":
+            self.is_active = False
+            self._teleop_state = "paused"
+            if self._latest_robot_q is not None:
+                self._held_body_q = self._latest_robot_q.copy()
+                indices = self.robot_model.get_joint_group_indices("upper_body")
+                self._held_upper_body_pose = self._held_body_q[indices].copy()
+
     def get_action(self) -> dict[str, any]:
         # Get structured data
         streamer_output = self.teleop_streamer.get_streamer_data()
