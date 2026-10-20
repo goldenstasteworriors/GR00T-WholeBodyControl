@@ -274,10 +274,13 @@ def main(config: ControlLoopConfig):
         print(f"ROSManager interrupted by user: {e}")
     finally:
         print("Cleaning up...")
-        # the order of the following is important
+        # Close native DDS readers before ROS/interpreter teardown, so their
+        # Python callbacks cannot deadlock during native entity destruction.
         dispatcher.stop()
-        ros_manager.shutdown()
-        env.close()
+        try:
+            env.close()
+        finally:
+            ros_manager.shutdown()
 
 
 if __name__ == "__main__":

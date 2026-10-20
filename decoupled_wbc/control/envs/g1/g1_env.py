@@ -303,6 +303,10 @@ class G1Env(HumanoidEnv):
     def close(self):
         if self.sim:
             self.sim.close()
+        if self.with_hands and self.config.get("HAND_TYPE") == "dex1":
+            for side in ("left", "right"):
+                getattr(self.hands(), side).close()
+        self.body().close()
 
     def robot_model(self) -> RobotModel:
         return self.robot_model

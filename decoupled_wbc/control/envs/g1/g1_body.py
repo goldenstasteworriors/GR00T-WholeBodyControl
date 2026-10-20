@@ -47,6 +47,13 @@ class G1Body(Env):
             action["body_q"], action["body_dq"], action["body_tau"]
         )
 
+    def close(self):
+        self.body_command_sender.lowcmd_publisher_.Close()
+        for name in ("robot_lowstate_subscriber", "secondary_imu_subscriber", "odo_state_subscriber"):
+            subscriber = getattr(self.body_state_processor, name, None)
+            if subscriber is not None:
+                subscriber.Close()
+
     def observation_space(self) -> gym.Space:
         return gym.spaces.Dict(
             {

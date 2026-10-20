@@ -25,9 +25,23 @@ class G1Dex1Hand:
         self._stamp = 0.0
         self.last_command = None
         self.state_sub = ChannelSubscriber(f"rt/dex1/{self.side}/state", MotorStates_)
-        self.state_sub.Init(self._receive, 10)
+        # Drain feedback independently of DDS listener callbacks. The control
+        # process also serializes body commands and ROS messages; a queued
+        # listener can otherwise lag even while fresh motor samples arrive.
+        self.state_sub.Init(None, 0)
+        self._reader_stop = threading.Event()
+        self._reader_thread = threading.Thread(
+            target=self._read_states, name=f"dex1_{self.side}_feedback", daemon=True,
+        )
+        self._reader_thread.start()
         self.cmd_pub = None
         self._command_lock = None
+
+    def _read_states(self):
+        while not self._reader_stop.is_set():
+            message = self.state_sub.Read(timeout=0.1)
+            if message is not None:
+                self._receive(message)
 
     @staticmethod
     def validate_target(value):
@@ -49,8 +63,10 @@ class G1Dex1Hand:
 
     def _state(self):
         with self._lock:
-            if self._sample is None or time.monotonic() - self._stamp > 0.25:
-                raise RuntimeError(f"Missing/stale Dex1 {self.side} state; check gripper service")
+            age = time.monotonic() - self._stamp
+            if self._sample is None or age > 0.25:
+                detail = "missing" if self._sample is None else f"age={age:.3f}s"
+                raise RuntimeError(f"Missing/stale Dex1 {self.side} state ({detail}); check gripper service")
             return self._sample.copy()
 
     def observe(self):
@@ -128,4 +144,6 @@ class G1Dex1Hand:
         try:
             self.release_control()
         finally:
+            self._reader_stop.set()
+            self._reader_thread.join(timeout=0.5)
             self.state_sub.Close()
