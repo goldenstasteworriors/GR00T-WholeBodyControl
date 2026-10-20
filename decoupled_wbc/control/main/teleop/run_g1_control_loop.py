@@ -169,6 +169,7 @@ def main(config: ControlLoopConfig):
                         wbc_action = {"q": obs["q"].copy()}
                     else:
                         wbc_action = wbc_policy.get_action(time=t_now)
+                    target_computed_ns = time.monotonic_ns()
 
                 # Measure action queue time
                 with telemetry.timer("queue_action"):
@@ -302,6 +303,13 @@ def main(config: ControlLoopConfig):
                         send_started_ns=getattr(sender, "last_send_started_ns", None),
                         send_finished_ns=getattr(sender, "last_send_finished_ns", None),
                     )
+                    if "pico_sdk_read_finished_ns" in trace:
+                        metrics["pc_sdk_read_to_target_ms"] = (
+                            target_computed_ns - trace["pico_sdk_read_finished_ns"]
+                        ) / 1e6
+                        metrics["pc_frame_first_seen_to_target_ms"] = (
+                            target_computed_ns - trace["pico_frame_first_seen_ns"]
+                        ) / 1e6
                     timings = telemetry.get_last_timing()
                     for name in ("observe", "policy_setup", "policy_action", "queue_action", "publish_status"):
                         if name in timings:
@@ -316,6 +324,7 @@ def main(config: ControlLoopConfig):
                         "timestamp_ns": loop_started_ns, "metrics_ms": metrics,
                         "control_mode": mode.state,
                         "pico_source_timestamp_ns": trace.get("pico_source_timestamp_ns"),
+                        "pico_sdk_frame_count": trace.get("pico_sdk_frame_count"),
                         "tracking_error_rms_rad": float(np.sqrt(np.mean(error ** 2))),
                     })
                 end_time = time.monotonic()

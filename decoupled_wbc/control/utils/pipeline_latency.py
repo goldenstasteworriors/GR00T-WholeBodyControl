@@ -15,7 +15,8 @@ def pipeline_metrics(trace, *, received_ns, goal_read_ns, send_started_ns, send_
     span("dds_write_call_ms", send_finished_ns, send_started_ns)
     span("pc_sdk_read_to_dds_ms", send_finished_ns, trace.get("pico_sdk_read_finished_ns"))
     span("pc_frame_first_seen_to_dds_ms", send_finished_ns, trace.get("pico_frame_first_seen_ns"))
-    for name in ("pico_source_interval_ms", "pico_observed_interval_ms"):
+    for name in ("pico_source_interval_ms", "pico_observed_interval_ms",
+                 "sdk_producer_source_interval_ms", "sdk_producer_observed_interval_ms"):
         if trace.get(name) is not None and trace[name] >= 0:
             metrics[name] = trace[name]
     return metrics

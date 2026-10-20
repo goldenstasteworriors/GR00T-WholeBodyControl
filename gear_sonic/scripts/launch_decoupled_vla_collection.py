@@ -818,7 +818,10 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print("=" * 72)
     print("  Decoupled WBC -> Sonic VLA Data Collection")
     print("=" * 72)
-    print(f"  Mode:          {'Simulation' if config.sim else 'Real Robot'}")
+    label = "READ-ONLY diagnostic; actuator output disabled" if config.diagnostic_read_only else (
+        "Simulation" if config.sim else "Real Robot"
+    )
+    print(f"  Mode:          {label}")
     print(f"  Interface:     {interface}")
     print(f"  ROS domain:    {config.ros_domain_id} (robot SDK remains on domain 0)")
     print(f"  Dataset:       {config.dataset_name or '(timestamp)'}")

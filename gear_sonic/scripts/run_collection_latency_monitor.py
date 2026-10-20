@@ -29,9 +29,13 @@ def main(duration: float = 20.0, output_json: Path | None = None, ros_domain_id:
     latest_source = None
     first_sample = None
     last_sample = None
+    first_sdk_count = None
+    first_sdk_time = None
+    last_sdk_count = None
 
     def receive(message):
         nonlocal samples, latest_mode, latest_source, first_sample, last_sample
+        nonlocal first_sdk_count, first_sdk_time, last_sdk_count
         record = msgpack.unpackb(b"".join(message.data), object_hook=mnp.decode, raw=False)
         now = time.monotonic()
         samples += 1
@@ -39,6 +43,11 @@ def main(duration: float = 20.0, output_json: Path | None = None, ros_domain_id:
         last_sample = now
         latest_mode = record["control_mode"]
         source = record.get("pico_source_timestamp_ns")
+        sdk_count = record.get("pico_sdk_frame_count")
+        if sdk_count is not None:
+            if first_sdk_count is None:
+                first_sdk_count, first_sdk_time = sdk_count, now
+            last_sdk_count = sdk_count
         new_source = source is not None and source != latest_source
         if new_source:
             frames.append(now)
@@ -54,9 +63,12 @@ def main(duration: float = 20.0, output_json: Path | None = None, ros_domain_id:
     def report():
         rate = (samples - 1) / (last_sample - first_sample) if samples > 1 else None
         pico_rate = (len(frames) - 1) / (frames[-1] - frames[0]) if len(frames) > 1 else None
+        sdk_rate = ((last_sdk_count - first_sdk_count) / (last_sample - first_sdk_time)
+                    if first_sdk_count is not None and last_sample > first_sdk_time else None)
         return {
             "samples": samples, "control_mode": latest_mode,
             "control_observed_hz": rate, "pico_new_frames_observed_hz": pico_rate,
+            "pico_sdk_update_hz": sdk_rate,
             "window_samples_max": 3000,
             "metrics_ms": {name: summarize(series) for name, series in values.items()},
             "tracking_error_rms_rad": summarize(tracking) if tracking else None,

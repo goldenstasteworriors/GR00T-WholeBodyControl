@@ -71,6 +71,11 @@ class PicoStreamer(BaseStreamer):
         self.run_pico_service()
         self.xr_client = XrClient()
         self._xr_lock = threading.Lock()
+        self._sdk_frame_count = 0
+        self._sdk_source_ns = None
+        self._sdk_seen_ns = None
+        self._sdk_source_interval_ms = None
+        self._sdk_observed_interval_ms = None
         self._button_sampler = PicoButtonEventSampler(
             self._read_official_button_state,
             poll_hz=200.0,
@@ -318,6 +323,9 @@ class PicoStreamer(BaseStreamer):
             "pico_frame_first_seen_ns": self._latency_seen_ns,
             "pico_source_interval_ms": self._latency_source_interval_ms,
             "pico_observed_interval_ms": self._latency_seen_interval_ms,
+            "pico_sdk_frame_count": self._sdk_frame_count,
+            "sdk_producer_source_interval_ms": self._sdk_source_interval_ms,
+            "sdk_producer_observed_interval_ms": self._sdk_observed_interval_ms,
         }
         return raw_data
 
@@ -378,6 +386,15 @@ class PicoStreamer(BaseStreamer):
 
     def _read_official_button_state(self) -> PicoButtonState:
         with self._xr_lock:
+            source = int(self.xr_client.get_timestamp_ns())
+            now = time.monotonic_ns()
+            if source > 0 and source != self._sdk_source_ns:
+                if self._sdk_source_ns is not None:
+                    self._sdk_source_interval_ms = (source - self._sdk_source_ns) / 1e6
+                    self._sdk_observed_interval_ms = (now - self._sdk_seen_ns) / 1e6
+                self._sdk_source_ns = source
+                self._sdk_seen_ns = now
+                self._sdk_frame_count += 1
             return PicoButtonState(
                 a=bool(self.xr_client.get_button_state_by_name("A")),
                 b=bool(self.xr_client.get_button_state_by_name("B")),
