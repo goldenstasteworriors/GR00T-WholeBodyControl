@@ -1,4 +1,5 @@
 import collections
+import time as time_module
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -42,6 +43,14 @@ class G1GearWbcPolicy(Policy):
 
         # Initialize state variables
         self.use_policy_action = False
+        lower_body_indices = list(robot_model.get_joint_group_indices("lower_body"))
+        waist_indices = robot_model.get_joint_group_indices("waist")
+        self._waist_action_indices = np.array(
+            [lower_body_indices.index(index) for index in waist_indices], dtype=int
+        )
+        self._waist_initial_q = None
+        self._waist_initial_time = None
+        self._waist_center_duration = 2.0
         self.action = np.zeros(self.config["num_actions"], dtype=np.float32)
         self.target_dof_pos = self.config["default_angles"].copy()
         self.cmd = self.config["cmd_init"].copy()
@@ -240,8 +249,20 @@ class G1GearWbcPolicy(Policy):
         # Transform action to target_dof_pos
         if self.use_policy_action:
             cmd_q = self.action * self.config["action_scale"] + self.config["default_angles"]
+            self._waist_initial_time = None
         else:
-            cmd_q = self.observation["q"][self.robot_model.get_joint_group_indices("lower_body")]
+            cmd_q = self.observation["q"][
+                self.robot_model.get_joint_group_indices("lower_body")
+            ].copy()
+            now = time_module.monotonic() if time is None else time
+            if self._waist_initial_time is None:
+                self._waist_initial_time = now
+                self._waist_initial_q = cmd_q[self._waist_action_indices].copy()
+            alpha = np.clip((now - self._waist_initial_time) / self._waist_center_duration, 0.0, 1.0)
+            waist_reference = self.config["default_angles"][self._waist_action_indices]
+            cmd_q[self._waist_action_indices] = (
+                (1.0 - alpha) * self._waist_initial_q + alpha * waist_reference
+            )
 
         cmd_dq = np.zeros(self.config["num_actions"])
         cmd_tau = np.zeros(self.config["num_actions"])
