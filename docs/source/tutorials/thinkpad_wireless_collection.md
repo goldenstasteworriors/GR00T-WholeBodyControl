@@ -480,17 +480,18 @@ PICO 时间戳逐帧递增。
 仅发送两次c测试录制。
 未发送运动模式组合键。
 真实状态和下发目标均31维。
-静止录制88行并回读通过。
-三路视频各88帧可解码。
-最大三图时间差29.83ms。
-最大接收缓存约56ms。
+删除超时处理后重新验证。
+静止录制787行并回读通过。
+三路视频各787帧可解码。
+最大三图时间差约30ms。
+最大接收缓存约152ms。
 该调试数据不能用于训练。
 正式采集请换数据集名称。
 
 调试录制数据：
 
 ```text
-/home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard/outputs/debug_thinkpad_dex1_three_camera_20261020_150244
+/home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard/outputs/debug_thinkpad_dex1_three_camera_20261020_153446
 ```
 
 Balance包含双腿及三关节腰。
