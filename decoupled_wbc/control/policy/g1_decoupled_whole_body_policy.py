@@ -1,4 +1,3 @@
-import time as time_module
 from typing import Optional
 
 import numpy as np
@@ -84,8 +83,6 @@ class G1DecoupledWholeBodyPolicy(Policy):
         self.lower_body_policy.set_goal(lower_body_goal)
 
     def get_action(self, time: Optional[float] = None):
-        current_time = time if time is not None else time_module.monotonic()
-
         # Get indices for groups
         lower_body_indices = self.robot_model.get_joint_group_indices("lower_body")
         upper_body_indices = self.robot_model.get_joint_group_indices("upper_body")
