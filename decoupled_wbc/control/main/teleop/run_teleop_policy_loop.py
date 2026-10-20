@@ -22,6 +22,18 @@ from decoupled_wbc.control.utils.telemetry import Telemetry
 TELEOP_NODE_NAME = "TeleopPolicy"
 
 
+def _keep_initial_goal_alive(publisher, goal, duration):
+    """Keep the original startup goal alive without changing its trajectory."""
+    deadline = time.monotonic() + duration
+    while rclpy.ok():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.1, remaining))
+        goal["timestamp"] = time.monotonic()
+        publisher.publish(goal)
+
+
 def main(config: TeleopConfig):
     ros_manager = ROSManager(node_name=TELEOP_NODE_NAME)
     node = ros_manager.node
@@ -145,7 +157,11 @@ def main(config: TeleopConfig):
                 # For the initial pose, wait the full duration before continuing
                 if iteration == 0:
                     print(f"Moving to initial pose for {time_to_get_to_initial_pose} seconds")
-                    time.sleep(time_to_get_to_initial_pose)
+                    # The body watchdog expires after one second. Keep sending
+                    # the same initial target and its original target_time
+                    # during this two-second wait, rather than resetting the
+                    # interpolation through a false communication timeout.
+                    _keep_initial_goal_alive(control_publisher, data, time_to_get_to_initial_pose)
                 iteration += 1
             end_time = time.monotonic()
             if config.verbose_timing and (end_time - t_start) > (1 / config.teleop_frequency):
