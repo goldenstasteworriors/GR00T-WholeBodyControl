@@ -119,6 +119,11 @@ class TeleopPolicy(Policy):
         ):
             self._collection_initialization_epoch = epoch
             self._startup_reference_synced = False
+            self.is_active = False
+            self._teleop_state = "paused"
+            self._activation_deadline = None
+            self._resume_ramp_deadline = None
+            self.teleop_streamer.reset()
         self._last_collection_mode = mode
         if mode == "damped":
             self.is_active = False

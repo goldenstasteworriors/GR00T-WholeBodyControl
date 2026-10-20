@@ -46,6 +46,9 @@ class CollectionMode:
             lower.use_policy_action = False
             lower._waist_initial_time = None
             lower.cmd = lower.config["cmd_init"].copy()
+            lower.height_cmd = lower.config["height_cmd"]
+            lower.freq_cmd = lower.config["freq_cmd"]
+            lower.roll_cmd, lower.pitch_cmd, lower.yaw_cmd = lower.config["rpy_cmd"]
             lower.action[:] = 0.0
             lower.obs_history.clear()
             self.policy.upper_body_policy = get_startup_upper_body_policy(
