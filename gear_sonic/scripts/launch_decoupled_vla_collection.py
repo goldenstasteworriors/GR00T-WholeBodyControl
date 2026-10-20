@@ -882,6 +882,10 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     viewer_cmd = (
         prefix
         + runtime_env
+        # Scope pixel scaling to this preview; do not inherit a desktop-wide
+        # Qt scale factor that makes three camera tiles wider than the screen.
+        + "env QT_AUTO_SCREEN_SCALE_FACTOR=0 QT_ENABLE_HIGHDPI_SCALING=0 "
+        + "QT_SCALE_FACTOR=1 QT_SCREEN_SCALE_FACTORS=1 "
         + _shell_join(
             [
                 "python",
