@@ -1,4 +1,4 @@
-# ThinkPad 无线 PICO 采集流程
+# ThinkPad 无线采集流程
 
 当前只使用此流程。
 有线与机载完善已暂停。
@@ -188,13 +188,21 @@ Ctrl+b 后按方向键切换。
 
 同时按 A+B+X+Y 后松开。
 该组合切换身体策略开关。
-日志须确认 starting policy。
+日志须确认策略启动。
+
+```text
+starting policy
+```
 
 ## 14. 开启上身遥操作
 
 手柄放在合适的起始位置。
 同时按 A+X 后松开。
-等待 Teleop policy active。
+等待上身遥操作就绪。
+
+```text
+Teleop policy active
+```
 再次 A+X 暂停上身遥控。
 左右扳机分别控制左右爪。
 大于0.5使用 pressed_q。
