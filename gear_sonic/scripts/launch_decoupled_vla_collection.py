@@ -352,8 +352,14 @@ class DecoupledVLACollectionLaunchConfig:
     camera_port: int = 5555
     """Camera server port."""
 
-    camera_viewer: bool = False
+    camera_viewer: bool = True
     """Start camera viewer pane."""
+
+    camera_relay: bool = True
+    """Share one robot camera connection between exporter and preview."""
+
+    camera_relay_port: int = 5558
+    """Loopback-only camera fan-out port when the viewer is enabled."""
 
     # Optional PICO metadata streamer
     pico_data_streamer: bool = True
@@ -408,6 +414,8 @@ class DecoupledVLACollectionLaunchConfig:
 
 def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: Path) -> None:
     errors = []
+    if not 1 <= config.camera_relay_port <= 65535:
+        errors.append("camera-relay-port must be in [1, 65535]")
     if not math.isfinite(config.camera_sync_tolerance_ms) or config.camera_sync_tolerance_ms < 0:
         errors.append("camera_sync_tolerance_ms must be finite and nonnegative")
     if not math.isfinite(config.camera_max_hold_ms) or config.camera_max_hold_ms <= 0:
@@ -606,7 +614,14 @@ def _build_teleop_args(config: DecoupledVLACollectionLaunchConfig, interface: st
     return args
 
 
+def _collection_camera_endpoint(config: DecoupledVLACollectionLaunchConfig) -> tuple[str, int]:
+    if config.camera_viewer and config.camera_relay:
+        return "127.0.0.1", config.camera_relay_port
+    return config.camera_host, config.camera_port
+
+
 def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str]:
+    camera_host, camera_port = _collection_camera_endpoint(config)
     repo_root = Path(__file__).resolve().parent.parent.parent
     inspire_pose_config = (
         Path(config.inspire_hand_pose_config).expanduser()
@@ -625,9 +640,9 @@ def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str
         "--data-collection-frequency",
         str(config.data_exporter_frequency),
         "--camera-host",
-        config.camera_host,
+        camera_host,
         "--camera-port",
-        str(config.camera_port),
+        str(camera_port),
         "--camera-sync-tolerance-ms", str(config.camera_sync_tolerance_ms),
         "--camera-max-hold-ms", str(config.camera_max_hold_ms),
         "--sonic-zmq-host",
@@ -856,6 +871,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     )
     teleop_cmd = prefix + runtime_env + _shell_join(_build_teleop_args(config, interface))
     exporter_cmd = prefix + runtime_env + _shell_join(_build_exporter_args(config))
+    viewer_host, viewer_port = _collection_camera_endpoint(config)
     viewer_cmd = (
         prefix
         + runtime_env
@@ -864,15 +880,35 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
                 "python",
                 "gear_sonic/scripts/run_camera_viewer.py",
                 "--camera-host",
-                config.camera_host,
+                viewer_host,
                 "--camera-port",
-                str(config.camera_port),
+                str(viewer_port),
+                "--max-display-width", "480",
                 *_bool_arg("profile-timing", config.profile_timing),
                 "--profile-interval",
                 str(config.profile_interval),
             ]
         )
     )
+
+    if config.camera_viewer and config.camera_relay:
+        subprocess.run(["tmux", "new-window", "-t", SESSION_NAME, "-n", "camera_relay"], check=True)
+        relay_cmd = prefix + _shell_join([
+            "python", "gear_sonic/scripts/run_camera_relay.py",
+            "--camera-host", config.camera_host, "--camera-port", str(config.camera_port),
+            "--local-port", str(config.camera_relay_port),
+        ])
+        _send_to_target(f"{SESSION_NAME}:camera_relay", relay_cmd, wait=1.0)
+        relay_check = prefix + _shell_join([
+            "python", "-c",
+            "from gear_sonic.scripts.check_dex1_connection import check_camera; "
+            f"raise SystemExit(0 if check_camera({viewer_host!r}, {viewer_port!r}, "
+            f"record_wrist_cameras={config.record_wrist_cameras!r}, "
+            f"sync_tolerance_ms={config.camera_sync_tolerance_ms!r}) else 1)",
+        ])
+        if subprocess.run(["bash", "-c", relay_check]).returncode:
+            raise RuntimeError("Local camera relay preflight failed; robot control was not started")
+        subprocess.run(["tmux", "select-window", "-t", f"{SESSION_NAME}:collection"])
 
     _send_to_target(f"{SESSION_NAME}:collection.0", control_cmd, wait=3.0)
     _send_to_target(f"{SESSION_NAME}:collection.2", teleop_cmd, wait=2.0)

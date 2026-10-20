@@ -24,6 +24,7 @@ Output structure:
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import time
 from typing import Optional
 
@@ -67,6 +68,9 @@ class CameraViewerConfig:
 
 
 def _opencv_highgui_available() -> bool:
+    # Qt can abort the process before raising cv2.error when no display exists.
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return False
     build_info = cv2.getBuildInformation()
     if "GUI:                           NONE" in build_info:
         return False
