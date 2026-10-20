@@ -156,12 +156,11 @@ A+X 单独切换上身遥操作。
 启动心跳已撤掉。
 保留原初姿和2秒插值。
 
-## 阻尼急停与退出
+## 阻尼急停与恢复
 
 新启动的采集会话才生效。
 选中左上control窗格。
-切至英文输入，直接按此键。
-不按Shift，直接按小写d。
+英文输入，按小写d。
 
 ```text
 d
@@ -172,43 +171,127 @@ d
 速度目标及前馈力矩归零。
 身体阻尼增益使用8。
 双Dex1释放位置控制。
-阻尼命令持续下发约0.5秒。
-再请求官方FSM阻尼状态1。
-读回确认后关闭整个会话。
-确认结果保存至项目文件。
+控制循环持续下发阻尼。
+急停后保留程序及四窗格。
+不调用不可用的loco服务。
 阻尼不会维持站立姿态。
 不新增通信看门狗。
 
-采集界面任意窗格也可按：
+任意采集窗格也可按：
 
 ```text
 Ctrl+\
 ```
 
-此键给控制进程发停止信号。
-不依赖Python键盘监听线程。
-关闭最后界面也会阻尼退出。
+急停后，四键第一次重新初始化。
+等待control显示ready。
+松开后，再按四键才开启站立。
+初始化中按键不会排队启站。
+四键长按只计一次。
+站立运行中四键会进入阻尼。
+A+X仍单独控制上身遥操作。
+
+```text
+A+B+X+Y
+```
+
+键盘同样支持两步恢复。
+选中control，按右方括号。
+第一次初始化，ready后再按站立。
+
+```text
+]
+```
+
+关闭最后界面会阻尼退出。
 最后界面detach也会退出。
 异常退出同样先执行阻尼。
+退出前额外发送约0.5秒阻尼。
 SIGKILL及断电无法执行清理。
 
-独立终端可请求阻尼退出。
+独立终端可请求驻留阻尼：
 
 ```bash
 kill -USR1 "$(tmux show-environment -t decoupled_vla_collection DECOUPLED_WBC_CONTROL_PID | cut -d= -f2)"
 ```
 
-停止确认记录：
+独立终端可请求阻尼并退出：
+
+```bash
+kill -TERM "$(tmux show-environment -t decoupled_vla_collection DECOUPLED_WBC_CONTROL_PID | cut -d= -f2)"
+```
+
+退出记录位于项目下：
 
 ```text
 .runtime/collection_damping_stop.json
 ```
 
-本版隔离验证已通过。
-已测试急停键与两种退出。
-已验证锁住后不再发位置目标。
-真实急停已测试一次。
-结果见末尾实际急停验收。
+记录确认低层阻尼已发布。
+不代表官方FSM或机械响应确认。
+恢复状态机隔离测试已通过。
+只读四窗格验证驻留及重初始化。
+本版未做真实站立测试。
+
+## 分段延迟监测
+
+原命令保留profile参数：
+
+```text
+--profile-timing
+```
+
+四窗格外另有latency窗口。
+按Ctrl+b，再按w选择窗口。
+显示p50、p95及最大值。
+统计文件位于项目下：
+
+```text
+logs/decoupled_vla_collection/<数据集>_<编号>/latency.json
+```
+
+| 指标 | 用途 |
+|---|---|
+| SDK生产帧率 | 区分生产帧与50Hz采样 |
+| pico_sdk_read_ms | SDK读取耗时 |
+| teleop_total_ms | 重定向及遥控计算 |
+| ros_delivery_ms | 发布至ROS接收 |
+| control_goal_wait_ms | 接收后等待控制循环 |
+| policy_action_ms | 策略及关节目标计算 |
+| dds_write_call_ms | 本机DDS写入调用耗时 |
+| pc_sdk_read_to_dds_ms | SDK读完至DDS写完 |
+| observe_ms | 身体及夹爪反馈读取 |
+| control_period_ms | 控制周期及抖动 |
+
+只读诊断可附加以下参数。
+上一行末尾需加反斜杠。
+不切换官方模式，不发执行命令。
+
+```text
+--diagnostic-read-only
+```
+
+只读模式没有DDS发送耗时。
+pc_sdk_read_to_target_ms可用。
+它只量到目标算完，不含执行。
+PICO断开时可另加以下参数：
+
+```text
+--no-pico-preflight
+```
+
+独立终端也可只读监测。
+先激活采集环境，再执行：
+
+```bash
+python gear_sonic/scripts/run_collection_latency_monitor.py --duration 30 --output-json .runtime/collection_latency_check.json
+```
+
+PICO更新间隔不是无线单程延迟。
+DDS写耗时不是机器人执行延迟。
+关节跟踪误差不是机械响应时延。
+跨设备绝对时延需时钟或回执。
+本机各段统一使用单调时钟。
 
 关键代码位置：
 
@@ -409,7 +492,9 @@ Ctrl+b 后按方向键切换。
 ## 13. 开启身体策略
 
 同时按 A+B+X+Y 后松开。
-该组合切换身体策略开关。
+ready状态四键开启站立。
+阻尼状态第一次四键重新初始化。
+初始化完成后再按才开启站立。
 日志须确认策略启动。
 
 ```text
@@ -463,7 +548,7 @@ Teleop policy active
 ## 20. 安全停止真实控制
 
 现场接管后结束采集会话。
-按Ctrl+反斜杠阻尼退出。
+按d或Ctrl+反斜杠保持阻尼。
 关闭最后界面也会阻尼退出。
 Ctrl+b、d不再保留后台控制。
 
@@ -535,7 +620,9 @@ gear_sonic/scripts/run_decoupled_vla_data_exporter.py
 decoupled_wbc/control/teleop/streamers/pico_streamer.py
 ```
 
-## 实际急停验收
+## 旧版实际急停验收
+
+以下为旧版测试记录。
 
 2026-10-20，仅实测一次。
 机器人网线已恢复。
