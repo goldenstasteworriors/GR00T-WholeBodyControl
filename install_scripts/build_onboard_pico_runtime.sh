@@ -17,7 +17,8 @@ export TMPDIR="${REPO_ROOT}/.runtime/tmp"
 mkdir -p "$TMPDIR"
 "$CONDA" run --no-capture-output -p "$BUILD_ENV" cmake \
     -S "$SOURCE_DIR" -B "${SOURCE_DIR}/build-ubuntu20" \
-    -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$BUILD_ENV" -DBUILD_LIB_PATH="$BUILD_ENV"
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$BUILD_ENV" -DBUILD_LIB_PATH="$BUILD_ENV" \
+    -DQT_HOST_PATH="$BUILD_ENV"
 "$CONDA" run --no-capture-output -p "$BUILD_ENV" cmake --build "${SOURCE_DIR}/build-ubuntu20" --parallel 2
 "$CONDA" run --no-capture-output -p "$BUILD_ENV" cmake \
     -S "${SOURCE_DIR}/PXREARobotSDK" -B "${SOURCE_DIR}/PXREARobotSDK/build-ubuntu20" -DCMAKE_BUILD_TYPE=Release
