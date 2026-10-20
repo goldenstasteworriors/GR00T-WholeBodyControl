@@ -323,6 +323,7 @@ def main(config: ControlLoopConfig):
                     latency_pub.publish({
                         "timestamp_ns": loop_started_ns, "metrics_ms": metrics,
                         "control_mode": mode.state,
+                        "actuator_output_enabled": not config.diagnostic_read_only,
                         "pico_source_timestamp_ns": trace.get("pico_source_timestamp_ns"),
                         "pico_sdk_frame_count": trace.get("pico_sdk_frame_count"),
                         "tracking_error_rms_rad": float(np.sqrt(np.mean(error ** 2))),

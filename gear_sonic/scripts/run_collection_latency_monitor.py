@@ -27,6 +27,7 @@ def main(duration: float = 20.0, output_json: Path | None = None, ros_domain_id:
     samples = 0
     latest_mode = None
     latest_source = None
+    actuator_output_enabled = None
     first_sample = None
     last_sample = None
     first_sdk_count = None
@@ -36,12 +37,14 @@ def main(duration: float = 20.0, output_json: Path | None = None, ros_domain_id:
     def receive(message):
         nonlocal samples, latest_mode, latest_source, first_sample, last_sample
         nonlocal first_sdk_count, first_sdk_time, last_sdk_count
+        nonlocal actuator_output_enabled
         record = msgpack.unpackb(b"".join(message.data), object_hook=mnp.decode, raw=False)
         now = time.monotonic()
         samples += 1
         first_sample = now if first_sample is None else first_sample
         last_sample = now
         latest_mode = record["control_mode"]
+        actuator_output_enabled = record.get("actuator_output_enabled")
         source = record.get("pico_source_timestamp_ns")
         sdk_count = record.get("pico_sdk_frame_count")
         if sdk_count is not None:
@@ -67,6 +70,7 @@ def main(duration: float = 20.0, output_json: Path | None = None, ros_domain_id:
                     if first_sdk_count is not None and last_sample > first_sdk_time else None)
         return {
             "samples": samples, "control_mode": latest_mode,
+            "actuator_output_enabled": actuator_output_enabled,
             "control_observed_hz": rate, "pico_new_frames_observed_hz": pico_rate,
             "pico_sdk_update_hz": sdk_rate,
             "window_samples_max": 3000,

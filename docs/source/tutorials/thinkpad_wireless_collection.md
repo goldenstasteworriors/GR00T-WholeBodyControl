@@ -67,7 +67,7 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
 | 10 确认现场 | 支撑及接管人员就绪 | 本步骤不发动作 |
 | 11 正式启动 | 出现四个采集窗格 | 官方退出，手臂腰爪可能动 |
 | 12 查看日志 | 四组件持续运行无报错 | 已在发送关节命令 |
-| 13 开启身体策略 | 显示starting policy | Balance策略接管腿部 |
+| 13 开启身体策略 | control显示running | Balance接管双腿及腰 |
 | 14 开启上身遥控 | 显示Teleop policy active | 手臂随手柄移动 |
 | 15 选择control窗格 | 焦点切至control | 仍由当前控制运行 |
 | 16 按c录制 | 显示Started recording | 不改变站立策略 |
