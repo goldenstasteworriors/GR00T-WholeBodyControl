@@ -196,6 +196,13 @@ kill -USR1 "$(tmux show-environment -t decoupled_vla_collection DECOUPLED_WBC_CO
 .runtime/collection_damping_stop.json
 ```
 
+本版隔离验证已通过。
+已测试急停键与两种退出。
+已验证锁住后不再发位置目标。
+真实阻尼测试尚未执行。
+当前机器人网卡显示DOWN。
+恢复连接后仅实测一次。
+
 关键代码位置：
 
 ```text
