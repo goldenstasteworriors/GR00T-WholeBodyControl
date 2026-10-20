@@ -140,6 +140,7 @@ def _runtime_env_prefix(repo_root: Path, config: "DecoupledVLACollectionLaunchCo
     hand_task_config = Path(config.hand_task_config).expanduser() if config.hand_task_config else _default_hand_task_config(repo_root)
     return (
         f"export DECOUPLED_WBC_TMUX_SESSION={shlex.quote(SESSION_NAME)} && "
+        f"export ROS_DOMAIN_ID={config.ros_domain_id} && "
         f"export SONIC_HAND_TASK={shlex.quote(config.hand_task)} && "
         f"export SONIC_HAND_TASK_CONFIG={shlex.quote(str(hand_task_config))} && "
     )
@@ -177,6 +178,9 @@ class DecoupledVLACollectionLaunchConfig:
 
     interface: str = ""
     """Control interface. Defaults to sim when --sim is set, otherwise real."""
+
+    ros_domain_id: int = 73
+    """Local ROS transport domain, separate from the robot SDK's domain 0."""
 
     simulator: str = "mujoco"
     """Simulator backend for run_sim_loop.py."""
@@ -414,6 +418,8 @@ class DecoupledVLACollectionLaunchConfig:
 
 def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: Path) -> None:
     errors = []
+    if not 0 <= config.ros_domain_id <= 232:
+        errors.append("ros-domain-id must be in [0, 232]")
     if not 1 <= config.camera_relay_port <= 65535:
         errors.append("camera-relay-port must be in [1, 65535]")
     if not math.isfinite(config.camera_sync_tolerance_ms) or config.camera_sync_tolerance_ms < 0:
@@ -787,6 +793,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print("=" * 72)
     print(f"  Mode:          {'Simulation' if config.sim else 'Real Robot'}")
     print(f"  Interface:     {interface}")
+    print(f"  ROS domain:    {config.ros_domain_id} (robot SDK remains on domain 0)")
     print(f"  Dataset:       {config.dataset_name or '(timestamp)'}")
     print(f"  Task:          {config.task_prompt}")
     print(f"  Conda env:     {config.conda_env}")
