@@ -89,9 +89,13 @@ start() {
         return
     fi
 
+    # The robot may already serve DHCP on wlan0 (10.42.0.1). Only a
+    # wildcard or this wired address conflicts with the eth0-only daemon.
     if ! dhcp_running \
-        && ss -lun 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:67[[:space:]]'; then
-        echo "ERROR: UDP port 67 is already in use." >&2
+        && ss -H -lun 2>/dev/null | awk -v ip="$ROBOT_IP" '
+            $4 == ip ":67" || $4 == "0.0.0.0:67" || $4 == "*:67" || $4 == "[::]:67" { found=1 }
+            END { exit !found }'; then
+        echo "ERROR: wired/wildcard UDP port 67 is already in use." >&2
         echo "Stop the manually started dnsmasq with Ctrl+C before using this script." >&2
         exit 1
     fi
