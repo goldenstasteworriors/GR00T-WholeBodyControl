@@ -61,7 +61,7 @@ class CameraViewerConfig:
     """Show OpenCV preview window when HighGUI support is available."""
 
     profile_timing: bool = False
-    """Print receive/decode/display timing and camera frame age."""
+    """Print processing timing and source-clock delta (includes clock offset)."""
 
     profile_interval: float = 1.0
     """Seconds between timing profile log lines."""
@@ -116,6 +116,7 @@ def main(config: CameraViewerConfig):
     print(f"Recordings will be saved to: {output_dir}")
     if display_enabled:
         print("Controls: R = start/stop recording, Q = quit")
+        print("Source clock delta includes robot/PC clock offset; it is not network latency.")
     else:
         print(
             "OpenCV HighGUI is unavailable; running without preview window. "
@@ -231,8 +232,8 @@ def main(config: CameraViewerConfig):
                             f"read_decode={arr[:, 0].mean():.2f}ms "
                             f"process={arr[:, 1].mean():.2f}ms "
                             f"display={arr[:, 2].mean():.2f}ms "
-                            f"image_age={arr[:, 3].mean():.1f}ms "
-                            f"image_age_max={arr[:, 3].max():.1f}ms"
+                            f"source_clock_delta={arr[:, 3].mean():.1f}ms "
+                            f"source_clock_delta_max={arr[:, 3].max():.1f}ms"
                         )
                     profile_samples.clear()
                     last_profile_time = now
