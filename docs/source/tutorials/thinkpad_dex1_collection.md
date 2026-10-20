@@ -1,6 +1,10 @@
 # ThinkPad 双 Dex1 采集
 
-**2026-10-19 拓扑复核：用户要求 PICO 直连机器人，恢复机器人端 DHCP/PICO 服务。
+**2026-10-20 当前任务：暂停有线与机载部署完善，优先验证 ThinkPad 无线 PICO 采集，数据保存在 ThinkPad。
+请按 [ThinkPad 无线 PICO 采集流程](thinkpad_wireless_collection.md) 操作，其中包含显式启动 PC Service 的命令。
+下文保留历史记录。**
+
+**2026-10-19 历史拓扑复核：当时用户要求 PICO 直连机器人，恢复机器人端 DHCP/PICO 服务。
 下文“ThinkPad PICO”章节是此前误选的部署方案，不再作为当前启动指引。
 本次启动的 ThinkPad DHCP 和 PC Service 已停止，夹爪网页保留。
 最新阻塞项与验证范围见文末“机载 PICO 拓扑复核”。不要直接照搬旧机器人路径。**
