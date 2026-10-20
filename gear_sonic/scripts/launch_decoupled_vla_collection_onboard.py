@@ -39,6 +39,9 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     launcher = repo_root / "gear_sonic/scripts/launch_decoupled_vla_collection.py"
     conda = shutil.which("conda")
+    project_conda = repo_root / ".runtime/miniforge3/bin/conda"
+    if conda is None and project_conda.is_file():
+        conda = str(project_conda)
     if conda is None and DEFAULT_CONDA.is_file():
         conda = str(DEFAULT_CONDA)
     if conda is None:
