@@ -83,36 +83,36 @@ def main(config: ControlLoopConfig):
     if env.sim and not config.sim_sync_mode:
         env.start_simulator()
 
-    wbc_policy = get_wbc_policy("g1", robot_model, wbc_config)
-
-    keyboard_listener_pub = KeyboardListenerPublisher()
     shutdown = DampingShutdown(env)
     shutdown.install_signals()
-    keyboard_estop = KeyboardEStop(shutdown.request)
-    sim_reset_keyboard_pub = SimResetKeyboardPublisher(sim_reset_pub)
-    if config.keyboard_dispatcher_type == "raw":
-        dispatcher = KeyboardDispatcher()
-    elif config.keyboard_dispatcher_type == "ros":
-        dispatcher = ROSKeyboardDispatcher()
-    else:
-        raise ValueError(
-            f"Invalid keyboard dispatcher: {config.keyboard_dispatcher_type}, please use 'raw' or 'ros'"
-        )
-    dispatcher.register(env)
-    dispatcher.register(wbc_policy)
-    dispatcher.register(keyboard_listener_pub)
-    dispatcher.register(sim_reset_keyboard_pub)
-    dispatcher.register(keyboard_estop)
-    dispatcher.start()
-
-    rate = node.create_rate(config.control_frequency)
-
-    upper_body_policy_subscriber = ROSMsgSubscriber(CONTROL_GOAL_TOPIC)
-
-    last_teleop_cmd = None
-    last_data_collection_event_id = 0
-    last_data_abort_event_id = 0
     try:
+        wbc_policy = get_wbc_policy("g1", robot_model, wbc_config)
+
+        keyboard_listener_pub = KeyboardListenerPublisher()
+        keyboard_estop = KeyboardEStop(shutdown.request)
+        sim_reset_keyboard_pub = SimResetKeyboardPublisher(sim_reset_pub)
+        if config.keyboard_dispatcher_type == "raw":
+            dispatcher = KeyboardDispatcher()
+        elif config.keyboard_dispatcher_type == "ros":
+            dispatcher = ROSKeyboardDispatcher()
+        else:
+            raise ValueError(
+                f"Invalid keyboard dispatcher: {config.keyboard_dispatcher_type}, please use 'raw' or 'ros'"
+            )
+        dispatcher.register(env)
+        dispatcher.register(wbc_policy)
+        dispatcher.register(keyboard_listener_pub)
+        dispatcher.register(sim_reset_keyboard_pub)
+        dispatcher.register(keyboard_estop)
+        dispatcher.start()
+
+        rate = node.create_rate(config.control_frequency)
+
+        upper_body_policy_subscriber = ROSMsgSubscriber(CONTROL_GOAL_TOPIC)
+
+        last_teleop_cmd = None
+        last_data_collection_event_id = 0
+        last_data_abort_event_id = 0
         while ros_manager.ok() and not shutdown.requested.is_set():
             t_start = time.monotonic()
             with telemetry.timer("total_loop"):
