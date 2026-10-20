@@ -81,7 +81,8 @@ class ROSKeyboardDispatcher:
     def _callback(self, msg: RosStringMsg):
         if self._active:
             for listener in self.listeners:
-                listener.handle_keyboard_button(msg.data)
+                if listener.handle_keyboard_button(msg.data):
+                    break
 
     def __del__(self):
         """Cleanup when object is destroyed."""
@@ -109,7 +110,8 @@ class KeyboardDispatcher:
             return
 
         for listener in self.listeners:
-            listener.handle_keyboard_button(key)
+            if listener.handle_keyboard_button(key):
+                break
 
     def start_listening(self):
         try:
@@ -220,5 +222,7 @@ class KeyboardEStop:
         self.stop_callback = stop_callback
 
     def handle_keyboard_button(self, key):
-        if key == "`":
-            self.stop_callback("keyboard:`")
+        if key == "d":
+            self.stop_callback("keyboard:d")
+            return True
+        return False

@@ -99,11 +99,11 @@ def main(config: ControlLoopConfig):
             raise ValueError(
                 f"Invalid keyboard dispatcher: {config.keyboard_dispatcher_type}, please use 'raw' or 'ros'"
             )
+        dispatcher.register(keyboard_estop)
         dispatcher.register(env)
         dispatcher.register(wbc_policy)
         dispatcher.register(keyboard_listener_pub)
         dispatcher.register(sim_reset_keyboard_pub)
-        dispatcher.register(keyboard_estop)
         dispatcher.start()
 
         rate = node.create_rate(config.control_frequency)

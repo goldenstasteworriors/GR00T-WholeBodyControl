@@ -978,7 +978,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print()
     print("  Controls:")
     print("    Ctrl+b, arrows  switch panes")
-    print("    ` (control)     damping stop and exit")
+    print("    d (control)     damping stop and exit")
     print("    Ctrl+\\          damping stop and exit from any pane")
     print("    Last client closing/detaching also requests damping stop")
     print("=" * 72)
