@@ -1,5 +1,4 @@
 import os
-import subprocess
 import sys
 import threading
 
@@ -217,32 +216,9 @@ class KeyboardListenerSubscriber:
 
 
 class KeyboardEStop:
-    def __init__(self):
-        """Initialize KeyboardEStop with automatic tmux cleanup detection."""
-        # Automatically create tmux cleanup if in deployment mode
-        self.cleanup_callback = self._create_tmux_cleanup_callback()
-
-    def _create_tmux_cleanup_callback(self):
-        """Create a cleanup callback that kills the tmux session if running in deployment mode."""
-        tmux_session = os.environ.get("DECOUPLED_WBC_TMUX_SESSION")
-
-        def cleanup_callback():
-            try:
-                if tmux_session:
-                    # The child must outlive this control process so it can
-                    # close the other panes after the process exits below.
-                    subprocess.Popen(
-                        ["tmux", "kill-session", "-t", tmux_session],
-                        start_new_session=True,
-                    )
-            finally:
-                # sys.exit from the keyboard thread only stops that thread.
-                # A manual stop must terminate the control process itself.
-                os._exit(1)
-
-        return cleanup_callback
+    def __init__(self, stop_callback):
+        self.stop_callback = stop_callback
 
     def handle_keyboard_button(self, key):
         if key == "`":
-            print("Emergency stop triggered - running cleanup...")
-            self.cleanup_callback()
+            self.stop_callback("keyboard:`")

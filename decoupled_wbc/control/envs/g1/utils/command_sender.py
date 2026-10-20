@@ -17,6 +17,8 @@ from unitree_sdk2py.utils.crc import CRC
 class BodyCommandSender:
     def __init__(self, config: Dict):
         self.config = config
+        self._command_lock = threading.RLock()
+        self._damping = False
         if self.config["ROBOT_TYPE"] == "h1" or self.config["ROBOT_TYPE"] == "go2":
             from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
             from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_
@@ -89,6 +91,26 @@ class BodyCommandSender:
         return motor_index in self.weak_motor_joint_index
 
     def send_command(self, cmd_q: np.ndarray, cmd_dq: np.ndarray, cmd_tau: np.ndarray):
+        with self._command_lock:
+            if self._damping:
+                return
+            self._send_position_command(cmd_q, cmd_dq, cmd_tau)
+
+    def send_damping(self):
+        """Latch out position commands and apply velocity damping on every motor."""
+        with self._command_lock:
+            self._damping = True
+            for i in range(self.config["NUM_MOTORS"]):
+                motor = self.low_cmd.motor_cmd[i]
+                motor.q = motor.dq = motor.tau = motor.kp = 0.0
+                # Unitree rl_gym's create_damping_cmd uses kd=8, kp=0.
+                # Do not reuse the position-controller gains for this mode.
+                motor.kd = 8.0
+            self.low_cmd.crc = self.crc.Crc(self.low_cmd)
+            if not self.lowcmd_publisher_.Write(self.low_cmd):
+                raise RuntimeError("Failed to publish body damping command")
+
+    def _send_position_command(self, cmd_q, cmd_dq, cmd_tau):
         for i in range(self.config["NUM_MOTORS"]):
             motor_index = self.config["JOINT2MOTOR"][i]
             joint_index = self.config["MOTOR2JOINT"][i]

@@ -1,4 +1,5 @@
 from copy import deepcopy
+import os
 import time
 
 import tyro
@@ -25,7 +26,9 @@ from decoupled_wbc.control.utils.keyboard_dispatcher import (
     KeyboardEStop,
     KeyboardListenerPublisher,
     ROSKeyboardDispatcher,
+    restore_terminal,
 )
+from decoupled_wbc.control.utils.damping_shutdown import DampingShutdown
 from decoupled_wbc.control.utils.ros_utils import (
     ROSManager,
     ROSMsgPublisher,
@@ -83,7 +86,9 @@ def main(config: ControlLoopConfig):
     wbc_policy = get_wbc_policy("g1", robot_model, wbc_config)
 
     keyboard_listener_pub = KeyboardListenerPublisher()
-    keyboard_estop = KeyboardEStop()
+    shutdown = DampingShutdown(env)
+    shutdown.install_signals()
+    keyboard_estop = KeyboardEStop(shutdown.request)
     sim_reset_keyboard_pub = SimResetKeyboardPublisher(sim_reset_pub)
     if config.keyboard_dispatcher_type == "raw":
         dispatcher = KeyboardDispatcher()
@@ -108,7 +113,7 @@ def main(config: ControlLoopConfig):
     last_data_collection_event_id = 0
     last_data_abort_event_id = 0
     try:
-        while ros_manager.ok():
+        while ros_manager.ok() and not shutdown.requested.is_set():
             t_start = time.monotonic()
             with telemetry.timer("total_loop"):
                 # Step simulator if in sync mode
@@ -134,9 +139,8 @@ def main(config: ControlLoopConfig):
                         if config.ik_indicator:
                             env.set_ik_indicator(upper_body_cmd)
                     if wbc_goal.get("emergency_stop", False):
-                        print("Emergency stop requested from teleop")
-                        wbc_goal["navigate_cmd"] = DEFAULT_NAV_CMD
-                        wbc_goal["set_policy_action"] = False
+                        shutdown.request("teleop_emergency_stop")
+                        break
                     # Send goal to policy
                     if wbc_goal:
                         wbc_goal["interpolation_garbage_collection_time"] = t_now - 2 * (
@@ -150,6 +154,8 @@ def main(config: ControlLoopConfig):
 
                 # Measure action queue time
                 with telemetry.timer("queue_action"):
+                    if shutdown.requested.is_set():
+                        break
                     env.queue_action(wbc_action)
 
                 # Publish status information for InteractiveModeController
@@ -273,14 +279,11 @@ def main(config: ControlLoopConfig):
     except ros_manager.exceptions() as e:
         print(f"ROSManager interrupted by user: {e}")
     finally:
-        print("Cleaning up...")
-        # Close native DDS readers before ROS/interpreter teardown, so their
-        # Python callbacks cannot deadlock during native entity destruction.
-        dispatcher.stop()
-        try:
-            env.close()
-        finally:
-            ros_manager.shutdown()
+        # Damping and the official FSM acknowledgment precede session teardown.
+        # Do not depend on native DDS/ROS destructors to complete this stop.
+        report = shutdown.finish()
+        restore_terminal()
+        os._exit(0 if report["confirmed"] else 1)
 
 
 if __name__ == "__main__":

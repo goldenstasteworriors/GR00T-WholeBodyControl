@@ -518,13 +518,33 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
 
 
 def _kill_existing_session() -> None:
-    subprocess.run(["tmux", "kill-session", "-t", SESSION_NAME], capture_output=True)
+    exists = subprocess.run(["tmux", "has-session", "-t", SESSION_NAME], capture_output=True)
+    if exists.returncode:
+        return
+    pid = subprocess.run([
+        "tmux", "show-environment", "-t", SESSION_NAME, "-v", "DECOUPLED_WBC_CONTROL_PID",
+    ], capture_output=True, text=True)
+    if pid.returncode:
+        raise RuntimeError("Existing session has no damping-stop handler; stop it before relaunching")
+    os.kill(int(pid.stdout.strip()), signal.SIGUSR1)
+    # Wait for the requested damping shutdown, not an inactivity watchdog.
+    while subprocess.run(["tmux", "has-session", "-t", SESSION_NAME], capture_output=True).returncode == 0:
+        time.sleep(0.05)
 
 
 def _create_tmux_session() -> None:
     subprocess.run(["tmux", "new-session", "-d", "-s", SESSION_NAME], check=True)
     subprocess.run(["tmux", "set-option", "-t", SESSION_NAME, "-g", "mouse", "on"])
-    subprocess.run(["tmux", "bind-key", "-T", "root", "C-\\", "kill-session"])
+    stop_cmd = (
+        'kill -USR1 "$(tmux show-environment -t '
+        f'{shlex.quote(SESSION_NAME)} -v DECOUPLED_WBC_CONTROL_PID)"'
+    )
+    subprocess.run(["tmux", "bind-key", "-T", "root", "C-\\", "run-shell", "-b", stop_cmd], check=True)
+    # Closing/detaching the last client also follows the damping exit path.
+    subprocess.run([
+        "tmux", "set-hook", "-t", SESSION_NAME, "client-detached",
+        f'if-shell -F "#{{==:#{{session_attached}},0}}" "run-shell -b {shlex.quote(stop_cmd)}"',
+    ], check=True)
     subprocess.run(["tmux", "rename-window", "-t", f"{SESSION_NAME}:0", "collection"])
     subprocess.run(["tmux", "split-window", "-t", f"{SESSION_NAME}:0.0", "-h"])
     subprocess.run(["tmux", "split-window", "-t", f"{SESSION_NAME}:0.0", "-v"])
@@ -957,8 +977,9 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print()
     print("  Controls:")
     print("    Ctrl+b, arrows  switch panes")
-    print("    Ctrl+b, d       detach")
-    print("    Ctrl+\\          kill session")
+    print("    ` (control)     damping stop and exit")
+    print("    Ctrl+\\          damping stop and exit from any pane")
+    print("    Last client closing/detaching also requests damping stop")
     print("=" * 72)
 
     try:
@@ -970,12 +991,12 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     if result.returncode == 0:
         print(f"\nSession {SESSION_NAME!r} is still running.")
         print(f"  Reattach: tmux attach -t {SESSION_NAME}")
-        print(f"  Kill:     tmux kill-session -t {SESSION_NAME}")
+        print("  Stop:     Ctrl+\\ in any collection pane")
 
 
 def _signal_handler(sig, frame) -> None:
     print("\nShutdown requested...")
-    subprocess.run(["tmux", "kill-session", "-t", SESSION_NAME], capture_output=True)
+    _kill_existing_session()
     sys.exit(0)
 
 
