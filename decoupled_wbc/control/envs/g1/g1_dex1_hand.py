@@ -51,7 +51,7 @@ class G1Dex1Hand:
         return value
 
     def _receive(self, msg):
-        if len(msg.states) != 1:
+        if not hasattr(msg, "states") or len(msg.states) != 1:
             return
         motor = msg.states[0]
         values = np.array([motor.q, motor.dq, motor.tau_est, motor.ddq])
