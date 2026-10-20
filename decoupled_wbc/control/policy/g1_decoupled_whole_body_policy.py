@@ -24,8 +24,6 @@ class G1DecoupledWholeBodyPolicy(Policy):
         self.robot_model = robot_model
         self.lower_body_policy = lower_body_policy
         self.upper_body_policy = upper_body_policy
-        self.last_goal_time = time_module.monotonic()
-        self.is_in_teleop_mode = False  # Track if lower body is in teleop mode
 
     def set_observation(self, observation):
         # Upper body policy is open loop (just interpolation), so we don't need to set the observation
@@ -43,9 +41,6 @@ class G1DecoupledWholeBodyPolicy(Policy):
             goal["navigate_cmd"]: Target navigation velocities for the lower body policy
             goal["base_height_command"]: Target base height for both upper and lower body policies
         """
-        # Update goal timestamp for timeout safety
-        self.last_goal_time = time_module.monotonic()
-
         upper_body_goal = {}
         lower_body_goal = {}
 
@@ -73,7 +68,6 @@ class G1DecoupledWholeBodyPolicy(Policy):
 
         # Set teleop policy command flag
         has_teleop_commands = ("navigate_cmd" in goal) or ("base_height_command" in goal)
-        self.is_in_teleop_mode = has_teleop_commands  # Track teleop state for timeout safety
         self.lower_body_policy.set_use_teleop_policy_cmd(has_teleop_commands)
 
         # Lower body goal keys
@@ -91,23 +85,6 @@ class G1DecoupledWholeBodyPolicy(Policy):
 
     def get_action(self, time: Optional[float] = None):
         current_time = time if time is not None else time_module.monotonic()
-
-        # Safety timeout: Only apply when in teleop mode (communication loss dangerous)
-        # When in keyboard mode, no timeout needed (user controls directly)
-        if self.is_in_teleop_mode:
-            time_since_goal = current_time - self.last_goal_time
-            if time_since_goal > 1.0:  # 1 second timeout
-                print(
-                    f"SAFETY: Teleop mode timeout after {time_since_goal:.1f}s, injecting safe goal"
-                )
-                # Inject safe goal to trigger all safety mechanisms (gear_wbc reset + interpolation reset)
-                safe_goal = {
-                    "target_time": current_time + 0.1,
-                    "interpolation_garbage_collection_time": current_time - 1.0,
-                }
-                self.set_goal(
-                    safe_goal
-                )  # This will reset is_in_teleop_mode to False and trigger all safety
 
         # Get indices for groups
         lower_body_indices = self.robot_model.get_joint_group_indices("lower_body")

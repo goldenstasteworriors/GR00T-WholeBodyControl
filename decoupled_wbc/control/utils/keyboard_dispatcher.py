@@ -227,25 +227,18 @@ class KeyboardEStop:
         tmux_session = os.environ.get("DECOUPLED_WBC_TMUX_SESSION")
 
         def cleanup_callback():
-            if tmux_session:
-                print(f"Emergency stop: Killing tmux session '{tmux_session}'...")
-                try:
-                    subprocess.run(["tmux", "kill-session", "-t", tmux_session], timeout=5)
-                    print("Tmux session terminated successfully.")
-                except subprocess.TimeoutExpired:
-                    print("Warning: Tmux session termination timed out, forcing kill...")
-                    try:
-                        subprocess.run(["tmux", "kill-session", "-t", tmux_session, "-9"])
-                    except Exception:
-                        pass
-                except Exception as e:
-                    print(f"Warning: Error during tmux cleanup: {e}")
-                    # If tmux cleanup fails, fallback to immediate exit
-                    restore_terminal()
-                    os._exit(1)
-            else:
-                print("Emergency stop: No tmux session, exiting normally...")
-                sys.exit(1)
+            try:
+                if tmux_session:
+                    # The child must outlive this control process so it can
+                    # close the other panes after the process exits below.
+                    subprocess.Popen(
+                        ["tmux", "kill-session", "-t", tmux_session],
+                        start_new_session=True,
+                    )
+            finally:
+                # sys.exit from the keyboard thread only stops that thread.
+                # A manual stop must terminate the control process itself.
+                os._exit(1)
 
         return cleanup_callback
 

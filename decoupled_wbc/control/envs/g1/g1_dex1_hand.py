@@ -63,10 +63,8 @@ class G1Dex1Hand:
 
     def _state(self):
         with self._lock:
-            age = time.monotonic() - self._stamp
-            if self._sample is None or age > 0.25:
-                detail = "missing" if self._sample is None else f"age={age:.3f}s"
-                raise RuntimeError(f"Missing/stale Dex1 {self.side} state ({detail}); check gripper service")
+            if self._sample is None:
+                raise RuntimeError(f"Missing Dex1 {self.side} state; check gripper service")
             return self._sample.copy()
 
     def observe(self):
