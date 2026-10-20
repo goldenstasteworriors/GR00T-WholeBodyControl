@@ -199,9 +199,8 @@ kill -USR1 "$(tmux show-environment -t decoupled_vla_collection DECOUPLED_WBC_CO
 本版隔离验证已通过。
 已测试急停键与两种退出。
 已验证锁住后不再发位置目标。
-真实阻尼测试尚未执行。
-当前机器人网卡显示DOWN。
-恢复连接后仅实测一次。
+真实急停已测试一次。
+结果见末尾实际急停验收。
 
 关键代码位置：
 
@@ -526,4 +525,35 @@ gear_sonic/scripts/check_pico_connection.py
 gear_sonic/scripts/launch_decoupled_vla_collection.py
 gear_sonic/scripts/run_decoupled_vla_data_exporter.py
 decoupled_wbc/control/teleop/streamers/pico_streamer.py
+```
+
+## 实际急停验收
+
+2026-10-20，仅实测一次。
+机器人网线已恢复。
+身体与双夹爪初始化通过。
+三路相机连接通过。
+PICO未连接，未开启遥控。
+本次跳过头显连接预检。
+未发送任何运动激活组合键。
+监测策略开启状态为false。
+左上control发送一次小写d。
+旁路收到26帧身体阻尼命令。
+29个身体关节均Kp=0、Kd=8。
+阻尼后位置命令计数为0。
+全部采集进程已退出。
+停止流程总耗时约5.24秒。
+首帧阻尼延迟未单独计时。
+官方FSM接口返回3102。
+3102表示请求发送失败。
+未发现loco请求服务。
+官方阻尼状态切换未验收通过。
+未再次初始化或触发急停。
+当前未运行采集控制会话。
+
+真实测试记录位于项目下：
+
+```text
+.runtime/initialization_damping_test_20261020/lowcmd_monitor.json
+.runtime/collection_damping_stop.json
 ```
