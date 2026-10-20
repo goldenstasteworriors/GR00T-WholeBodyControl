@@ -6,6 +6,127 @@
 命令按行执行。
 反斜杠表示跨行续写。
 
+## 一键启动命令
+
+先完成头显连接与 Send。
+网页夹爪控制须先停止。
+现场准备好再执行。
+本命令会接管真实机器人。
+整段复制，按原样换行。
+行末 && 表示成功后继续。
+反斜杠表示参数跨行续写。
+
+```bash
+cd /home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard &&
+source /home/data-collection/miniconda3/etc/profile.d/conda.sh &&
+conda activate decoupled_vla_collection &&
+source "$CONDA_PREFIX/setup.bash" &&
+export PYTHONPATH="$PWD" &&
+bash scripts/thinkpad_pico_services.sh start &&
+python gear_sonic/scripts/launch_decoupled_vla_collection.py \
+  --interface enx00e04c36c4e8 \
+  --hand-type dex1 \
+  --dex1-preset default \
+  --camera-host 192.168.123.164 \
+  --record-wrist-cameras \
+  --camera-sync-tolerance-ms 30 \
+  --camera-max-hold-ms 250 \
+  --data-exporter-frequency 30 \
+  --root-output-dir /home/data-collection/GR00T-WholeBodyControl-worktrees/thinkpad-wired-pico-onboard/outputs \
+  --task-prompt "grab the red bottle" \
+  --dataset-name "dex1_three_camera_$(date +%Y%m%d_%H%M%S)" \
+  --hand-task grab_middle_beaker \
+  --no-pico-data-streamer \
+  --no-startup-t-pose \
+  --profile-timing
+```
+
+服务首次启动后需连接头显。
+若预检失败，不会启动控制。
+头显连接后重跑整段即可。
+预检会检查实时 PICO 数据。
+修改场景名即可切换角度。
+无需启动机载PICO服务。
+
+## 每步预期现象
+
+| 步骤 | 预期现象 | 运动情况 |
+|---|---|---|
+| 1 接网线 | 机器人网络可达 | 本步骤不发动作 |
+| 2 激活环境 | 显示采集环境名 | 本步骤不发动作 |
+| 3 启动 PC Service | 显示服务PID或复用 | 本步骤不发动作 |
+| 4 查看无线地址 | 显示当前Wi-Fi地址 | 本步骤不发动作 |
+| 5 PICO 接无线网 | 头显接入同网 | 本步骤不发动作 |
+| 6 打开 XRoboToolkit | WORKING且Send开启 | 本步骤不发动作 |
+| 7 检查姿态 | 显示PICO OK | 本步骤不发动作 |
+| 8 选择夹爪场景 | 显示场景名及四个角度 | 网页启用控制会动爪 |
+| 9 完整预检 | 显示Preflight passed | 本步骤不发动作 |
+| 10 确认现场 | 支撑及接管人员就绪 | 本步骤不发动作 |
+| 11 正式启动 | 出现四个采集窗格 | 官方退出，手臂爪可能动 |
+| 12 查看日志 | 四组件持续运行无报错 | 已在发送关节命令 |
+| 13 开启身体策略 | 显示starting policy | Balance策略接管腿部 |
+| 14 开启上身遥控 | 显示Teleop policy active | 手臂随手柄移动 |
+| 15 选择control窗格 | 焦点切至control | 仍由当前控制运行 |
+| 16 按c录制 | 显示Started recording | 不改变站立策略 |
+| 17 操作手柄 | 三图与状态持续录制 | 手柄及扳机可触发动作 |
+| 18 再按c结束 | 停止提示后保存完成 | 停录不停止机器人控制 |
+| 19 检查文件 | 三路视频与Parquet存在 | 本步骤不发动作 |
+| 20 结束控制 | 现场接管后退出控制进程 | 不自动恢复官方站立 |
+| 21 关闭PC Service | 显示服务已停止 | 应先确保控制已退出 |
+
+## 当前夹爪配置
+
+已保存一组，场景名如下。
+存在配置不代表抓取已验收。
+
+```text
+default
+released_q: [5.4, 5.4]
+pressed_q: [2.5, 2.5]
+```
+
+左右各用对应扳机。
+扳机大于0.5使用按下角度。
+角度范围是0至5.4 rad。
+0为闭合，5.4为打开。
+上述数值不是开口毫米数。
+
+## 站立控制与切换
+
+只读查询返回官方模式 ai。
+此时本项目控制尚未启动。
+模式名不代表具体站立子状态。
+正式启动时调用 ReleaseMode。
+之后直接发送低层关节目标。
+没有继续沿用官方站立服务。
+
+策略未开启时不使用RL输出。
+腿部目标取当前反馈位置。
+这不等于有主动平衡能力。
+默认手臂约2秒进入初姿。
+默认不经过 T-pose。
+夹爪已可能开始位置控制。
+
+四键开启本项目身体策略。
+零速附近使用 Balance 模型。
+速度命令范数达到0.05后：
+切换使用 Walk 模型。
+摇杆归零会回到 Balance。
+A+X 单独切换上身遥操作。
+关闭策略不会恢复官方服务。
+当前未实测模式交接与站立。
+
+关键代码位置：
+
+```text
+decoupled_wbc/control/envs/g1/utils/state_processor.py:25
+decoupled_wbc/control/envs/g1/utils/command_sender.py:63
+decoupled_wbc/control/policy/g1_gear_wbc_policy.py:230
+decoupled_wbc/control/envs/g1/utils/joint_safety.py:280
+decoupled_wbc/control/envs/g1/g1_dex1_hand.py:80
+```
+
+
 ## 1. 连接机器人网线
 
 ThinkPad 有线地址：
@@ -146,6 +267,9 @@ PICO 也须通过后再继续。
 
 启动后将连接真实控制。
 不要同时运行另一套控制。
+先做好现场支撑与接管。
+正式启动会退出官方模式。
+未按手柄键也可能运动。
 
 ## 11. 正式启动采集
 
@@ -175,6 +299,10 @@ python gear_sonic/scripts/launch_decoupled_vla_collection.py \
 新任务请更换数据集名称。
 默认不会覆盖已有数据。
 附加数据流关闭不影响遥控。
+控制启动即下发关节命令。
+手臂约2秒趋向初始姿态。
+夹爪可能趋向松开角度。
+未启策略不等于官方站立。
 
 ## 12. 查看各窗格日志
 
