@@ -76,7 +76,6 @@ def main(config: TeleopConfig):
     # Create rate controller
     rate = node.create_rate(config.teleop_frequency)
     iteration = 0
-    time_to_get_to_initial_pose = 2  # seconds
 
     telemetry = Telemetry(window_size=100)
 
@@ -96,9 +95,8 @@ def main(config: TeleopConfig):
                     if hasattr(teleop_policy, "set_collection_status"):
                         teleop_policy.set_collection_status(lower_body_policy_status)
                 if iteration == 0 and robot_state is None:
-                    # Do not publish the nominal low-elbow pose while the
-                    # control loop is still moving to its startup pose.  The
-                    # first feedback sample becomes the teleop hold/IK reference.
+                    # Wait for feedback before accepting activation buttons.
+                    # Receiving feedback does not capture an IK reference.
                     rate.sleep()
                     continue
                 if robot_state is not None and hasattr(teleop_policy, "set_robot_state"):
@@ -114,21 +112,15 @@ def main(config: TeleopConfig):
                 trace["teleop_loop_started_ns"] = loop_started_ns
                 trace["teleop_action_finished_ns"] = time.monotonic_ns()
 
-                # Set target completion time - longer for initial pose, then match control frequency.
-                if iteration == 0:
-                    data["target_time"] = t_now + time_to_get_to_initial_pose
-                else:
-                    data["target_time"] = t_now + (1 / config.teleop_frequency)
+                # Startup belongs to the control loop. Teleop only introduces
+                # upper-body targets after A+X, with its own activation ramp.
+                data["target_time"] = t_now + (1 / config.teleop_frequency)
 
                 # Publish the teleop command
                 with telemetry.timer("publish_teleop_command"):
                     trace["teleop_publish_ns"] = time.monotonic_ns()
                     control_publisher.publish(data)
 
-                # For the initial pose, wait the full duration before continuing
-                if iteration == 0:
-                    print(f"Moving to initial pose for {time_to_get_to_initial_pose} seconds")
-                    time.sleep(time_to_get_to_initial_pose)
                 iteration += 1
             end_time = time.monotonic()
             if config.verbose_timing and (end_time - t_start) > (1 / config.teleop_frequency):

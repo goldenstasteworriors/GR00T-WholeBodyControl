@@ -65,7 +65,8 @@ class TeleopPolicy(Policy):
         self._activation_deadline: Optional[float] = None
         self._resume_ramp_deadline: Optional[float] = None
         self._latest_robot_q: Optional[np.ndarray] = None
-        self._startup_reference_synced = False
+        self._latest_command_upper_pose: Optional[np.ndarray] = None
+        self._upper_body_command_started = False
         self._held_body_q = robot_model.default_body_pose.copy()
         self._held_upper_body_pose = robot_model.get_initial_upper_body_pose().copy()
         self._last_safe_upper_target = self._held_upper_body_pose.copy()
@@ -80,7 +81,7 @@ class TeleopPolicy(Policy):
         pass
 
     def set_robot_state(self, robot_state: dict) -> None:
-        """Store the newest control-loop observation for clutch hold/rebase."""
+        """Cache feedback and commands; A+X alone captures the IK reference."""
         q = robot_state.get("q")
         if q is None:
             return
@@ -88,14 +89,12 @@ class TeleopPolicy(Policy):
         if q.shape != self.robot_model.default_body_pose.shape:
             return
         self._latest_robot_q = q.copy()
-        if not self._startup_reference_synced:
+        command = robot_state.get("action")
+        if command is not None:
             upper_indices = self.robot_model.get_joint_group_indices("upper_body")
-            self._held_body_q = q.copy()
-            self._held_upper_body_pose = q[upper_indices].copy()
-            self._last_safe_upper_target = self._held_upper_body_pose.copy()
-            self.retargeting_ik.reset(reference_full_q=self._held_body_q)
-            self._startup_reference_synced = True
-            print("Teleop startup reference synchronized from robot state")
+            self._latest_command_upper_pose = np.asarray(
+                command, dtype=np.float64
+            )[upper_indices].copy()
 
     def set_lower_body_policy_active(self, active: bool) -> None:
         """Synchronize the confirmed lower-body state and enforce activation ordering."""
@@ -118,7 +117,7 @@ class TeleopPolicy(Policy):
             mode == "ready" and getattr(self, "_last_collection_mode", None) != "ready"
         ):
             self._collection_initialization_epoch = epoch
-            self._startup_reference_synced = False
+            self._upper_body_command_started = False
             self.is_active = False
             self._teleop_state = "paused"
             self._activation_deadline = None
@@ -128,10 +127,9 @@ class TeleopPolicy(Policy):
         if mode == "damped":
             self.is_active = False
             self._teleop_state = "paused"
-            if self._latest_robot_q is not None:
-                self._held_body_q = self._latest_robot_q.copy()
-                indices = self.robot_model.get_joint_group_indices("upper_body")
-                self._held_upper_body_pose = self._held_body_q[indices].copy()
+            self._upper_body_command_started = False
+            self._activation_deadline = None
+            self._resume_ramp_deadline = None
 
     def get_action(self) -> dict[str, any]:
         # Get structured data
@@ -197,11 +195,12 @@ class TeleopPolicy(Policy):
             }
         )
 
-        # A pause freezes the measured upper-body pose. On resume, controller
-        # coordinates were rebased against this same pose before IK is enabled.
-        if self._teleop_state in {"paused", "arming"}:
+        # Until A+X, omit the upper-body goal entirely. The control-side
+        # interpolator retains its existing initialization target when a key
+        # is omitted, including across the four-button standing transition.
+        if self._upper_body_command_started and self._teleop_state != "active":
             action["target_upper_body_pose"] = self._held_upper_body_pose.copy()
-        else:
+        elif self._upper_body_command_started:
             if "ik_data" in action:
                 self.retargeting_ik.set_goal(action["ik_data"])
             raw_target = self.retargeting_ik.get_action()
@@ -263,13 +262,11 @@ class TeleopPolicy(Policy):
                 print("Teleop policy active")
             return
 
-        # A+B+X+Y sends an explicit set_active=False together with the
-        # lower-body emergency-stop request.  Preserve the existing last upper
-        # body target for that separate emergency path; the A+X clutch path
-        # below is the only path that performs a controlled return-to-initial.
+        # A+B+X+Y stops teleoperation; it never captures a new IK reference.
         if set_active is False:
             self.is_active = False
             self._teleop_state = "emergency_paused"
+            self._held_upper_body_pose = self._last_safe_upper_target.copy()
             self._activation_deadline = None
             self._resume_ramp_deadline = None
             print("Teleop stopped by emergency request")
@@ -295,36 +292,29 @@ class TeleopPolicy(Policy):
             self._enter_clutch_pause()
 
     def _enter_clutch_pause(self) -> None:
-        """Hold the last controller target and use it as the next IK reference."""
+        """Hold the last target; the next A+X samples a new measured reference."""
         self.is_active = False
         self._teleop_state = "paused"
-        upper_indices = self.robot_model.get_joint_group_indices("upper_body")
-        if self._latest_robot_q is not None:
-            self._held_body_q = self._latest_robot_q.copy()
-        else:
-            self._held_body_q = self.robot_model.default_body_pose.copy()
-            print("WARNING: no fresh robot state while pausing; using nominal lower-body reference")
-
-        # Feedback q can lag the interpolated command slightly, especially at
-        # the wrists under gravity.  Replacing the command with feedback here
-        # creates the visible downward step reported at pause.  Retain feedback
-        # for the non-upper-body reference, but always hold the last published
-        # upper-body command exactly.
-        self._held_body_q[upper_indices] = self._last_safe_upper_target
         self._held_upper_body_pose = self._last_safe_upper_target.copy()
         self._resume_ramp_deadline = None
-        self.retargeting_ik.reset(reference_full_q=self._held_body_q)
         print("Teleop paused: holding the last commanded upper-body pose")
 
     def _arm_teleop(self, now: float) -> None:
-        """Rebase PICO at the held robot pose before accepting IK motion."""
+        """Capture the measured pose on A+X and blend from the current command."""
+        if self._latest_robot_q is None or self._latest_command_upper_pose is None:
+            print("Ignoring A+X activation: waiting for robot feedback and command")
+            return
         self.is_active = False
+        self._held_body_q = self._latest_robot_q.copy()
+        self._held_upper_body_pose = self._latest_command_upper_pose.copy()
+        self._last_safe_upper_target = self._held_upper_body_pose.copy()
         self.retargeting_ik.reset(reference_full_q=self._held_body_q)
         self.teleop_streamer.calibrate(reference_body_q=self._held_body_q)
+        self._upper_body_command_started = True
         self._teleop_state = "arming"
         self._activation_deadline = now + self.activation_hold_duration
         print(
-            "Teleop calibrated at the held pose; holding for "
+            "A+X captured the measured pose; holding the current command for "
             f"{self.activation_hold_duration:.1f}s before activation"
         )
 
@@ -359,7 +349,8 @@ class TeleopPolicy(Policy):
         self.is_active = False
         self._teleop_state = "paused"
         self._latest_robot_q = None
-        self._startup_reference_synced = False
+        self._latest_command_upper_pose = None
+        self._upper_body_command_started = False
         self._held_body_q = self.robot_model.default_body_pose.copy()
         self._held_upper_body_pose = self.robot_model.get_initial_upper_body_pose().copy()
         self._last_safe_upper_target = self._held_upper_body_pose.copy()
