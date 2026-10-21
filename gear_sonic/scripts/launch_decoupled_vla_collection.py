@@ -540,11 +540,11 @@ def _create_tmux_session() -> None:
     subprocess.run(["tmux", "new-session", "-d", "-s", SESSION_NAME], check=True)
     subprocess.run(["tmux", "set-option", "-t", SESSION_NAME, "-g", "mouse", "on"])
     stop_cmd = (
-        'kill -USR1 $(tmux show-environment -t '
+        'kill -TERM $(tmux show-environment -t '
         f'{shlex.quote(SESSION_NAME)} DECOUPLED_WBC_CONTROL_PID | cut -d= -f2)'
     )
     subprocess.run(["tmux", "bind-key", "-T", "root", "C-\\", "run-shell", "-b", stop_cmd], check=True)
-    exit_cmd = stop_cmd.replace("-USR1", "-TERM")
+    exit_cmd = stop_cmd
     # Closing/detaching the last client also follows the damping exit path.
     subprocess.run([
         "tmux", "set-hook", "-t", SESSION_NAME, "client-detached",
@@ -999,7 +999,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     print("  Controls:")
     print("    Ctrl+b, arrows  switch panes")
     print("    d (control)     stay in damping mode")
-    print("    Ctrl+\\          stay in damping mode from any pane")
+    print("    Ctrl+\\          damping stop, then exit the collection session")
     print("    ] (control)     reinitialize after stop; press again after ready to stand")
     print("    Last client closing/detaching also requests damping stop")
     if config.profile_timing:
@@ -1015,7 +1015,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     if result.returncode == 0:
         print(f"\nSession {SESSION_NAME!r} is still running.")
         print(f"  Reattach: tmux attach -t {SESSION_NAME}")
-        print("  Stop:     Ctrl+\\ in any collection pane")
+        print("  Exit:     Ctrl+\\ in any collection pane (damping stop first)")
 
 
 def _signal_handler(sig, frame) -> None:
