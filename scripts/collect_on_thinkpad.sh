@@ -11,6 +11,9 @@ if tmux has-session -t dex1_gripper_web 2>/dev/null; then
     tmux send-keys -t dex1_gripper_web C-c
 fi
 ssh -o BatchMode=yes -- g1 'cd /home/unitree/GR00T-WholeBodyControl && bash scripts/robot_collection_services.sh start'
+# The three USB cameras initialize sequentially before the server can publish.
+echo 'Waiting for the three-camera startup to complete...'
+python -c 'from gear_sonic.scripts.check_dex1_connection import check_camera; raise SystemExit(0 if check_camera("192.168.123.164",5555,timeout=30.0) else 1)'
 bash scripts/thinkpad_pico_services.sh start
 diagnostic_args=()
 # Used for acceptance testing only; the public entry has exactly three arguments.
