@@ -21,8 +21,10 @@ def main(config: CameraRelayConfig) -> None:
     upstream = context.socket(zmq.SUB)
     downstream = context.socket(zmq.PUB)
     upstream.setsockopt(zmq.SUBSCRIBE, b"")
-    upstream.setsockopt(zmq.CONFLATE, 1)
-    downstream.setsockopt(zmq.SNDHWM, 1)
+    # Recording needs every group, including short bursts after USB/network
+    # jitter. Preview subscribers can still conflate their local copy.
+    upstream.setsockopt(zmq.RCVHWM, 3)
+    downstream.setsockopt(zmq.SNDHWM, 3)
     upstream.setsockopt(zmq.LINGER, 0)
     downstream.setsockopt(zmq.LINGER, 0)
     try:
