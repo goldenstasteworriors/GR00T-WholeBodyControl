@@ -22,8 +22,8 @@ class BodyStateProcessor:
     def __init__(self, config):
         self.config = config
         self._state_condition = threading.Condition()
-        self._received_versions = {}
-        self._consumed_versions = {}
+        self._read_requested = False
+        self._read_error = None
         self.robot_low_state = None
         self.secondary_imu_state = None
         self.odo_state = None
@@ -44,22 +44,22 @@ class BodyStateProcessor:
 
         if self.config["ROBOT_TYPE"] == "h1" or self.config["ROBOT_TYPE"] == "go2":
             self.robot_lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_go)
-            self.robot_lowstate_subscriber.Init(self._receive_low_state, 0)
+            self.robot_lowstate_subscriber.Init(None, 0)
         elif (
             self.config["ROBOT_TYPE"] == "g1_29dof"
             or self.config["ROBOT_TYPE"] == "h1-2_27dof"
             or self.config["ROBOT_TYPE"] == "h1-2_21dof"
         ):
             self.robot_lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_hg)
-            self.robot_lowstate_subscriber.Init(self._receive_low_state, 0)
+            self.robot_lowstate_subscriber.Init(None, 0)
 
             self.secondary_imu_subscriber = ChannelSubscriber("rt/secondary_imu", IMUState_)
-            self.secondary_imu_subscriber.Init(self._receive_secondary_imu, 0)
+            self.secondary_imu_subscriber.Init(None, 0)
 
             # Subscribe to odo state (only available in simulation)
             if self.config["ENV_TYPE"] == "sim":
                 self.odo_state_subscriber = ChannelSubscriber("rt/odostate", OdoState_)
-                self.odo_state_subscriber.Init(self._receive_odo_state, 0)
+                self.odo_state_subscriber.Init(None, 0)
         else:
             raise NotImplementedError(f"Robot type {self.config['ROBOT_TYPE']} is not supported")
 
@@ -74,37 +74,46 @@ class BodyStateProcessor:
         self.torso_ang_vel = np.zeros(3)
         self.temp_first = np.zeros(self.num_dof)
         self.temp_second = np.zeros(self.num_dof)
+        self._reader_thread = threading.Thread(
+            target=self._read_states, name="body_state_on_request", daemon=True,
+        )
+        self._reader_thread.start()
 
-    def _receive_state(self, name, sample):
-        with self._state_condition:
-            setattr(self, name, sample)
-            self._received_versions[name] = self._received_versions.get(name, 0) + 1
-            self._state_condition.notify_all()
-
-    def _receive_low_state(self, sample):
-        self._receive_state("robot_low_state", sample)
-
-    def _receive_secondary_imu(self, sample):
-        self._receive_state("secondary_imu_state", sample)
-
-    def _receive_odo_state(self, sample):
-        self._receive_state("odo_state", sample)
+    def _read_states(self):
+        # Decode only when the control loop requests an observation. A DDS
+        # callback would deserialize the entire ~1 kHz stream in Python.
+        while True:
+            with self._state_condition:
+                while not self._read_requested:
+                    self._state_condition.wait()
+            try:
+                self.robot_low_state = self.robot_lowstate_subscriber.Read()
+                self.secondary_imu_state = self.secondary_imu_subscriber.Read()
+                if self.config["ENV_TYPE"] == "sim":
+                    self.odo_state = self.odo_state_subscriber.Read()
+            except BaseException as error:
+                self._read_error = error
+            with self._state_condition:
+                self._read_requested = False
+                self._state_condition.notify_all()
 
     def _prepare_low_state(self) -> np.ndarray:
-        required = ["robot_low_state", "secondary_imu_state"]
-        if self.config["ENV_TYPE"] == "sim":
-            required.append("odo_state")
-        # Keep waiting for new samples, without an automatic timeout or fallback.
-        # A Python condition can be interrupted by an explicit exit signal;
-        # CycloneDDS take_one() can remain inside a native wait indefinitely.
+        # The native DDS wait stays in a daemon reader, so an explicit exit
+        # signal can interrupt this Python wait and run the damping finally.
+        # There is no communication timeout, stale-state fallback or watchdog.
         with self._state_condition:
-            while any(self._received_versions.get(name, 0) ==
-                      self._consumed_versions.get(name, 0) for name in required):
+            self._read_requested = True
+            self._state_condition.notify_all()
+            while self._read_requested:
                 self._state_condition.wait()
-            self._consumed_versions = self._received_versions.copy()
+            if self._read_error is not None:
+                raise self._read_error
             low_state = self.robot_low_state
             secondary_imu = self.secondary_imu_state
             odo_state = self.odo_state
+        if low_state is None:
+            print("No low state received")
+            return
         imu_state = low_state.imu_state
 
         # Use odo_state for position and velocity if available, otherwise set to zero
