@@ -575,6 +575,8 @@ class ComposedCameraClientSensor(Sensor, SensorClient):
     """ZMQ client that deserializes merged camera frames from the server."""
 
     def __init__(self, server_ip: str = "localhost", port: int = 5555):
+        # Small RGB decodes/resizes should not start a competing CPU worker pool.
+        cv2.setNumThreads(1)
         self.start_client(server_ip, port)
 
         self._latest_message = None

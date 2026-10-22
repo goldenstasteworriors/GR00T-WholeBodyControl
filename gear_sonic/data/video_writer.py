@@ -1,6 +1,5 @@
 import os
 import queue
-import sys
 import threading
 
 import av
@@ -21,7 +20,6 @@ class VideoWriter:
         buffer_size: int = 50,
     ):
         self.output_path = output_path
-        self._first_frame = True
 
         output_dir = os.path.dirname(output_path)
         if output_dir and not os.path.exists(output_dir):
@@ -32,6 +30,11 @@ class VideoWriter:
         self.stream = self.container.add_stream(codec, rate=fps)
         self.stream.width = width
         self.stream.height = height
+        # Three cameras encode concurrently beside the 50 Hz robot controller.
+        # Give each encoder one worker instead of three automatic CPU pools.
+        self.stream.codec_context.thread_count = 1
+        if self.stream.codec_context.name == "libx264":
+            self.stream.options = {"preset": "veryfast"}
         self._worker_error: BaseException | None = None
         self._closed = False
         self._stop_lock = threading.Lock()
@@ -67,24 +70,9 @@ class VideoWriter:
                 self._assert_dimensions(frame)
                 frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
 
-                if self._first_frame:
-                    stderr_fd = sys.stderr.fileno()
-                    old_stderr = os.dup(stderr_fd)
-                    devnull = os.open(os.devnull, os.O_WRONLY)
-                    os.dup2(devnull, stderr_fd)
-                    try:
-                        packets = self.stream.encode(frame)
-                        for packet in packets:
-                            self.container.mux(packet)
-                    finally:
-                        os.dup2(old_stderr, stderr_fd)
-                        os.close(old_stderr)
-                        os.close(devnull)
-                        self._first_frame = False
-                else:
-                    packets = self.stream.encode(frame)
-                    for packet in packets:
-                        self.container.mux(packet)
+                packets = self.stream.encode(frame)
+                for packet in packets:
+                    self.container.mux(packet)
         except BaseException as exc:
             self._worker_error = exc
         finally:

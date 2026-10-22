@@ -109,6 +109,7 @@ def _conda_prefix(repo_root: Path, env_name: str) -> str:
         'if [ -f "$CONDA_PREFIX/setup.bash" ]; then source "$CONDA_PREFIX/setup.bash"; fi && '
         f"cd {shlex.quote(str(repo_root))} && "
         f"export PYTHONPATH={shlex.quote(str(repo_root))} && "
+        "export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 && "
         "export PYTHONUNBUFFERED=1 && "
     )
 

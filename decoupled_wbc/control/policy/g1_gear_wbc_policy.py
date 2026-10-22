@@ -64,6 +64,8 @@ class G1GearWbcPolicy(Policy):
     def load_onnx_policy(self, model_path: str):
         print(f"Loading ONNX policy from {model_path}")
         session_options = ort.SessionOptions()
+        session_options.intra_op_num_threads = 1
+        session_options.inter_op_num_threads = 1
         # The two WBC sessions otherwise keep their worker pools spinning while
         # idle, consuming multiple CPU cores and delaying the 50 Hz teleop loop.
         # Disabling wait-time spinning does not change model execution or output.
