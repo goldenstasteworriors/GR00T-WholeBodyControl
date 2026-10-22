@@ -494,6 +494,7 @@ class ComposedCameraSensor(Sensor, SensorServer):
         idx = 0
         server_start_time = time.monotonic()
         fps_print_time = time.monotonic()
+        frames_since_fps_print = 0
         profile_print_time = time.monotonic()
         profile_samples = []
         frame_interval = 1.0 / self.config.fps
@@ -529,9 +530,11 @@ class ComposedCameraSensor(Sensor, SensorServer):
                                     if timestamps else 0.0)
                     profile_samples.append((read_ms, serialize_ms, send_ms, max_age_ms, sync_skew_ms))
 
-                if idx % 10 == 0:
-                    print(f"Image sending FPS: {10 / (time.monotonic() - fps_print_time):.2f}")
+                frames_since_fps_print += 1
+                if frames_since_fps_print >= 10:
+                    print(f"Image sending FPS: {frames_since_fps_print / (time.monotonic() - fps_print_time):.2f}")
                     fps_print_time = time.monotonic()
+                    frames_since_fps_print = 0
 
             if self.config.profile_timing:
                 now = time.monotonic()

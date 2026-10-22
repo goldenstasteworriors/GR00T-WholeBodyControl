@@ -48,7 +48,9 @@ class USBCameraSensor(Sensor):
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.image_dim[0])
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.image_dim[1])
         self.cap.set(cv2.CAP_PROP_FPS, config.fps)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # Keep a capture buffer queued while OpenCV converts the previous frame.
+        # A single buffer starves the JR wrist cameras, reducing 30 FPS to 15-19.
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
 
         print(f"[{mount_position}] Warming up USB camera...")
         for _ in range(10):
