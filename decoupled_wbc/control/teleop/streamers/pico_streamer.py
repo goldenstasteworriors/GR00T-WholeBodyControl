@@ -504,6 +504,10 @@ class PicoStreamer(BaseStreamer):
         right_fingers = self._generate_finger_data(pico_data, "right")
 
         control_data = {
+            "dex1_grasp_modes": [
+                self._dex1_grasp_mode(pico_data[f"{side}_trigger"], pico_data[f"{side}_grip"])
+                for side in ("left", "right")
+            ],
             "base_height_command": self.current_base_height,
             "navigate_cmd": [lin_vel_x, lin_vel_y, ang_vel_z],
             "toggle_policy_action": False,
@@ -584,6 +588,12 @@ class PicoStreamer(BaseStreamer):
         sign = 1 if value > 0 else -1
         # Normalize the output to be between -1 and 1 after dead zone
         return sign * (abs(value) - dead_zone) / (1.0 - dead_zone)
+
+    @staticmethod
+    def _dex1_grasp_mode(trigger, grip):
+        if trigger <= 0.5:
+            return 0
+        return 2 if grip > 0.5 else 1
 
     def _generate_finger_data(self, pico_data, hand):
         """Generate finger position data.

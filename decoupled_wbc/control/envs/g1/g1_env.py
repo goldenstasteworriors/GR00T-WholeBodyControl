@@ -73,6 +73,7 @@ class G1Env(HumanoidEnv):
                     hand_args = dict(
                         released_q=config.get("dex1_released_q", (5.4, 5.4))[index],
                         pressed_q=config.get("dex1_pressed_q", (0.0, 0.0))[index],
+                        pressed_grip_q=config.get("dex1_pressed_grip_q", config.get("dex1_pressed_q", (0.0, 0.0)))[index],
                     )
                 setattr(self._hands, side, hand_cls(is_left=side == "left", **hand_args))
 
@@ -273,8 +274,13 @@ class G1Env(HumanoidEnv):
             right_hand_actuator_q = self.robot_model.get_hand_actuated_joints(
                 action["q"], side="right"
             )
-            self.hands().left.queue_action({"hand_q": left_hand_actuator_q})
-            self.hands().right.queue_action({"hand_q": right_hand_actuator_q})
+            for index, (side, hand_q) in enumerate((
+                ("left", left_hand_actuator_q), ("right", right_hand_actuator_q)
+            )):
+                hand_action = {"hand_q": hand_q}
+                if self.config.get("HAND_TYPE") == "dex1" and "dex1_grasp_modes" in action:
+                    hand_action["grasp_mode"] = action["dex1_grasp_modes"][index]
+                getattr(self.hands(), side).queue_action(hand_action)
 
     def enter_damping(self):
         """Latch off position commands without closing the DDS publisher."""

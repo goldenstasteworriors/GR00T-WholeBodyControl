@@ -16,10 +16,13 @@ from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorCmds_, MotorStates_
 
 
 class G1Dex1Hand:
-    def __init__(self, is_left=True, released_q=5.4, pressed_q=0.0):
+    def __init__(self, is_left=True, released_q=5.4, pressed_q=0.0, pressed_grip_q=None):
         self.side = "left" if is_left else "right"
         self.released_q = self.validate_target(released_q)
         self.pressed_q = self.validate_target(pressed_q)
+        self.pressed_grip_q = self.validate_target(
+            pressed_q if pressed_grip_q is None else pressed_grip_q
+        )
         self._lock = threading.Lock()
         self._sample = None
         self._stamp = 0.0
@@ -81,7 +84,10 @@ class G1Dex1Hand:
         if legacy.shape != (7,) or not np.all(np.isfinite(legacy)):
             raise ValueError("Expected seven finite legacy hand commands")
         # PICO trigger > 0.5 produces a nonzero grasp through the existing solver.
-        target = self.pressed_q if np.max(np.abs(legacy)) > 0.05 else self.released_q
+        if "grasp_mode" in action:
+            target = (self.released_q, self.pressed_q, self.pressed_grip_q)[action["grasp_mode"]]
+        else:
+            target = self.pressed_q if np.max(np.abs(legacy)) > 0.05 else self.released_q
         self.command_position(target)
 
     def command_position(self, target):

@@ -67,6 +67,7 @@ class TeleopPolicy(Policy):
         self._latest_robot_q: Optional[np.ndarray] = None
         self._latest_command_upper_pose: Optional[np.ndarray] = None
         self._upper_body_command_started = False
+        self._held_dex1_grasp_modes = (0, 0)
         self._held_body_q = robot_model.default_body_pose.copy()
         self._held_upper_body_pose = robot_model.get_initial_upper_body_pose().copy()
         self._last_safe_upper_target = self._held_upper_body_pose.copy()
@@ -118,6 +119,7 @@ class TeleopPolicy(Policy):
         ):
             self._collection_initialization_epoch = epoch
             self._upper_body_command_started = False
+            self._held_dex1_grasp_modes = (0, 0)
             self.is_active = False
             self._teleop_state = "paused"
             self._activation_deadline = None
@@ -128,6 +130,7 @@ class TeleopPolicy(Policy):
             self.is_active = False
             self._teleop_state = "paused"
             self._upper_body_command_started = False
+            self._held_dex1_grasp_modes = (0, 0)
             self._activation_deadline = None
             self._resume_ramp_deadline = None
 
@@ -194,6 +197,11 @@ class TeleopPolicy(Policy):
                 **streamer_output.data_collection_data,
             }
         )
+        grasp_modes = action.pop("dex1_grasp_modes", None)
+        if self.is_active and grasp_modes is not None:
+            self._held_dex1_grasp_modes = tuple(grasp_modes)
+        if self._upper_body_command_started:
+            action["dex1_grasp_modes"] = self._held_dex1_grasp_modes
 
         # Until A+X, omit the upper-body goal entirely. The control-side
         # interpolator retains its existing initialization target when a key
@@ -351,6 +359,7 @@ class TeleopPolicy(Policy):
         self._latest_robot_q = None
         self._latest_command_upper_pose = None
         self._upper_body_command_started = False
+        self._held_dex1_grasp_modes = (0, 0)
         self._held_body_q = self.robot_model.default_body_pose.copy()
         self._held_upper_body_pose = self.robot_model.get_initial_upper_body_pose().copy()
         self._last_safe_upper_target = self._held_upper_body_pose.copy()

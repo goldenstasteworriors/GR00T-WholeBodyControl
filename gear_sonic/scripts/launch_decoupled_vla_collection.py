@@ -222,8 +222,11 @@ class DecoupledVLACollectionLaunchConfig:
     dex1_pressed_q: tuple[float, float] = (0.0, 0.0)
     """Left/right Dex1 angles (rad) with trigger pressed (>0.5)."""
 
+    dex1_pressed_grip_q: tuple[float, float] | None = None
+    """Left/right Dex1 angles with trigger and same-side grip pressed."""
+
     dex1_profile: str = ""
-    """JSON saved by the gripper web tool; overrides the two Dex1 angle pairs."""
+    """JSON saved by the gripper web tool; overrides the three Dex1 angle pairs."""
 
     dex1_preset: str = ""
     """Named gripper preset, for example red_bottle; exclusive with dex1_profile."""
@@ -441,8 +444,10 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
                         fcntl.flock(command_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
                         errors.append(f"Dex1 {side} is being controlled; stop the web/exercise control first")
-        for name in ("dex1_released_q", "dex1_pressed_q"):
+        for name in ("dex1_released_q", "dex1_pressed_q", "dex1_pressed_grip_q"):
             values = getattr(config, name)
+            if values is None:
+                values = config.dex1_pressed_q
             if len(values) != 2 or any(not 0.0 <= value <= 5.4 for value in values):
                 errors.append(f"{name} requires left/right angles in [0, 5.4] rad")
         if config.sim or not config.with_hands or config.inspire_hand_bridge or config.left_hand_only:
@@ -609,6 +614,8 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
     if config.hand_type == "dex1":
         args += ["--dex1-released-q", *(str(q) for q in config.dex1_released_q),
                  "--dex1-pressed-q", *(str(q) for q in config.dex1_pressed_q)]
+        args += ["--dex1-pressed-grip-q", *(str(q) for q in (
+            config.dex1_pressed_grip_q or config.dex1_pressed_q))]
     return args
 
 
@@ -781,8 +788,9 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
         profile = load_profile(profile_path)
         config.dex1_released_q = tuple(profile["released_q"])
         config.dex1_pressed_q = tuple(profile["pressed_q"])
+        config.dex1_pressed_grip_q = tuple(profile["pressed_grip_q"])
         print(f"Dex1 profile: {profile_path}; released={config.dex1_released_q}, "
-              f"pressed={config.dex1_pressed_q}", flush=True)
+              f"pressed={config.dex1_pressed_q}; pressed_grip={config.dex1_pressed_grip_q}", flush=True)
 
     _check_prerequisites(config, repo_root)
     if config.hand_type == "dex1":

@@ -51,6 +51,7 @@ class CollectionMode:
             lower.roll_cmd, lower.pitch_cmd, lower.yaw_cmd = lower.config["rpy_cmd"]
             lower.action[:] = 0.0
             lower.obs_history.clear()
+            self.policy.dex1_grasp_modes = None
             self.policy.upper_body_policy = get_startup_upper_body_policy(
                 self.robot_model, self.config, now
             )

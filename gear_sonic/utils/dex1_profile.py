@@ -41,8 +41,8 @@ def validate_profile(data):
     if not isinstance(data, dict) or data.get("version") != 1 or data.get("unit") != "rad":
         raise ValueError("Dex1 profile requires version=1 and unit='rad'")
     result = {"version": 1, "unit": "rad"}
-    for key in ("released_q", "pressed_q"):
-        values = data.get(key)
+    for key in ("released_q", "pressed_q", "pressed_grip_q"):
+        values = data.get(key, data.get("pressed_q") if key == "pressed_grip_q" else None)
         if not isinstance(values, (list, tuple)) or len(values) != 2:
             raise ValueError(f"{key} requires two angles: left, right")
         if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in values):

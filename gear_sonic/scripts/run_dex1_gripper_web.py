@@ -37,7 +37,8 @@ class GripperControl:
             preset_path(self.profiles_dir, self.profile_path.stem)
             self.preset_name = self.profile_path.stem
         self.profile = (load_profile(profile_path) if self.profile_path.exists() else
-                        dict(version=1, unit="rad", released_q=[5.4, 5.4], pressed_q=[0.0, 0.0]))
+                        dict(version=1, unit="rad", released_q=[5.4, 5.4],
+                             pressed_q=[0.0, 0.0], pressed_grip_q=[0.0, 0.0]))
         self.lock = threading.RLock()
         self.owner = None
         self.heartbeat = 0.0

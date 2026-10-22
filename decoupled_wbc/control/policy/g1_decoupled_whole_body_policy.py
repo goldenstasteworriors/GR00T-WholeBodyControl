@@ -23,6 +23,7 @@ class G1DecoupledWholeBodyPolicy(Policy):
         self.robot_model = robot_model
         self.lower_body_policy = lower_body_policy
         self.upper_body_policy = upper_body_policy
+        self.dex1_grasp_modes = None
 
     def set_observation(self, observation):
         # Upper body policy is open loop (just interpolation), so we don't need to set the observation
@@ -42,6 +43,8 @@ class G1DecoupledWholeBodyPolicy(Policy):
         """
         upper_body_goal = {}
         lower_body_goal = {}
+        if "dex1_grasp_modes" in goal:
+            self.dex1_grasp_modes = tuple(goal["dex1_grasp_modes"])
 
         # Upper body goal keys
         upper_body_keys = [
@@ -118,8 +121,9 @@ class G1DecoupledWholeBodyPolicy(Policy):
         ]  # lower body (legs + waist)
 
         self.last_action = {"q": q}
-
-        return {"q": q}
+        if self.dex1_grasp_modes is not None:
+            self.last_action["dex1_grasp_modes"] = self.dex1_grasp_modes
+        return self.last_action
 
     def handle_keyboard_button(self, key):
         try:

@@ -83,8 +83,10 @@ def override_wbc_config(
 
     if config.env_type == "real" and config.with_hands and config.hand_type:
         wbc_config["HAND_TYPE"] = config.hand_type
-    for name in ("dex1_released_q", "dex1_pressed_q"):
+    for name in ("dex1_released_q", "dex1_pressed_q", "dex1_pressed_grip_q"):
         values = getattr(config, name)
+        if values is None:
+            values = config.dex1_pressed_q
         if len(values) != 2 or any(not 0.0 <= value <= 5.4 for value in values):
             raise ValueError(f"{name} requires left/right angles in [0, 5.4] rad")
         wbc_config[name] = values
@@ -143,6 +145,9 @@ class BaseConfig(ArgsConfigTemplate):
 
     dex1_pressed_q: tuple[float, float] = (0.0, 0.0)
     """Left/right Dex1 angles (rad) with trigger pressed (>0.5)."""
+
+    dex1_pressed_grip_q: tuple[float, float] | None = None
+    """Left/right Dex1 angles when trigger and same-side grip are pressed."""
 
     high_elbow_pose: bool = False
     """Enable high elbow pose configuration for default joint positions."""
