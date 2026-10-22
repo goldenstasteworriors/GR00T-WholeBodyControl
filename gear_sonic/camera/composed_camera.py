@@ -192,6 +192,14 @@ class ComposedCameraSensor(Sensor, SensorServer):
             try:
                 print("Waiting for all cameras to be ready before starting server...")
                 self._wait_for_all_cameras_ready(timeout=60.0)
+                # Staggered initialization fills the capture queues. At full
+                # frame rate that warmup backlog would otherwise persist.
+                for camera_queue in self.camera_queues.values():
+                    try:
+                        while True:
+                            camera_queue.get_nowait()
+                    except queue.Empty:
+                        pass
                 self.start_server(config.port)
             except Exception:
                 self.close()
