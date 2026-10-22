@@ -186,11 +186,11 @@ class SensorServer:
 class SensorClient:
     """ZMQ SUB client that receives msgpack-encoded sensor payloads."""
 
-    def start_client(self, server_ip: str, port: int):
+    def start_client(self, server_ip: str, port: int, *, conflate: bool = True):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.SUB)
         self.socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        self.socket.setsockopt(zmq.CONFLATE, True)
+        self.socket.setsockopt(zmq.CONFLATE, conflate)
         self.socket.setsockopt(zmq.RCVHWM, 3)
         self.socket.connect(f"tcp://{server_ip}:{port}")
 

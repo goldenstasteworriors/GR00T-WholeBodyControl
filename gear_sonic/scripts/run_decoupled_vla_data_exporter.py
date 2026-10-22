@@ -497,6 +497,7 @@ class DecoupledVLADataCollector:
         self._image_subscriber = ComposedCameraClientSensor(
             server_ip=config.camera_host,
             port=config.camera_port,
+            conflate=False,
         )
 
         self.latest_proprio_msg: dict | None = None
@@ -506,6 +507,9 @@ class DecoupledVLADataCollector:
             config.camera_sync_tolerance_ms / 1000, config.camera_max_hold_ms / 1000,
         )
         self._last_camera_warning = float("-inf")
+        self._new_camera_group = False
+        self._camera_recording_epoch: float | None = None
+        self._last_camera_recording_slot = -1
         self.latest_sonic_msg: dict | None = None
         self.latest_planner_msg: dict | None = None
         self.current_stream_mode = 0
@@ -763,6 +767,8 @@ class DecoupledVLADataCollector:
             if self._episode_state.get_state() == self._episode_state.RECORDING:
                 self._initial_yaw = None
                 self._episode_init_base_quat = None
+                self._camera_recording_epoch = None
+                self._last_camera_recording_slot = -1
                 self._play_audio_cue("start")
                 self._print_and_say(f"Started recording {self.current_episode_index}")
             elif self._episode_state.get_state() == self._episode_state.NEED_TO_SAVE:
@@ -1192,6 +1198,11 @@ class DecoupledVLADataCollector:
         if self._episode_state.get_state() != self._episode_state.RECORDING:
             return self._finalize_frame(t_start)
 
+        # A held image is available for preview/freshness checks, but must not
+        # create another dataset frame without a new camera group.
+        if not self._new_camera_group:
+            return False
+
         if self.latest_proprio_msg is None or self._camera_buffer.current(time.monotonic()) is None:
             if time.monotonic() - self._last_camera_warning > 2:
                 print("[Camera] Waiting for a complete, fresh, synchronized image group", flush=True)
@@ -1202,6 +1213,16 @@ class DecoupledVLADataCollector:
             _, _, smpl_fresh = self._fresh_sonic_pose()
             if not smpl_fresh:
                 return False
+
+        # Sample on the capture clock rather than an unrelated PC polling
+        # phase. At 30 FPS each camera group is recorded; lower requested
+        # rates select capture slots without repeating the previous image.
+        stamp = float(self.latest_image_msg["timestamps"]["ego_view"])
+        if self._camera_recording_epoch is None:
+            self._camera_recording_epoch = stamp
+        camera_slot = round((stamp - self._camera_recording_epoch) * self.frequency)
+        if camera_slot <= self._last_camera_recording_slot:
+            return False
 
         proprio = self.latest_proprio_msg
         kinematic_state = self._get_kinematic_state(proprio)
@@ -1221,6 +1242,8 @@ class DecoupledVLADataCollector:
         self._add_images_to_frame_data(frame_data)
 
         self.data_exporter.add_frame(frame_data)
+        self._last_camera_recording_slot = camera_slot
+        self._new_camera_group = False
         return self._finalize_frame(t_start)
 
     def save_and_cleanup(self) -> None:
@@ -1240,34 +1263,38 @@ class DecoupledVLADataCollector:
     def run(self) -> None:
         try:
             while rclpy.ok():
-                t_start = time.monotonic()
                 with self.telemetry.timer("total_loop"):
-                    with self.telemetry.timer("poll_state"):
-                        self._poll_state_ros()
-
-                    with self.telemetry.timer("poll_pico"):
-                        self._poll_sonic_zmq_messages()
-
                     with self.telemetry.timer("poll_image"):
-                        img_msg = self._image_subscriber.read(new_only=True)
+                        # Preserve burst arrivals in order and let new camera
+                        # groups pace recording instead of sleeping after each
+                        # decode. The short poll still services keyboard input
+                        # when no images arrive.
+                        img_msg = self._image_subscriber.read(
+                            new_only=True, timeout_ms=max(1, round(self.loop_period * 1000)),
+                        )
+                        self._new_camera_group = False
                         if img_msg is not None:
                             try:
-                                self._camera_buffer.update(img_msg, time.monotonic())
+                                self._new_camera_group = self._camera_buffer.update(
+                                    img_msg, time.monotonic(),
+                                )
                             except (ValueError, TypeError) as exc:
                                 if time.monotonic() - self._last_camera_warning > 2:
                                     print(f"[Camera] Rejected image group: {exc}", flush=True)
                                     self._last_camera_warning = time.monotonic()
                         self.latest_image_msg = self._camera_buffer.current(time.monotonic())
 
+                    with self.telemetry.timer("poll_state"):
+                        self._poll_state_ros()
+
+                    with self.telemetry.timer("poll_pico"):
+                        self._poll_sonic_zmq_messages()
+
                     with self.telemetry.timer("check_recording_commands"):
                         self._check_recording_commands()
 
                     with self.telemetry.timer("add_frame"):
                         self._add_data_frame()
-
-                sleep_time = self.loop_period - (time.monotonic() - t_start)
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
 
         except KeyboardInterrupt:
             buffer_size = self.data_exporter.episode_buffer.get("size", 0)

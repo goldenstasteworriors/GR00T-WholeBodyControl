@@ -585,10 +585,10 @@ class ComposedCameraSensor(Sensor, SensorServer):
 class ComposedCameraClientSensor(Sensor, SensorClient):
     """ZMQ client that deserializes merged camera frames from the server."""
 
-    def __init__(self, server_ip: str = "localhost", port: int = 5555):
+    def __init__(self, server_ip: str = "localhost", port: int = 5555, *, conflate: bool = True):
         # Small RGB decodes/resizes should not start a competing CPU worker pool.
         cv2.setNumThreads(1)
-        self.start_client(server_ip, port)
+        self.start_client(server_ip, port, conflate=conflate)
 
         self._latest_message = None
         self._avg_time_per_frame: deque = deque(maxlen=20)
@@ -602,7 +602,8 @@ class ComposedCameraClientSensor(Sensor, SensorClient):
 
         print("Initialized composed camera client sensor")
 
-    def read(self, blocking: bool = False, new_only: bool = False, **kwargs) -> dict[str, Any] | None:
+    def read(self, blocking: bool = False, new_only: bool = False, timeout_ms: int = 0,
+             **kwargs) -> dict[str, Any] | None:
         self._start_time = time.time()
         current_time = time.time()
 
@@ -611,7 +612,7 @@ class ComposedCameraClientSensor(Sensor, SensorClient):
             if not message:
                 return None
         else:
-            message = self.receive_message_nonblocking(timeout_ms=0)
+            message = self.receive_message_nonblocking(timeout_ms=timeout_ms)
 
         if message is None and new_only:
             return None
