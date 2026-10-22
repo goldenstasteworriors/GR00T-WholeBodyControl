@@ -17,6 +17,7 @@ class DampingShutdown:
         self.estop_reason = ""
         self.transition_lock = threading.RLock()
         self.reason = "control_exit"
+        self._finishing = False
         self.session = os.environ.get("DECOUPLED_WBC_TMUX_SESSION")
 
     def request(self, reason):
@@ -26,13 +27,20 @@ class DampingShutdown:
 
     def install_signals(self):
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            signal.signal(sig, lambda number, frame: self.request(f"signal:{number}"))
+            signal.signal(sig, self._handle_exit_signal)
         signal.signal(signal.SIGUSR1, lambda number, frame: self.request_estop("signal:SIGUSR1"))
         if self.session:
             subprocess.run([
                 "tmux", "set-environment", "-t", self.session,
                 "DECOUPLED_WBC_CONTROL_PID", str(os.getpid()),
             ], check=True)
+
+    def _handle_exit_signal(self, number, frame):
+        if self._finishing:
+            return
+        self.request(f"signal:{number}")
+        # Unwind an observation wait into the control loop's damping finally.
+        raise SystemExit(0)
 
     def request_estop(self, reason):
         self.estop_reason = reason
@@ -42,6 +50,7 @@ class DampingShutdown:
             self.env.enter_damping()
 
     def finish(self):
+        self._finishing = True
         started = time.monotonic()
         report = {"reason": self.reason, "pid": os.getpid(), "confirmed": False}
         try:

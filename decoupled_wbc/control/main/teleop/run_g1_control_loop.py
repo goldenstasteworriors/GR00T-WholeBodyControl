@@ -92,8 +92,8 @@ def main(config: ControlLoopConfig):
         env.start_simulator()
 
     shutdown = DampingShutdown(env)
-    shutdown.install_signals()
     try:
+        shutdown.install_signals()
         wbc_policy = get_wbc_policy("g1", robot_model, wbc_config)
         mode = CollectionMode(env, wbc_policy, robot_model, wbc_config, shutdown)
 

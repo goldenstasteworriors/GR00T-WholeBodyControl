@@ -1,5 +1,6 @@
 import contextlib
 import io
+import threading
 import time
 
 import numpy as np
@@ -20,6 +21,12 @@ from unitree_sdk2py.idl.unitree_hg.msg.dds_ import (
 class BodyStateProcessor:
     def __init__(self, config):
         self.config = config
+        self._state_condition = threading.Condition()
+        self._received_versions = {}
+        self._consumed_versions = {}
+        self.robot_low_state = None
+        self.secondary_imu_state = None
+        self.odo_state = None
 
         # Enter debug mode for real robot
         if self.config["ENV_TYPE"] == "real" and not config.get("diagnostic_read_only", False):
@@ -37,23 +44,22 @@ class BodyStateProcessor:
 
         if self.config["ROBOT_TYPE"] == "h1" or self.config["ROBOT_TYPE"] == "go2":
             self.robot_lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_go)
-            self.robot_lowstate_subscriber.Init(None, 0)
-            self.robot_lowstate_subscriber.Init(None, 0)
+            self.robot_lowstate_subscriber.Init(self._receive_low_state, 0)
         elif (
             self.config["ROBOT_TYPE"] == "g1_29dof"
             or self.config["ROBOT_TYPE"] == "h1-2_27dof"
             or self.config["ROBOT_TYPE"] == "h1-2_21dof"
         ):
             self.robot_lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_hg)
-            self.robot_lowstate_subscriber.Init(None, 0)
+            self.robot_lowstate_subscriber.Init(self._receive_low_state, 0)
 
             self.secondary_imu_subscriber = ChannelSubscriber("rt/secondary_imu", IMUState_)
-            self.secondary_imu_subscriber.Init(None, 0)
+            self.secondary_imu_subscriber.Init(self._receive_secondary_imu, 0)
 
             # Subscribe to odo state (only available in simulation)
             if self.config["ENV_TYPE"] == "sim":
                 self.odo_state_subscriber = ChannelSubscriber("rt/odostate", OdoState_)
-                self.odo_state_subscriber.Init(None, 0)
+                self.odo_state_subscriber.Init(self._receive_odo_state, 0)
         else:
             raise NotImplementedError(f"Robot type {self.config['ROBOT_TYPE']} is not supported")
 
@@ -68,24 +74,43 @@ class BodyStateProcessor:
         self.torso_ang_vel = np.zeros(3)
         self.temp_first = np.zeros(self.num_dof)
         self.temp_second = np.zeros(self.num_dof)
-        self.robot_low_state = None
-        self.secondary_imu_state = None
-        self.odo_state = None
+
+    def _receive_state(self, name, sample):
+        with self._state_condition:
+            setattr(self, name, sample)
+            self._received_versions[name] = self._received_versions.get(name, 0) + 1
+            self._state_condition.notify_all()
+
+    def _receive_low_state(self, sample):
+        self._receive_state("robot_low_state", sample)
+
+    def _receive_secondary_imu(self, sample):
+        self._receive_state("secondary_imu_state", sample)
+
+    def _receive_odo_state(self, sample):
+        self._receive_state("odo_state", sample)
 
     def _prepare_low_state(self) -> np.ndarray:
-        self.robot_low_state = self.robot_lowstate_subscriber.Read()
-        self.secondary_imu_state = self.secondary_imu_subscriber.Read()
-
-        if not self.robot_low_state:
-            print("No low state received")
-            return
-        imu_state = self.robot_low_state.imu_state
+        required = ["robot_low_state", "secondary_imu_state"]
+        if self.config["ENV_TYPE"] == "sim":
+            required.append("odo_state")
+        # Keep waiting for new samples, without an automatic timeout or fallback.
+        # A Python condition can be interrupted by an explicit exit signal;
+        # CycloneDDS take_one() can remain inside a native wait indefinitely.
+        with self._state_condition:
+            while any(self._received_versions.get(name, 0) ==
+                      self._consumed_versions.get(name, 0) for name in required):
+                self._state_condition.wait()
+            self._consumed_versions = self._received_versions.copy()
+            low_state = self.robot_low_state
+            secondary_imu = self.secondary_imu_state
+            odo_state = self.odo_state
+        imu_state = low_state.imu_state
 
         # Use odo_state for position and velocity if available, otherwise set to zero
         if self.config["ENV_TYPE"] == "sim":
-            self.odo_state = self.odo_state_subscriber.Read()
-            self.q[0:3] = self.odo_state.position
-            self.dq[0:3] = self.odo_state.linear_velocity
+            self.q[0:3] = odo_state.position
+            self.dq[0:3] = odo_state.linear_velocity
         else:
             self.q[0:3] = [0.0, 0.0, 0.0]
             self.dq[0:3] = [0.0, 0.0, 0.0]
@@ -93,9 +118,9 @@ class BodyStateProcessor:
         self.q[3:7] = imu_state.quaternion  # w, x, y, z
         self.dq[3:6] = imu_state.gyroscope
         self.ddq[0:3] = imu_state.accelerometer
-        unitree_joint_state = self.robot_low_state.motor_state
-        self.torso_quat = self.secondary_imu_state.quaternion
-        self.torso_ang_vel = self.secondary_imu_state.gyroscope
+        unitree_joint_state = low_state.motor_state
+        self.torso_quat = secondary_imu.quaternion
+        self.torso_ang_vel = secondary_imu.gyroscope
 
         for i in range(self.num_dof):
             self.q[7 + i] = unitree_joint_state[self.config["JOINT2MOTOR"][i]].q
