@@ -415,8 +415,8 @@ class PicoStreamer(BaseStreamer):
 
         # Get navigation commands
         DEAD_ZONE = 0.1
-        MAX_LINEAR_VEL = 0.5  # m/s
-        MAX_ANGULAR_VEL = 1.0  # rad/s
+        MAX_LINEAR_VEL = 0.125  # m/s; quarter-speed translation
+        MAX_ANGULAR_VEL = 0.25  # rad/s; quarter-speed turning
 
         fwd_bwd_input = pico_data["left_joystick"][1]
         strafe_input = -pico_data["left_joystick"][0]
