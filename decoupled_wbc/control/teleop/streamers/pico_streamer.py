@@ -491,12 +491,8 @@ class PicoStreamer(BaseStreamer):
         height_increment = 0.01  # Small step per call when button is pressed
         if not self.combo_suppression_active and pico_data["Y"]:
             self.current_base_height += height_increment
-        elif (
-            not self.combo_suppression_active
-            and pico_data["B"]
-            and pico_data["left_grip"] <= 0.5
-        ):
-            self.current_base_height -= height_increment
+        # B remains available for combinations such as recording discard;
+        # controller height commands are raise-only.
         self.current_base_height = np.clip(self.current_base_height, 0.2, 0.74)
 
         # Get gripper commands
