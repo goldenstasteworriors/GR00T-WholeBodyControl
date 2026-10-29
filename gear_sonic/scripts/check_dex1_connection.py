@@ -3,7 +3,6 @@
 import argparse
 import json
 import socket
-import threading
 import time
 
 import numpy as np
@@ -12,18 +11,26 @@ from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorStates_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 
 
-def check(network: str, duration: float = 5.0) -> bool:
+def check(network: str, duration: float = 20.0) -> bool:
     if network not in dict(socket.if_nameindex()).values():
         raise ValueError(f"Network interface does not exist: {network}")
     ChannelFactoryInitialize(0, network)
-    samples, lock = {}, threading.Lock()
+    samples = {}
 
     def receive(topic, msg):
         motors = msg.motor_state if topic == "rt/lowstate" else msg.states
         q = [float(m.q) for m in motors]
-        with lock:
-            count = samples.get(topic, {}).get("count", 0) + 1
-            samples[topic] = dict(count=count, stamp=time.monotonic(), q=q)
+        count = samples.get(topic, {}).get("count", 0) + 1
+        samples[topic] = dict(count=count, stamp=time.monotonic(), q=q)
+
+    def is_valid(topic, sample, now):
+        if sample is None:
+            return False
+        valid = (sample["count"] >= 2 and now - sample["stamp"] < 0.25
+                 and np.all(np.isfinite(sample["q"])))
+        if topic != "rt/lowstate":
+            return bool(valid and len(sample["q"]) == 1 and -0.2 <= sample["q"][0] <= 5.6)
+        return bool(valid and len(sample["q"]) >= 29)
 
     topics = [("rt/lowstate", LowState_)] + [
         (f"rt/dex1/{side}/state", MotorStates_) for side in ("left", "right")
@@ -32,27 +39,34 @@ def check(network: str, duration: float = 5.0) -> bool:
     try:
         for topic, message_type in topics:
             sub = ChannelSubscriber(topic, message_type)
-            sub.Init(lambda msg, topic=topic: receive(topic, msg), 10)
+            # Decode only on demand, rather than consuming the entire 1 kHz
+            # body stream in Python while DDS discovers the gripper readers.
+            sub.Init(None, 0)
             subscribers.append(sub)
-        time.sleep(duration)
-        ok = True
-        with lock:
+        print(f"Waiting up to {duration:g}s for fresh body and both Dex1 states...", flush=True)
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline:
+            for (topic, _), sub in zip(topics, subscribers):
+                message = sub.Read(timeout=0.02)
+                if message is not None:
+                    receive(topic, message)
             now = time.monotonic()
-            for topic, _ in topics:
-                sample = samples.get(topic)
-                if sample is None:
-                    print(f"FAIL {topic}: no state received", flush=True)
-                    ok = False
-                    continue
-                age = now - sample["stamp"]
-                valid = sample["count"] >= 2 and age < 0.25 and np.all(np.isfinite(sample["q"]))
-                if topic != "rt/lowstate":
-                    valid = valid and len(sample["q"]) == 1 and -0.2 <= sample["q"][0] <= 5.6
-                else:
-                    valid = valid and len(sample["q"]) >= 29
-                print(json.dumps(dict(topic=topic, valid=bool(valid), count=sample["count"],
-                                      age_s=round(age, 4), q=sample["q"])), flush=True)
-                ok = ok and valid
+            if all(is_valid(topic, samples.get(topic), now) for topic, _ in topics):
+                break
+            time.sleep(min(0.02, max(0.0, deadline - now)))
+        ok = True
+        now = time.monotonic()
+        for topic, _ in topics:
+            sample = samples.get(topic)
+            if sample is None:
+                print(f"FAIL {topic}: no state received; check robot USB serial ports and sonic-dex1.service", flush=True)
+                ok = False
+                continue
+            age = now - sample["stamp"]
+            valid = is_valid(topic, sample, now)
+            print(json.dumps(dict(topic=topic, valid=valid, count=sample["count"],
+                                  age_s=round(age, 4), q=sample["q"])), flush=True)
+            ok = ok and valid
         return bool(ok)
     finally:
         for sub in subscribers:
@@ -108,7 +122,8 @@ def check_camera(host: str, port: int, timeout: float = 5.0,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--network", required=True)
-    parser.add_argument("--duration", type=float, default=5.0)
+    parser.add_argument("--duration", type=float, default=20.0,
+                        help="Maximum startup DDS discovery wait; returns early when all states are ready")
     parser.add_argument("--camera-host", default="")
     parser.add_argument("--camera-port", type=int, default=5555)
     parser.add_argument("--record-wrist-cameras", action=argparse.BooleanOptionalAction, default=True)
