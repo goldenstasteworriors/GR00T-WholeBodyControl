@@ -450,6 +450,25 @@ def get_modality_config_sonic_dex1(robot_model: RobotModel) -> dict:
     return modality
 
 
+def get_features_navila_body(robot_model: RobotModel) -> dict:
+    """Actual 29 body joints; no gripper state, target or placeholder fields."""
+    features = get_features_sonic_dex1(robot_model)
+    names = list(robot_model.supplemental_info.body_actuated_joints)
+    for key in ("observation.state", "action.wbc"):
+        features[key] = {"dtype": "float64", "shape": (29,), "names": names}
+    for side in ("left", "right"):
+        del features[f"teleop.{side}_hand_joints"]
+    return features
+
+
+def get_modality_config_navila_body(robot_model: RobotModel) -> dict:
+    modality = get_modality_config_sonic_dex1(robot_model)
+    for side in ("left", "right"):
+        del modality["state"][f"{side}_hand"]
+        del modality["action"][f"{side}_hand_joints"]
+    return modality
+
+
 def get_wrist_camera_features() -> dict:
     """Features for optional wrist cameras (added when ``record_wrist_cameras`` is enabled)."""
     return {

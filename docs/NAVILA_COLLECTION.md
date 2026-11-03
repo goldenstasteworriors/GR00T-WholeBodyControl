@@ -21,7 +21,7 @@
 | 请求/策略速度 | navigation.requested_velocity / policy_velocity；x前、y左、yaw逆时针，m/s、rad/s |
 | 控制状态 | navigation.control_mode；0阻尼、1初始化、2就绪、3运行 |
 | 相机/状态时间 | navigation.camera_time / state_time；分别为机器人相机主机时钟、ThinkPad Unix 时钟 |
-| 实际关节角/关节目标 | observation.state / action.wbc；含实际 Dex1 角度 |
+| 实际身体关节角/关节目标 | observation.state / action.wbc；29 维，不包含夹爪 |
 | IMU 基座方向 | observation.root_orientation，wxyz；用于核对转向 |
 | 固定双臂配置 | meta/info.json 的 script_config.navigation_collection.arm_profile |
 | 人工审核的动作与成功标记 | 独立标签 JSON，再导出 annotations.json |
@@ -60,7 +60,7 @@ ip -4 address show wlp0s20f3
 bash scripts/collect_navila_on_thinkpad.sh "Walk through the doorway, turn left, and stop in front of the table." hallway_table
 ```
 
-仅修改引号中的完整路线指令和最后的项目名。脚本自动调用机器人夹爪/相机服务、PC Service、连接预检、四窗格采集和实时预览，使用现有 default 夹爪配置。目录名自动为 `navila_hallway_table_时间戳`。未连接机器人有线网卡时立即报错，SSH 连接等待最多 8 秒，不会一直无提示卡住。
+仅修改引号中的完整路线指令和最后的项目名。脚本自动调用机器人相机服务、PC Service、身体状态/相机/PICO 预检、四窗格采集和实时预览。导航模式不加载夹爪配置，不启动或重启夹爪服务，不检查左右夹爪反馈，也不创建夹爪状态订阅或指令发布器；左右夹爪断开均不阻塞导航采集。三路相机（含腕部相机）仍需连接。目录名自动为 `navila_hallway_table_时间戳`。未连接机器人有线网卡时立即报错，SSH 连接等待最多 8 秒，不会一直无提示卡住。
 
 **现象和操作：**启动控制进程后，会通过现有约 2 秒初始化插值把双臂/现有初始化关节带到目标，此时机器人已经可能运动；不能把四键之前视为完全静止。初始化 ready 后，新按 A+B+X+Y 才启用站立策略；左摇杆平移、右摇杆横轴转弯。A+X 不采手臂姿态，PICO 手柄姿态、扳机和侧键不改变手臂/夹爪目标；左侧键仍参与录制组合。固定目标并不意味着实测关节角完全无误差。腰部仍由现有低层控制，不增加新腰部目标。
 

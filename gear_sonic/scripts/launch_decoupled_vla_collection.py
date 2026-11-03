@@ -437,7 +437,7 @@ def _check_prerequisites(config: DecoupledVLACollectionLaunchConfig, repo_root: 
         errors.append("camera_sync_tolerance_ms must be finite and nonnegative")
     if not math.isfinite(config.camera_max_hold_ms) or config.camera_max_hold_ms <= 0:
         errors.append("camera_max_hold_ms must be finite and positive")
-    if config.hand_type == "dex1":
+    if config.hand_type == "dex1" and not config.navigation_collection:
         import fcntl
 
         for side in ("left", "right"):
@@ -774,6 +774,12 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     repo_root = Path(__file__).resolve().parent.parent.parent
     interface = config.interface or ("sim" if config.sim else "real")
 
+    if config.navigation_collection:
+        config.with_hands = False
+        config.hand_control_device = "dummy"
+        config.dex1_profile = ""
+        config.dex1_preset = ""
+
     if config.dex1_preset:
         from gear_sonic.utils.dex1_profile import preset_path
 
@@ -800,17 +806,18 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
               f"pressed={config.dex1_pressed_q}; pressed_grip={config.dex1_pressed_grip_q}", flush=True)
 
     _check_prerequisites(config, repo_root)
-    if config.hand_type == "dex1":
+    if config.hand_type == "dex1" or config.navigation_collection:
         check_cmd = _conda_prefix(repo_root, config.conda_env) + _shell_join([
             "python", "gear_sonic/scripts/check_dex1_connection.py",
             "--network", interface, "--camera-host", config.camera_host,
             "--camera-port", str(config.camera_port),
             "--camera-sync-tolerance-ms", str(config.camera_sync_tolerance_ms),
             *_bool_arg("record-wrist-cameras", config.record_wrist_cameras),
+            *_bool_arg("check-grippers", not config.navigation_collection),
         ])
         result = subprocess.run(["bash", "-c", check_cmd])
         if result.returncode:
-            print("Dex1 preflight failed; collection was not started.")
+            print("Robot/camera preflight failed; collection was not started.")
             raise SystemExit(result.returncode)
     if (config.pico_preflight and not config.sim and config.enable_real_device
             and "pico" in (config.body_control_device, config.hand_control_device)):

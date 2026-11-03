@@ -491,7 +491,7 @@ class DecoupledVLADataCollector:
         self.loop_period = 1.0 / self.frequency
         self._inspire_profiles = (
             load_inspire_hand_profiles(config.inspire_hand_pose_config)
-            if config.hand_type == "inspire" else None
+            if config.hand_type == "inspire" and not config.navigation_collection else None
         )
 
         self._episode_state = EpisodeState()
@@ -825,6 +825,8 @@ class DecoupledVLADataCollector:
 
     def _get_observation_state(self, proprio: dict, kinematic_state: np.ndarray) -> np.ndarray:
         body_indices = self.robot_model.get_body_actuated_joint_indices()
+        if self.config.navigation_collection:
+            return kinematic_state[body_indices].copy()
         if self.config.hand_type == "dex1":
             return np.concatenate([
                 kinematic_state[body_indices],
@@ -844,6 +846,9 @@ class DecoupledVLADataCollector:
         ).astype(np.float64, copy=False)
 
     def _get_action_wbc(self, proprio: dict, observation_state: np.ndarray) -> np.ndarray:
+        if self.config.navigation_collection:
+            body_indices = self.robot_model.get_body_actuated_joint_indices()
+            return self._normalise_full_q(proprio["action"])[body_indices].copy()
         if self.config.hand_type == "dex1":
             if "action" not in proprio:
                 raise RuntimeError("Missing body action in Dex1 control-state message")
@@ -1074,9 +1079,10 @@ class DecoupledVLADataCollector:
             side="right",
         )
 
-        hand_dof = 1 if self.config.hand_type == "dex1" else 6
-        frame_data["teleop.left_hand_joints"] = q[29:29 + hand_dof].astype(np.float32)
-        frame_data["teleop.right_hand_joints"] = q[29 + hand_dof:29 + 2 * hand_dof].astype(np.float32)
+        if not self.config.navigation_collection:
+            hand_dof = 1 if self.config.hand_type == "dex1" else 6
+            frame_data["teleop.left_hand_joints"] = q[29:29 + hand_dof].astype(np.float32)
+            frame_data["teleop.right_hand_joints"] = q[29 + hand_dof:29 + 2 * hand_dof].astype(np.float32)
 
         frame_data["teleop.planner_mode"] = np.array(
             [planner_msg["planner_mode"]] if use_planner and planner_msg else [0],
@@ -1333,7 +1339,15 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
 
     try:
         robot_model = get_g1_robot_model()
-        if config.hand_type == "dex1":
+        if config.navigation_collection:
+            from gear_sonic.data.features_sonic_vla import get_features_navila_body, get_modality_config_navila_body
+
+            if robot_config.get("with_hands", True):
+                raise RuntimeError("Navigation collection requires gripper I/O disabled in control")
+            inspire_profiles = None
+            dataset_features = get_features_navila_body(robot_model)
+            modality_config = get_modality_config_navila_body(robot_model)
+        elif config.hand_type == "dex1":
             if robot_config.get("hand_type") != "dex1":
                 raise RuntimeError("Exporter/control hand_type mismatch; expected dex1")
             inspire_profiles = None
@@ -1391,6 +1405,9 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
         }
 
         if config.navigation_collection:
+            script_config.update(schema_compatibility="navila_body29", hand_type="none",
+                                 hand_position_unit=None, hand_data_mode="not_recorded",
+                                 active_hands=[], right_hand_data={"source": "not_recorded"})
             script_config["navigation_collection"] = {
                 "arm_profile": json.loads(ARM_PROFILE.read_text()),
                 "velocity_frame": "body: x forward, y left, yaw counterclockwise",

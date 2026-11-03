@@ -31,7 +31,7 @@ def main(config: TeleopConfig):
         robot_model = instantiate_g1_robot_model(
             waist_location=waist_location,
             high_elbow_pose=config.high_elbow_pose,
-            with_hands=config.with_hands,
+            with_hands=config.with_hands or config.navigation_collection,
         )
         if config.with_hands and not config.navigation_collection:
             left_hand_ik_solver, right_hand_ik_solver = instantiate_g1_hand_ik_solver()

@@ -79,7 +79,9 @@ def main(config: ControlLoopConfig):
     robot_model = instantiate_g1_robot_model(
         waist_location=waist_location,
         high_elbow_pose=config.high_elbow_pose,
-        with_hands=config.with_hands,
+        # Retain the existing kinematic joint order and wrist frames; hand
+        # hardware I/O is independently disabled by config.with_hands.
+        with_hands=config.with_hands or config.navigation_collection,
     )
 
     env = G1Env(

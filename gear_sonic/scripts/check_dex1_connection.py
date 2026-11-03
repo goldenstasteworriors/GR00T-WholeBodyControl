@@ -11,7 +11,7 @@ from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorStates_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 
 
-def check(network: str, duration: float = 20.0) -> bool:
+def check(network: str, duration: float = 20.0, check_grippers: bool = True) -> bool:
     if network not in dict(socket.if_nameindex()).values():
         raise ValueError(f"Network interface does not exist: {network}")
     ChannelFactoryInitialize(0, network)
@@ -32,9 +32,9 @@ def check(network: str, duration: float = 20.0) -> bool:
             return bool(valid and len(sample["q"]) == 1 and -0.2 <= sample["q"][0] <= 5.6)
         return bool(valid and len(sample["q"]) >= 29)
 
-    topics = [("rt/lowstate", LowState_)] + [
+    topics = [("rt/lowstate", LowState_)] + ([
         (f"rt/dex1/{side}/state", MotorStates_) for side in ("left", "right")
-    ]
+    ] if check_grippers else [])
     subscribers = []
     try:
         for topic, message_type in topics:
@@ -43,7 +43,8 @@ def check(network: str, duration: float = 20.0) -> bool:
             # body stream in Python while DDS discovers the gripper readers.
             sub.Init(None, 0)
             subscribers.append(sub)
-        print(f"Waiting up to {duration:g}s for fresh body and both Dex1 states...", flush=True)
+        print(f"Waiting up to {duration:g}s for fresh body" +
+              (" and both Dex1 states..." if check_grippers else " state (no gripper I/O)..."), flush=True)
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline:
             for (topic, _), sub in zip(topics, subscribers):
@@ -122,6 +123,7 @@ def check_camera(host: str, port: int, timeout: float = 5.0,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--network", required=True)
+    parser.add_argument("--check-grippers", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--duration", type=float, default=20.0,
                         help="Maximum startup DDS discovery wait; returns early when all states are ready")
     parser.add_argument("--camera-host", default="")
@@ -133,7 +135,7 @@ def main():
         parser.error("duration must be in (0, 60]")
     if not np.isfinite(args.camera_sync_tolerance_ms) or args.camera_sync_tolerance_ms < 0:
         parser.error("camera sync tolerance must be finite and nonnegative")
-    ok = check(args.network, args.duration)
+    ok = check(args.network, args.duration, args.check_grippers)
     if args.camera_host:
         ok = check_camera(args.camera_host, args.camera_port,
                           record_wrist_cameras=args.record_wrist_cameras,
