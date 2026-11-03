@@ -19,6 +19,8 @@ class DampingShutdown:
         self.reason = "control_exit"
         self._finishing = False
         self.session = os.environ.get("DECOUPLED_WBC_TMUX_SESSION")
+        self.estop_directory = os.environ.get("NAVILA_ESTOP_DIR")
+        self.estop_registration = None
 
     def request(self, reason):
         if not self.requested.is_set():
@@ -29,6 +31,9 @@ class DampingShutdown:
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, self._handle_exit_signal)
         signal.signal(signal.SIGUSR1, lambda number, frame: self.request_estop("signal:SIGUSR1"))
+        if self.estop_directory:
+            from deploy.navila.estop import register_controller
+            self.estop_registration = register_controller(self.estop_directory)
         if self.session:
             subprocess.run([
                 "tmux", "set-environment", "-t", self.session,
@@ -48,6 +53,10 @@ class DampingShutdown:
         # The first damping packet does not wait for observation or inference.
         with self.transition_lock:
             self.env.enter_damping()
+        if self.estop_registration is not None:
+            from deploy.navila.estop import acknowledge
+            acknowledge(self.estop_directory, self.estop_registration,
+                        self.env.config.get("diagnostic_read_only", False))
 
     def finish(self):
         self._finishing = True

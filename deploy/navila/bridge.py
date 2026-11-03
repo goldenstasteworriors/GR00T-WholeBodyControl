@@ -1,8 +1,7 @@
-"""G1 ego camera -> NaVILA TCP -> optional leased WBC navigation goals.
+"""G1 camera -> NaVILA -> original Balance/Walk navigation interface.
 
-Default invocation only reads images and runs inference. No ROS publisher is
-created until --execute is supplied. All clocks in the command lease are on
-the same ThinkPad; never publish these goals directly from server02.
+No added navigation watchdog, age check, action cap, or publisher-conflict
+check. Manual damping estop is provided separately by estop_thinkpad.sh.
 """
 import argparse
 import base64
@@ -26,18 +25,18 @@ def log(event, **fields):
 
 def parse_action(text):
     if not isinstance(text, str):
-        raise ValueError(f"Model returned an error/non-string: {text!r}")
+        raise ValueError(f"Model returned a non-string response: {text!r}")
     text = text.strip().lower()
     if text in {"stop", "stop.", "the next action is stop.",
                 "i think i should stop because i have finished the instruction."}:
-        return "stop", 0
-    match = re.fullmatch(r"(?:the next action is )?move forward (25|50|75) cm\.?", text)
+        return "stop", 0.0
+    match = re.fullmatch(r"(?:the next action is )?move forward (\d+(?:\.\d+)?) cm\.?", text)
     if match:
-        return "forward", int(match[1])
-    match = re.fullmatch(r"(?:the next action is )?turn (left|right) (15|30|45) degrees?\.?", text)
+        return "forward", float(match[1])
+    match = re.fullmatch(r"(?:the next action is )?turn (left|right) (\d+(?:\.\d+)?) degrees?\.?", text)
     if match:
-        return match[1], int(match[2])
-    raise ValueError(f"Unrecognized action; refusing movement: {text!r}")
+        return match[1], float(match[2])
+    raise ValueError(f"Cannot parse navigation action: {text!r}")
 
 
 def sample_history(history):
@@ -60,13 +59,9 @@ def encode_image(rgb):
     return base64.b64encode(encoded).decode("ascii")
 
 
-def receive_exact(sock, size, deadline):
+def receive_exact(sock, size):
     data = bytearray()
     while len(data) < size:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("NaVILA response deadline exceeded")
-        sock.settimeout(remaining)
         chunk = sock.recv(size - len(data))
         if not chunk:
             raise ConnectionError("NaVILA connection closed before response completed")
@@ -74,22 +69,14 @@ def receive_exact(sock, size, deadline):
     return bytes(data)
 
 
-def infer(host, port, images, instruction, timeout):
+def infer(host, port, images, instruction):
     payload = json.dumps({"images": images, "query": instruction}).encode()
     started = time.monotonic()
-    with socket.create_connection((host, port), timeout=timeout) as sock:
-        # A wall-time budget as well as per-read timeout prevents slow trickles.
-        deadline = started + timeout
-        sock.settimeout(max(0.01, deadline - time.monotonic()))
+    with socket.create_connection((host, port), timeout=None) as sock:
         sock.sendall(struct.pack(">Q", len(payload)) + payload)
-        size = struct.unpack(">Q", receive_exact(sock, 8, deadline))[0]
-        if not 0 < size <= 65536:
-            raise ValueError(f"Invalid response size: {size}")
-        response = json.loads(receive_exact(sock, size, deadline))
-    elapsed = time.monotonic() - started
-    if elapsed > timeout:
-        raise TimeoutError("Inference exceeded deadline")
-    return response, elapsed
+        size = struct.unpack(">Q", receive_exact(sock, 8))[0]
+        response = json.loads(receive_exact(sock, size))
+    return response, time.monotonic() - started
 
 
 class Camera:
@@ -104,17 +91,14 @@ class Camera:
     def run(self):
         from gear_sonic.camera.composed_camera import ComposedCameraClientSensor
         client = None
-        last_stamp = None
         try:
             client = ComposedCameraClientSensor(self.host, self.port)
             while not self.stop.is_set():
                 item = client.read(blocking=False, new_only=True)
                 if item:
                     frame = item.get("images", {}).get(self.key)
-                    stamp = item.get("timestamps", {}).get(self.key)
-                    if frame is not None and stamp is not None and stamp != last_stamp:
-                        last_stamp = stamp
-                        self.sample = (time.monotonic(), frame.copy(), stamp)
+                    if frame is not None:
+                        self.sample = (frame.copy(), item.get("timestamps", {}).get(self.key))
                 self.stop.wait(0.005)
         except Exception as exc:
             self.error = repr(exc)
@@ -122,106 +106,71 @@ class Camera:
             if client is not None:
                 client.close()
 
-    def fresh(self):
-        sample = self.sample
-        return self.error is None and sample is not None and time.monotonic() - sample[0] < 0.5
-
     def snapshot(self):
-        sample = self.sample
-        if not self.fresh():
-            raise RuntimeError(f"Ego camera missing/stale: {self.error}")
-        return encode_image(sample[1]), sample[0], list(sample[1].shape), sample[2]
+        frame, stamp = self.sample
+        return encode_image(frame), list(frame.shape), stamp
 
     def close(self):
         self.stop.set()
         self.thread.join(timeout=2)
 
 
+def segment(action, amount, linear_speed=0.5, angular_speed=math.pi / 6):
+    if action == "forward":
+        return (linear_speed, 0.0, 0.0), amount / 100 / linear_speed
+    return (0.0, 0.0, angular_speed if action == "left" else -angular_speed), math.radians(amount) / angular_speed
+
+
 class WBCPublisher:
-    """50 Hz publication independent of camera/model request latency."""
-    def __init__(self, camera):
+    """Original ROS goal interface; only monitor explicit manual damping."""
+    def __init__(self, linear_speed, angular_speed):
         from decoupled_wbc.control.main.constants import CONTROL_GOAL_TOPIC, LOWER_BODY_POLICY_STATUS_TOPIC
         from decoupled_wbc.control.utils.ros_utils import ROSManager, ROSMsgPublisher, ROSMsgSubscriber
         self.manager = ROSManager("NaVILANavigation")
-        self.topic = CONTROL_GOAL_TOPIC
-        self.pub = ROSMsgPublisher(self.topic)
+        self.pub = ROSMsgPublisher(CONTROL_GOAL_TOPIC)
         self.sub = ROSMsgSubscriber(LOWER_BODY_POLICY_STATUS_TOPIC)
-        self.camera = camera
-        self.segment = (0.0, (0.0, 0.0, 0.0))
-        self.status = None
-        self.fault = None
-        self.active = False
+        self.linear_speed, self.angular_speed = linear_speed, angular_speed
+        self.status = {}
+        self.estopped = threading.Event()
         self.stop = threading.Event()
-        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread = threading.Thread(target=self.observe_manual_stop, daemon=True)
         self.thread.start()
 
-    def ready(self):
-        state = self.status
-        return (state is not None and time.monotonic() - state[0] < 0.25
-                and state[1].get("navila_guard") is True
-                and not state[1].get("diagnostic_read_only", False)
-                and state[1].get("control_mode") == "running"
-                and state[1].get("use_policy_action") is True)
+    def observe_manual_stop(self):
+        while not self.stop.is_set():
+            item = self.sub.get_msg()
+            if item is not None:
+                self.status = item
+                if item.get("control_mode") == "damped":
+                    self.estopped.set()
+            self.stop.wait(0.02)
 
-    def run(self):
-        try:
-            while not self.stop.is_set():
-                now = time.monotonic()
-                item = self.sub.get_msg()
-                if item is not None:
-                    self.status = (self.sub.last_message_received_ns / 1e9, item)
-                if self.manager.node.count_publishers(self.topic) > 1:
-                    self.fault = "Competing control publisher; stop PICO/replay before navigation"
-                if self.active and (not self.ready() or not self.camera.fresh()):
-                    self.fault = "Controller not running/fresh or camera stale; restart explicitly"
-                deadline, velocity = self.segment
-                if self.fault or not self.active or not self.ready() or now >= deadline:
-                    velocity = (0.0, 0.0, 0.0)
-                self.pub.publish({"navigate_cmd": list(velocity), "navila": {
-                    "sent_monotonic": now, "expires_monotonic": now + 0.2}})
-                self.stop.wait(0.02)
-        except Exception as exc:
-            self.fault = repr(exc)
+    def check_manual_stop(self):
+        if self.estopped.is_set():
+            raise KeyboardInterrupt
 
     def wait_ready(self):
-        log("waiting_for_manual_standing", timeout_s=120, key="] in controller pane after ready")
-        deadline = time.monotonic() + 120
-        while not self.ready():
-            if self.fault:
-                raise RuntimeError(self.fault)
-            if time.monotonic() >= deadline:
-                raise TimeoutError("Guarded controller not manually enabled within 120 s")
+        log("waiting_for_manual_standing", key="] in controller pane after ready")
+        while self.status.get("control_mode") != "running":
+            self.check_manual_stop()
             time.sleep(0.05)
-        self.active = True
+
+    def publish(self, velocity):
+        self.pub.publish({"navigate_cmd": list(velocity), "target_time": time.monotonic() + 0.02})
 
     def move(self, action, amount):
-        if self.fault or not self.ready() or not self.camera.fresh():
-            raise RuntimeError(self.fault or "Not ready to move")
-        # Initial commissioning caps; distance/yaw are time based, not odometry.
-        if action == "forward":
-            actual = min(amount, 25)
-            velocity, duration = (0.15, 0.0, 0.0), actual / 100 / 0.15
-        else:
-            actual = min(amount, 15)
-            velocity = (0.0, 0.0, 0.25 if action == "left" else -0.25)
-            duration = math.radians(actual) / 0.25
-        deadline = time.monotonic() + duration
-        self.segment = (deadline, velocity)
-        log("segment", action=action, requested=amount, capped=actual,
-            velocity=velocity, duration_s=duration)
-        try:
-            while time.monotonic() < deadline:
-                if self.fault or not self.thread.is_alive():
-                    raise RuntimeError(self.fault or "Publisher stopped")
-                time.sleep(0.02)
-        finally:
-            self.segment = (0.0, (0.0, 0.0, 0.0))
-        time.sleep(0.5)
+        velocity, duration = segment(action, amount, self.linear_speed, self.angular_speed)
+        log("segment", action=action, amount=amount, velocity=velocity, duration_s=duration)
+        end = time.monotonic() + duration
+        while time.monotonic() < end:
+            self.check_manual_stop()
+            self.publish(velocity)
+            time.sleep(0.02)
+        # The requested segment has completed; this is not a watchdog stop.
+        self.publish((0.0, 0.0, 0.0))
 
     def close(self):
-        self.active = False
-        self.segment = (0.0, (0.0, 0.0, 0.0))
-        time.sleep(0.25)
+        # No automatic velocity command on exceptions/process shutdown.
         self.stop.set()
         self.thread.join(timeout=2)
         self.manager.shutdown()
@@ -231,58 +180,53 @@ class WBCPublisher:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--instruction", required=True, help="English navigation instruction")
+    parser.add_argument("--instruction", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=54321)
     parser.add_argument("--camera-host", default="192.168.123.164")
     parser.add_argument("--camera-port", type=int, default=5555)
     parser.add_argument("--camera-key", default="ego_view")
-    parser.add_argument("--image", type=Path, help="Offline RGB image for inference only")
-    parser.add_argument("--execute", action="store_true", help="Publish navigation after manual standing enable")
+    parser.add_argument("--image", type=Path)
+    parser.add_argument("--execute", action="store_true")
     parser.add_argument("--steps", type=int, default=1)
-    parser.add_argument("--timeout", type=float, default=8.0)
+    parser.add_argument("--linear-speed", type=float, default=0.5)
+    parser.add_argument("--angular-speed", type=float, default=math.pi / 6)
     args = parser.parse_args()
-    if not 1 <= args.steps <= 100 or not 0 < args.timeout <= 30:
-        parser.error("steps must be 1..100 and timeout (0, 30]")
-    if args.execute and args.image:
-        parser.error("Execution requires a live camera")
     camera, wbc = None, None
     history = []
     try:
         if not args.image:
             camera = Camera(args.camera_host, args.camera_port, args.camera_key)
-            deadline = time.monotonic() + 10
-            while not camera.fresh():
-                if camera.error or time.monotonic() > deadline:
-                    raise RuntimeError(f"No fresh {args.camera_key} within 10 s: {camera.error}")
+            while camera.sample is None:
+                if camera.error:
+                    raise RuntimeError(camera.error)
                 time.sleep(0.05)
         if args.execute:
-            wbc = WBCPublisher(camera)
+            wbc = WBCPublisher(args.linear_speed, args.angular_speed)
             wbc.wait_ready()
         for step in range(args.steps):
+            if wbc:
+                wbc.check_manual_stop()
             if camera:
-                encoded, captured_at, shape, source_stamp = camera.snapshot()
+                encoded, shape, source_stamp = camera.snapshot()
             else:
                 bgr = cv2.imread(str(args.image))
                 if bgr is None:
                     raise ValueError("Cannot read offline image")
                 encoded = encode_image(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-                captured_at, shape, source_stamp = time.monotonic(), list(bgr.shape), None
+                shape, source_stamp = list(bgr.shape), None
             history.append(encoded)
-            response, latency = infer(args.host, args.port, sample_history(history),
-                                      args.instruction, args.timeout)
+            response, latency = infer(args.host, args.port, sample_history(history), args.instruction)
             action, amount = parse_action(response)
             log("inference", step=step + 1, response=response, action=action,
                 amount=amount, round_trip_s=latency, camera_shape=shape,
                 camera_source_timestamp=source_stamp, execute=args.execute)
             if wbc:
-                if wbc.fault or not camera.fresh() or time.monotonic() - captured_at > 4:
-                    raise RuntimeError(wbc.fault or "Observation/model response too old; no movement")
+                wbc.check_manual_stop()
                 if action == "stop":
+                    wbc.publish((0.0, 0.0, 0.0))
                     break
                 wbc.move(action, amount)
-            elif step + 1 < args.steps:
-                time.sleep(0.5)
     finally:
         if wbc:
             wbc.close()
@@ -297,7 +241,7 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        log("stopped_by_operator")
+        log("interrupted")
     except Exception as exc:
-        log("failed_closed", error=str(exc))
+        log("error", error=str(exc))
         raise

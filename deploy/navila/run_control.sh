@@ -13,21 +13,11 @@ if [[ "$1" == --read-only ]]; then extra+=(--diagnostic-read-only); fi
 shift
 if [[ $# != 0 ]]; then echo 'Unexpected extra arguments' >&2; exit 2; fi
 source "$REPO/scripts/thinkpad_collection_env.sh"
-export ROS_DOMAIN_ID=73 ROS_LOCALHOST_ONLY=1 NAVILA_NAVIGATION=1
+export ROS_DOMAIN_ID=73 ROS_LOCALHOST_ONLY=1
+export NAVILA_ESTOP_DIR="$REPO/.runtime/navila/estop"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
 IFACE=enx00e04c36c4e8
-[[ -e "/sys/class/net/$IFACE" ]] || { echo "Missing wired interface $IFACE" >&2; exit 1; }
-[[ "$(cat "/sys/class/net/$IFACE/carrier")" == 1 ]] || { echo 'Ethernet link is down' >&2; exit 1; }
-# Do not overlap the established collection/control session. This also checks
-# non-tmux body controllers; no existing process is killed.
-if pgrep -af '[p]ython.*(run_g1_control_loop|run_teleop_policy_loop)' ; then
-    echo 'Existing control/teleop process found; close it before navigation' >&2
-    exit 1
-fi
-mkdir -p "$REPO/.runtime/navila"
-exec 9>"$REPO/.runtime/navila/control.lock"
-flock -n 9 || { echo 'NaVILA controller already owns the lock' >&2; exit 1; }
 exec python decoupled_wbc/control/main/teleop/run_g1_control_loop.py \
     --interface "$IFACE" --wbc-version gear_wbc \
     --wbc-model-path 'policy/GR00T-WholeBodyControl-Balance.onnx,policy/GR00T-WholeBodyControl-Walk.onnx' \

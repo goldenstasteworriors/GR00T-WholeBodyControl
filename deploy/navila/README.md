@@ -1,125 +1,125 @@
-# NaVILA → ThinkPad Balance/Walk → G1
+# NaVILA → ThinkPad Balance/Walk → G1：人工急停版
 
-本次接入复用 ThinkPad 桌面《双Dex1三相机采集完整流程.txt》对应工程，原采集目录不改。独立分支为 `codex/navila-g1-01a19ca8`，基于 `c1495a7`。会话 `01a19ca8-ac6e-7460-a4da-6a193efe13ca`，任务轮次 9。
+本版按用户要求移除了上一版新增的导航防护措施，仅增加两端人工阻尼急停入口。原 Balance/Walk 权重、原控制器的初始化、人工站立使能、关节处理和阻尼逻辑保持原样。
 
-## 已验证和未验证
+独立工程：/home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link
 
-2026-11-03 实测：
+分支：codex/navila-g1-01a19ca8
 
-- G1 有线地址 192.168.123.164，ThinkPad 网卡 enx00e04c36c4e8，地址 192.168.123.222。
-- 机器人已有相机服务端口 5555；订阅 `ego_view`，RGB 640×480，另有左右腕相机。没有重启机器人服务。
-- 真实相机 → ThinkPad → SSH 中转 → server02 NaVILA → ThinkPad：两次往返 1.0625 / 1.1311 秒；这是图像编码后网络加推理耗时，不含全部采集延迟。模型输出左右转都能严格解析，未发送运动指令。
-- 按下方烧杯指令实际运行一次，约 2.012 秒返回 `The next action is turn left 45 degree.`，只记录未执行。这不是烧杯停靠成功的证据，也未据此启用自主行走。
-- 隔离 ROS domain 178 的模拟接收端：中位约 49.1 Hz，发布器突然消失后约 0.188 秒归零；图像断流锁定停止；非法动作、超限速度、过期/重放消息被拒绝。测试没有连接机器人执行器。
-- 原 Balance/Walk ONNX 在 CPU 上加载、前向计算通过。零输入只验证加载/计算，不验证运动能力。
-- 实际控制脚本以 `--read-only` 运行：读取真实 29 维关节状态，计算 29 维目标，到达 `ready`，`use_policy_action=false`、`diagnostic_read_only=true`、导航速度为零；不切换官方控制模式，不发位置/阻尼/手部命令。
-- 尚未执行 `--real` 的带电机写入控制，未使能站立/行走，未完成实机转向、前进、避障、烧杯停靠验收。`--real` 与已测试的只读路径相同，仅去掉只读标志；其实际运动效果仍待现场验收。
+会话：01a19ca8-ac6e-7460-a4da-6a193efe13ca，任务轮次 11。
 
-验证记录（ThinkPad）：`.runtime/navila/live-inference.jsonl`、`beaker-readonly.jsonl`、`verification.json`、`readonly-control.log`、`readonly-status.json`、`.runtime/collection_damping_stop.json`。临时测试脚本在测试后删除，不作为部署依赖。
+## 两端急停
 
-## 链路与控制职责
+以下代码块各是一条完整命令，不需要手动换行。
 
-```text
-G1 ego RGB --ZMQ 5555/网线--> ThinkPad camera/history
-                                  |
-                              TCP 127.0.0.1:54321
-                                  |
-                          本机 SSH 双隧道中转
-                                  |
-                         server02 NaVILA / RTX 4090
-                                  |
-                       文本动作：前进 / 左右转 / 停止
-                                  |
-ThinkPad bridge --ROS domain 73, 50 Hz--> 带到期检查的 WBC
-                                  |
-                   Balance / Walk ONNX --Unitree DDS--> G1
+**在本机执行：**
+
+```bash
+bash /home/ykj/navila-g1-link/deploy/navila/estop_local.sh
 ```
 
-NaVILA 不输出关节动作，也不替换你的低层。接口为 `navigate_cmd=[vx,vy,wz]`，单位 m/s、m/s、rad/s；正 wz 为左转。控制器根据速度模长选择 Balance 或 Walk。
+**在 ThinkPad 执行：**
 
-本机中转复用既有 SSH 身份，不复制私钥。**本机必须持续开机且能连接两端**。ThinkPad 目前没有 server02 直连 SSH 配置；若未来取消本机中转，需另行配置两端网络/SSH。所有推理隧道端口仅绑定 loopback，没有对外开放 NaVILA。
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/estop_thinkpad.sh
+```
 
-server02 模型服务由上一轮部署的 tmux `navila-server02` 运行。代码 `/home/user/ykj/project/NaVILA`，模型和环境在 `/data/ykj/navila`，本次没有改动它的驱动、环境或权重。
+**在 ThinkPad 的控制器终端：按 d。**
 
-## 启动：只读推理
+两端脚本对同一个控制器发送 SIGUSR1，直接复用原 DampingShutdown.request_estop → env.enter_damping；不经过 NaVILA/server02、不等待推理。控制器进入阻尼并保持该状态，程序不退出；这不是导航零速站立，也不是断电。
 
-以下每个代码块都是一条完整命令，不需要手动换行；不同代码块分别在指定机器执行。
+成功时输出 JSON 中 state=damping_latched。该回执表示控制器已执行进入阻尼的调用，不等于传感器测得机器人已经静止。diagnostic_read_only=true 表示只是只读测试，没有发送电机指令。脚本会等待本次回执，失败返回非零，不把“SSH 命令发出”误报成急停完成。
 
-1. 本机启动隧道（已按此命令实测两个 pane 正常）：
+本机脚本依赖本机到 ThinkPad 的 SSH 连接；ThinkPad 本地脚本及控制窗口的 d 键不依赖该连接或 server02。两个脚本针对本目录 run_control.sh 启动并登记的控制器，不是通用的 G1 官方控制程序急停。原采集工作目录没有改动。
+
+本机 ConnectTimeout=3 与急停回执等待 3 秒只用于报告人工急停请求的通信结果，不是机器人运动超时规则。PID/start-time 检查只用于定位正确控制进程，避免把信号发给别的进程。
+
+## 本版删除的内容
+
+- 删除 navigation_lease.py，控制入口与全身策略恢复至原 c1495a7 版本；不再附加指令有效期、接收端超时归零或速度覆盖。
+- 删除相机 0.5 秒、控制状态 0.25 秒新鲜度检查和断流故障锁定。
+- 删除推理 8 秒超时、观测到执行 4 秒限制和启动等待 120 秒限制。
+- 删除前进最多 25 cm、转向最多 15°的截短，以及额外的速度范围检查。
+- 删除离散距离/角度白名单；解析格式支持任意数值，如 125 cm、90°，不再限于 25/50/75 和 15/30/45。
+- 删除竞争发布器检查、额外控制进程互斥和有线 carrier 预检。
+- 删除 bridge 异常退出时自动发布零速的逻辑。关闭 bridge 不作为急停方法；人工急停用上面的两个脚本或 d。
+
+保留的动作文本解析、JSON/TCP 收发和原控制器行为属于接口本身。无法解析的文本会报错，不编造一个运动动作。相机沿用最后取得的画面，不判断其是否过期。发生网络或进程异常时没有本次新增的自动停止机制。
+
+## 动作执行
+
+使用原 ROS topic ControlPolicy/upper_body_pose，发布 navigate_cmd=[vx,vy,wz] 和 target_time，由原上层插值/低层策略接收。单位为 m/s、m/s、rad/s。
+
+默认前进速度 0.5 m/s，转向速度 π/6 rad/s；通过 --linear-speed / --angular-speed 可自行指定，不做额外限幅。模型输出 75 cm 就按完整 75 cm 计算执行时长，45°也按完整 45°计算，默认均为 1.5 秒。仍是按时间估计距离/角度，不是导航位姿闭环。
+
+每段动作执行时约 50 Hz 发布指令，段结束发一次零速，再采图/推理下一段；模型输出 stop 时也发零速。这是完成动作的语义，不是超时保护。没有独立的零速心跳或强制 0.5 秒停顿。收到明确的 damped 状态会结束当前导航任务，属于人工急停效果。
+
+## 链路和启动
+
+G1 相机 ZMQ 5555 → ThinkPad → 本机 SSH 中转 → server02 NaVILA → ThinkPad ROS → 原 Balance/Walk → G1。
+
+G1 地址 192.168.123.164；ThinkPad 有线网卡 enx00e04c36c4e8；ego_view 为 RGB 640×480。NaVILA 输入保持 8 帧历史，不足时前补黑帧。环境仍是现有 Conda decoupled_vla_collection，没有安装依赖或修改驱动。
+
+server02 仍使用上一轮的部署：代码 /home/user/ykj/project/NaVILA，环境/权重 /data/ykj/navila，tmux navila-server02。当前通信仍依赖本机中转在线。
+
+本机启动中转：
 
 ```bash
 bash /home/ykj/navila-g1-link/deploy/navila/local_relay.sh start
 ```
 
-查看或停止隧道：
+查看中转：
 
 ```bash
 bash /home/ykj/navila-g1-link/deploy/navila/local_relay.sh status
 ```
 
-```bash
-bash /home/ykj/navila-g1-link/deploy/navila/local_relay.sh stop
-```
+若中转断开，分别执行 stop 和 start。relay_ssh_config 是已有部署配置，Git 忽略，不包含密钥。
 
-`relay_ssh_config` 是本机实际部署配置，包含现有 HostKeyAlias，留在部署目录并被 Git 忽略；不包含密钥。仓库里的 relay 脚本需要同目录该配置才能使用。隧道中断时不会自动无限重启，检查 pane 报错后 stop/start。
-
-2. ThinkPad 只读请求，不创建 ROS 指令发布器：
+ThinkPad 只读推理：
 
 ```bash
 bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_bridge.sh --instruction "Find the beaker and stop in front of it." --steps 1
 ```
 
-使用现有 Conda `decoupled_vla_collection`；无需安装新库。图像按历史采样 7 帧加当前帧，不足 8 帧前补黑帧。一次进程代表一个任务，历史只驻内存。`--steps` 默认 1，上限 100。
-
-3. ThinkPad 只读验证关节状态与 WBC（已按脚本实测）：
+ThinkPad 只读控制诊断（不切换模式、不写电机）：
 
 ```bash
 bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_control.sh --read-only
 ```
 
-结束只读检查可在其终端按 Ctrl+C。不要同时运行原采集控制器；脚本发现已有控制/遥操作进程会退出。只读控制器不会满足 bridge 的执行握手。
-
-## 现场实机阶段（尚未执行）
-
-当前相机画面主要是近处实验桌面，地面/通道覆盖不足。先确认前方无遮挡并调整视角，现场有人负责 G1 支撑与急停。模型输出不能充当避障传感器。
-
-关闭只读控制器和原采集/遥操作进程。在 ThinkPad 终端 A 启动：
+ThinkPad 真实控制启动，会退出官方运动模式并进行关节初始化：
 
 ```bash
 bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_control.sh --real
 ```
 
-**该命令会退出官方运动模式，并开始关节初始化；初始化本身就有动作。** 保留原采集工程的初始化逻辑，关闭 startup T pose 和手部控制，不启动 PICO、夹爪或数据导出。导航期间只设置底盘速度，不接管上肢姿态。等待打印 `ready` 后，在终端 A 按 `]`，才启用原 Balance 站立策略。
-
-第一轮只执行一个受限导航段，在 ThinkPad 终端 B 启动：
+等待 ready 后，在控制器终端按 ] 启用原 Balance 站立。导航启动如下；--steps 决定本次最多执行多少段，未指定时为 1：
 
 ```bash
 bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_bridge.sh --instruction "Find the beaker and stop in front of it." --execute --steps 1
 ```
 
-终端 A 的 `d` 是原控制器的阻尼急停；`]` 在 running 状态也会切入阻尼。停止 bridge（Ctrl+C）只归零导航速度，低层保持站立。任务完成同样是零速站立，**不是阻尼/断电**。低层控制器的 Ctrl+C 会走原阻尼退出逻辑。没有 PICO 进程，因此这个导航入口使用键盘使能，不依赖采集流程的四键组合。
+急停后的恢复沿用原流程：damped 状态按 ] 重新初始化，ready 后再次按 ] 站立；重新启动导航任务。没有自动恢复行走。
 
-## 延迟、限幅和故障行为
+## 验证范围
 
-- 模型推理期间发布零速；执行完一段后零速等待 0.5 秒，再观察/推理。高层可以约 1 秒一次响应，底层 50 Hz 不等待网络。
-- 初始限幅：前进 0.15 m/s，每段最多 25 cm；转向 0.25 rad/s，每段最多 15°。原模型的 50/75 cm、30/45°请求会截短，并在 JSON 日志保留原始请求和实际限幅。
-- 距离/角度按时间估计，当前真实 `BodyStateProcessor` 没有订阅导航里程计（odostate 只用于仿真）。这不是位置闭环；不能承诺 25 cm/15°的实际误差，也不能承诺烧杯前精准停靠。
-- 只接受明确的前进/左右转/停止文本；未知、解释性文本、超出白名单的动作直接报错退出，不默认前进。
-- 仅 ThinkPad 发布命令，附同机 monotonic 时间，最长 0.25 秒有效。控制器每一周期检查，过期直接用零速绕过旧速度插值。不会因重连重放旧动作。
-- 相机 0.5 秒无新源时间戳、控制状态 0.25 秒不新鲜、竞争发布器、控制模式离开 running：锁定故障并归零，需要重启任务。
-- 推理超时默认 8 秒；用于执行的观测到动作超过 4 秒即拒绝。等待期间始终零速。
-- 接收端检查只在 `NAVILA_NAVIGATION=1` 的专用控制脚本启用，原采集入口不改变。
-- 该超时机制针对高层/网络/bridge 故障；它不替代 G1 对底层控制进程崩溃、DDS 中断或物理碰撞的保护。
-- G1 与 ThinkPad 的墙钟存在约数分钟偏差，没有修改系统时间。相机新鲜度用源时间戳是否推进 + 本机单调时钟，不把跨机器墙钟差当作传输延迟；端到端相机捕获年龄没有独立标定。
+2026-11-03：
 
-## 代码位置
+- 本版真实相机推理复测约 1.186 秒成功，未发送移动指令。
+- 上一版真实相机到 server02 推理已测，约 1.06–2.01 秒；恢复 SSH 后请求也通过。当前相机主要朝向实验桌面，烧杯停靠尚未闭环验证。
+- 本版验证完整 75 cm / 45°时长都是 1.5 秒，125 cm / 90°可解析；原插值在不接收新指令时保持目标，没有新增超时归零。
+- 使用同一个真实 G1 只读控制进程，分别执行 ThinkPad 急停脚本和本机急停脚本，两次都获得当前请求的 damping_latched 回执。ROS 状态确认 damped 且 use_policy_action=false。
+- 测试没有发出实际电机动作；没有进行实机行走或带电机写入的急停效果测试。实际阻尼发送复用的是原工程已存在的入口。
+- 验证记录位于 .runtime/navila/manual-estop-unit.json、estop-thinkpad-result.json、estop-status.json、manual-estop-readonly.log；本机回执在 /home/ykj/navila-g1-link/runtime/estop-local-result.json。
+- 旧 verification.json 中的 watchdog/限幅结果仅代表上一版，不适用于本版。
 
-- `deploy/navila/bridge.py`：相机接入、8 帧历史、TCP协议、动作白名单、50 Hz 发布、状态握手。
-- `deploy/navila/navigation_lease.py`：时间戳、速度范围、动作期限和停止检查。
-- `decoupled_wbc/control/main/teleop/run_g1_control_loop.py`：专用导航模式，只读状态标记与接收端期限检查。
-- `decoupled_wbc/control/policy/g1_decoupled_whole_body_policy.py`：将已检查速度直接传到原低层策略，不经过旧速度插值。
-- `decoupled_wbc/control/policy/g1_gear_wbc_policy.py`：原 Balance/Walk 选择与 ONNX 前向，不修改。
-- `deploy/navila/run_bridge.sh` / `run_control.sh`：复用既有环境的启动脚本。
-- `deploy/navila/local_relay.sh`：本机两段 SSH 隧道。
+## 文件
 
-后续若要可靠完成“停在烧杯前”，需在实际导航相机视角下采集/评估动作，加入可用的位姿/深度或目标距离反馈，并验证停止距离。当前交付是可运行的软件连接和只读硬件验收，不能据此宣称该任务已闭环成功。
+- deploy/navila/bridge.py：取消附加限制，使用原导航接口。
+- deploy/navila/estop.py：控制器登记、人工 SIGUSR1 请求和回执。
+- deploy/navila/estop_local.sh：本机 SSH 急停入口。
+- deploy/navila/estop_thinkpad.sh：ThinkPad 本地急停入口。
+- deploy/navila/run_control.sh：配置急停登记目录，保留原控制启动参数。
+- decoupled_wbc/control/utils/damping_shutdown.py：仅增加可选的登记和急停回执，不改变原阻尼逻辑。
+- 原 run_g1_control_loop.py 和 g1_decoupled_whole_body_policy.py 已恢复；navigation_lease.py 已删除。
