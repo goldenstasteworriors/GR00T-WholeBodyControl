@@ -213,6 +213,7 @@ def main(config: ControlLoopConfig):
                     policy_status_msg.update(mode.status())
                     if navigation_lease is not None:
                         policy_status_msg["navila_guard"] = True
+                        policy_status_msg["diagnostic_read_only"] = config.diagnostic_read_only
                         policy_status_msg["navila_velocity"] = navigation_lease.velocity.copy()
                     lower_body_policy_status_pub.publish(policy_status_msg)
 

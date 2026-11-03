@@ -60,9 +60,13 @@ def encode_image(rgb):
     return base64.b64encode(encoded).decode("ascii")
 
 
-def receive_exact(sock, size):
+def receive_exact(sock, size, deadline):
     data = bytearray()
     while len(data) < size:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("NaVILA response deadline exceeded")
+        sock.settimeout(remaining)
         chunk = sock.recv(size - len(data))
         if not chunk:
             raise ConnectionError("NaVILA connection closed before response completed")
@@ -76,12 +80,12 @@ def infer(host, port, images, instruction, timeout):
     with socket.create_connection((host, port), timeout=timeout) as sock:
         # A wall-time budget as well as per-read timeout prevents slow trickles.
         deadline = started + timeout
+        sock.settimeout(max(0.01, deadline - time.monotonic()))
         sock.sendall(struct.pack(">Q", len(payload)) + payload)
-        size = struct.unpack(">Q", receive_exact(sock, 8))[0]
+        size = struct.unpack(">Q", receive_exact(sock, 8, deadline))[0]
         if not 0 < size <= 65536:
             raise ValueError(f"Invalid response size: {size}")
-        sock.settimeout(max(0.01, deadline - time.monotonic()))
-        response = json.loads(receive_exact(sock, size))
+        response = json.loads(receive_exact(sock, size, deadline))
     elapsed = time.monotonic() - started
     if elapsed > timeout:
         raise TimeoutError("Inference exceeded deadline")
@@ -155,6 +159,7 @@ class WBCPublisher:
         state = self.status
         return (state is not None and time.monotonic() - state[0] < 0.25
                 and state[1].get("navila_guard") is True
+                and not state[1].get("diagnostic_read_only", False)
                 and state[1].get("control_mode") == "running"
                 and state[1].get("use_policy_action") is True)
 
@@ -164,7 +169,7 @@ class WBCPublisher:
                 now = time.monotonic()
                 item = self.sub.get_msg()
                 if item is not None:
-                    self.status = (now, item)
+                    self.status = (self.sub.last_message_received_ns / 1e9, item)
                 if self.manager.node.count_publishers(self.topic) > 1:
                     self.fault = "Competing control publisher; stop PICO/replay before navigation"
                 if self.active and (not self.ready() or not self.camera.fresh()):
@@ -220,6 +225,8 @@ class WBCPublisher:
         self.stop.set()
         self.thread.join(timeout=2)
         self.manager.shutdown()
+        if hasattr(self.manager, "thread"):
+            self.manager.thread.join(timeout=2)
 
 
 def main():
