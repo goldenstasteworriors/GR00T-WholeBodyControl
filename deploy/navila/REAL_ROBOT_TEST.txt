@@ -3,6 +3,12 @@ Updated: 2026-11-03
 
 Use QUICKSTART.txt for the one-command launchers and preview-only mode.
 Run commands line by line; do not manually wrap long lines.
+
+ONE-COMMAND INTERFACE
+In the ThinkPad top-left menu: Enter 1 initializes, Enter 2 after ready
+enables standing only, and Enter 3 after running starts navigation.
+No Control-pane key is required. e+Enter requests ESTOP; x+Enter exits.
+The numbered commands below are the manual terminal workflow.
 Use English task instructions consistently.
 
 Locations:

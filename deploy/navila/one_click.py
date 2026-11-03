@@ -1,4 +1,4 @@
-"""Tmux launchers. Enter initializes; Enter after ready starts navigation."""
+"""Tmux launchers. Three Enter presses: initialize, stand, navigate."""
 import argparse
 import json
 import os
@@ -171,24 +171,29 @@ def exit_thinkpad():
 def console_thinkpad():
     layout = json.loads(LAYOUT.read_text())
     panes = layout["panes"]
-    confirmed = False
+    confirmed = (tmux("display-message", "-p", "-t", panes["control"], "#{pane_dead}") != "1"
+                 and tmux("display-message", "-p", "-t", panes["control"], "#{pane_title}").startswith("Control /"))
+    standing_requested = False
     print("ThinkPad launcher. PREVIEW works with the saved image while disconnected.", flush=True)
-    print("Press Enter: initialize real joints. Wait for ready, then Enter: stand and navigate.", flush=True)
+    print("Enter 1: initialize real joints. After ready, Enter 2: stand. Enter 3: navigate.", flush=True)
     print("Stay in this menu; no Control-pane key is required.", flush=True)
     print("PREVIEW/LIVE: output only | e: damping ESTOP | x or Ctrl+C: exit workers and interface", flush=True)
-    print("s: pane status | q: detach (keep processes) | START/GO remain available", flush=True)
+    print("s: pane status | q: detach (keep processes) | START/STAND/GO remain available", flush=True)
     print("Control pane: d for ESTOP. No added navigation watchdog or action caps.", flush=True)
     print(f"Instruction: {layout['instruction']}\nSteps: {layout['steps']}", flush=True)
+    if confirmed:
+        state = controller_state(panes["control"])
+        print(f"Existing controller: {state}. Enter stands when ready; Enter navigates when running.", flush=True)
     while True:
         try:
-            choice = input("Enter: initialize/start | PREVIEW/LIVE/e/x/s/q > ").strip().upper()
+            choice = input("Enter: initialize/stand/navigate | PREVIEW/LIVE/e/x/s/q > ").strip().upper()
         except (EOFError, KeyboardInterrupt):
             return exit_thinkpad()
         # Read settings for each new launch, including reused interfaces.
         layout = json.loads(LAYOUT.read_text())
         if choice == "":
             state = controller_state(panes["control"]) if confirmed else "exited"
-            choice = "START" if state in {"exited", "damped"} else "GO"
+            choice = "START" if state in {"exited", "damped"} else "STAND" if state != "running" else "GO"
         if choice in {"PREVIEW", "LIVE"}:
             args = ["bash", HERE / "preview.sh", "--instruction", layout["instruction"]]
             if choice == "LIVE":
@@ -198,20 +203,36 @@ def console_thinkpad():
         elif choice == "START":
             state = controller_state(panes["control"]) if confirmed else "exited"
             if state == "damped":
+                standing_requested = False
                 tmux("send-keys", "-t", panes["control"], "]")
                 print("Reinitializing. Wait for ready, then press Enter here.", flush=True)
                 continue
             if confirmed and state != "exited":
-                print(f"Controller state: {state}. Press Enter after ready to start navigation.", flush=True)
+                print(f"Controller state: {state}. Press Enter after ready to stand; another Enter starts navigation.", flush=True)
                 continue
             confirmed = True
+            standing_requested = False
             tmux("clear-history", "-t", panes["control"])
             launch_pane(panes["control"], "Control / d: ESTOP",
                         command("bash", HERE / "run_control.sh", "--real"))
             launch_pane(panes["camera"], "Camera",
                         command("bash", HERE / "one_click_camera.sh"))
-            print("Initializing. Wait for ready in Control, then press Enter HERE to stand and navigate.", flush=True)
+            print("Initializing. After ready, press Enter HERE to stand only. Another Enter starts navigation.", flush=True)
             tmux("select-pane", "-t", panes["menu"])
+        elif choice == "STAND":
+            if not confirmed:
+                print("Press Enter once to initialize first.", flush=True)
+                continue
+            state = controller_state(panes["control"])
+            if state == "ready":
+                if not standing_requested:
+                    tmux("send-keys", "-t", panes["control"], "]")
+                    standing_requested = True
+                    print("Standing requested. No navigation started. After running appears, press Enter to navigate.", flush=True)
+                else:
+                    print("Standing already requested. Wait for running, then press Enter to navigate.", flush=True)
+            else:
+                print(f"Controller state: {state}. Standing requires ready; Enter after running starts navigation.", flush=True)
         elif choice == "GO":
             if not confirmed:
                 print("Press Enter once to initialize first.", flush=True)
@@ -221,11 +242,9 @@ def console_thinkpad():
                 confirmed = False
                 print("Controller exited. See Control error. Reconnect if needed; Enter retries initialization; x exits.", flush=True)
                 continue
-            if state not in {"ready", "running"}:
-                print(f"Controller state: {state}. Wait for ready, then press Enter again.", flush=True)
+            if state != "running":
+                print(f"Controller state: {state}. Stand first with Enter after ready; another Enter navigates.", flush=True)
                 continue
-            if state == "ready":
-                tmux("send-keys", "-t", panes["control"], "]")
             print(f"Navigation instruction: {layout['instruction']}", flush=True)
             launch_pane(panes["navigation"], "NaVILA navigation",
                         command("bash", HERE / "run_bridge.sh", "--instruction",
@@ -241,7 +260,7 @@ def console_thinkpad():
         elif choice == "Q":
             call(["tmux", "detach-client"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            print("Enter: initialize/start | PREVIEW/LIVE: output only | e: ESTOP | x: exit", flush=True)
+            print("Enter: initialize/stand/navigate | PREVIEW/LIVE: output only | e: ESTOP | x: exit", flush=True)
 
 
 def workstation_preview(live):

@@ -83,8 +83,11 @@ This starts real joint initialization. Stay in the top-left menu.
 
 11. Wait for ready in the Control pane
 
-12. ThinkPad top-left menu: Press Enter again
-This enables standing and starts navigation. No ] key or GO is required.
+12. ThinkPad top-left menu: Press Enter a second time
+This enables standing only. No navigation starts.
+
+13. Wait for running, then press Enter a third time in the top-left menu
+This starts navigation. No Control-pane key or GO command is required.
 
 This executes predicted actions. The default budget is 20 actions.
 Instruction used above:
@@ -178,4 +181,5 @@ Workstation terminal, one line:
 bash /home/ykj/Desktop/navila_exit.sh
 
 If initialization exits, press Enter to retry after fixing the reported error.
-If still initializing, wait for ready before pressing Enter to begin walking.
+If still initializing, wait for ready before pressing Enter to stand.
+After running appears, press Enter again to begin navigation.
