@@ -57,6 +57,11 @@ class SimResetKeyboardPublisher:
 def main(config: ControlLoopConfig):
     ros_manager = ROSManager(node_name=CONTROL_NODE_NAME)
     node = ros_manager.node
+    # Opt-in only for the dedicated NaVILA launcher. Existing collection is unchanged.
+    navigation_lease = None
+    if os.environ.get("NAVILA_NAVIGATION") == "1":
+        from deploy.navila.navigation_lease import NavigationLease
+        navigation_lease = NavigationLease()
 
     # start the robot config server
     ROSServiceServer(ROBOT_CONFIG_TOPIC, config.to_dict())
@@ -153,7 +158,16 @@ def main(config: ControlLoopConfig):
                         last_teleop_cmd = upper_body_cmd.copy()
                         if config.ik_indicator:
                             env.set_ik_indicator(upper_body_cmd)
-                    mode.update(wbc_goal, t_now)
+                    if navigation_lease is not None:
+                        # Navigation cannot request standing, reset, arm/hand poses,
+                        # height changes or recording. Manual keyboard remains active.
+                        mode.update({}, t_now)
+                        velocity = navigation_lease.update(upper_body_cmd, t_now, mode.state == "running")
+                        wbc_policy.navigation_velocity_override = np.asarray(velocity)
+                        last_teleop_cmd = {"navigate_cmd": velocity}
+                        wbc_goal = {}
+                    else:
+                        mode.update(wbc_goal, t_now)
                     # Send goal to policy
                     if wbc_goal and mode.state == "running":
                         for key in ("set_policy_action", "toggle_policy_action", "emergency_stop"):
@@ -197,6 +211,9 @@ def main(config: ControlLoopConfig):
 
                     policy_status_msg = {"use_policy_action": policy_use_action, "timestamp": t_now}
                     policy_status_msg.update(mode.status())
+                    if navigation_lease is not None:
+                        policy_status_msg["navila_guard"] = True
+                        policy_status_msg["navila_velocity"] = navigation_lease.velocity.copy()
                     lower_body_policy_status_pub.publish(policy_status_msg)
 
                     # Get joint safety status from G1Env (which already runs the safety monitor)

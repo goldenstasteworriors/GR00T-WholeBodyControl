@@ -24,6 +24,7 @@ class G1DecoupledWholeBodyPolicy(Policy):
         self.lower_body_policy = lower_body_policy
         self.upper_body_policy = upper_body_policy
         self.dex1_grasp_modes = None
+        self.navigation_velocity_override = None
 
     def set_observation(self, observation):
         # Upper body policy is open loop (just interpolation), so we don't need to set the observation
@@ -98,6 +99,11 @@ class G1DecoupledWholeBodyPolicy(Policy):
         q_arms = q[self.robot_model.get_joint_group_indices("arms")]
         base_height_command = upper_body_action.get("base_height_command", None)
         interpolated_navigate_cmd = upper_body_action.get("navigate_cmd", None)
+        if self.navigation_velocity_override is not None:
+            # Use the controller-side expiring lease directly. Do not interpolate
+            # a stop through a previously scheduled velocity waypoint.
+            interpolated_navigate_cmd = self.navigation_velocity_override
+            self.lower_body_policy.set_use_teleop_policy_cmd(True)
 
         # Compute torso orientation relative to waist, to pass to lower body policy
         self.robot_model.cache_forward_kinematics(q, auto_clip=False)
