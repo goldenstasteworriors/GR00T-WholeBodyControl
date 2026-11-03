@@ -251,6 +251,8 @@ class BaseConfig(ArgsConfigTemplate):
     """Upper body operation mode"""
 
     def __post_init__(self):
+        if self.navigation_collection:
+            self.with_hands = False
         # Resolve interface (handles sim/real shortcuts, platform differences, and error handling)
         self.interface, self.env_type = resolve_interface(self.interface)
 
