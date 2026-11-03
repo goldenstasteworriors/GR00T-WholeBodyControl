@@ -156,3 +156,22 @@ navila_real_robot_test.txt
 Preview never starts the robot controller. It does not stop another
 controller that was already running independently.
 No removed navigation watchdog or action cap has been reintroduced.
+
+VISUAL LIVE PREVIEW (WORKSTATION)
+
+Run this command on one line:
+
+bash /home/ykj/Desktop/navila_viewer.sh
+
+The browser opens http://127.0.0.1:8767 automatically.
+Default task: Walk to the table and stop in front of it.
+The page shows live video, the latest predicted command, raw response,
+round-trip latency, and the last 20 predictions. No movement is executed.
+Show model input switches to the latest image used for the completed prediction.
+Keep the launch terminal open. Ctrl+C closes this preview only.
+If already running, the command opens the existing preview and reports its task.
+The model service and G1 camera must be online. The workstation relay is reused.
+
+To stop the preview started by the assistant in tmux:
+
+tmux send-keys -t navila-viewer:preview C-c
