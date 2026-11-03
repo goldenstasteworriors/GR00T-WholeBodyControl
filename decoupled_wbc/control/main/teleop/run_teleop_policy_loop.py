@@ -33,7 +33,7 @@ def main(config: TeleopConfig):
             high_elbow_pose=config.high_elbow_pose,
             with_hands=config.with_hands,
         )
-        if config.with_hands:
+        if config.with_hands and not config.navigation_collection:
             left_hand_ik_solver, right_hand_ik_solver = instantiate_g1_hand_ik_solver()
             hand_control_device = config.hand_control_device
         else:
@@ -43,7 +43,13 @@ def main(config: TeleopConfig):
     else:
         raise ValueError(f"Unsupported robot name: {config.robot}")
 
-    if config.lerobot_replay_path:
+    if config.navigation_collection:
+        from decoupled_wbc.control.policy.navigation_collection_policy import NavigationCollectionPolicy
+
+        if config.body_control_device != "pico" or not config.enable_real_device:
+            raise ValueError("Navigation collection requires live PICO controls")
+        teleop_policy = NavigationCollectionPolicy()
+    elif config.lerobot_replay_path:
         teleop_policy = LerobotReplayPolicy(
             robot_model=robot_model, parquet_path=config.lerobot_replay_path
         )

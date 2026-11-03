@@ -54,6 +54,7 @@ def override_wbc_config(
         "enable_gravity_compensation": config.enable_gravity_compensation,
         "gravity_compensation_joints": config.gravity_compensation_joints,
         "high_elbow_pose": config.high_elbow_pose,
+        "navigation_collection": config.navigation_collection,
     }
 
     if missed_keys_only:
@@ -97,6 +98,9 @@ def override_wbc_config(
 @dataclass
 class BaseConfig(ArgsConfigTemplate):
     """Base config inherited by all G1 control loops"""
+
+    navigation_collection: bool = False
+    """Fix navigation arms and pass only PICO locomotion/recording commands."""
 
     # WBC Configuration
     wbc_version: Literal[tuple(WBC_VERSIONS)] = "gear_wbc"

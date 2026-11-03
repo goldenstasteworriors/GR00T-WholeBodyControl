@@ -172,6 +172,9 @@ def _pipe_pane_to_log(target: str, log_file: Path) -> None:
 class DecoupledVLACollectionLaunchConfig:
     """Launch decoupled WBC data collection into the Sonic VLA dataset schema."""
 
+    navigation_collection: bool = False
+    """Navigation dataset: fixed arms, PICO locomotion only and navigation telemetry."""
+
     sim: bool = False
     """Run against MuJoCo sim. Default is real robot."""
 
@@ -611,6 +614,7 @@ def _build_control_args(config: DecoupledVLACollectionLaunchConfig, interface: s
         *_bool_arg("with-hands", config.with_hands),
         *_bool_arg("high-elbow-pose", config.high_elbow_pose),
         *_bool_arg("diagnostic-read-only", config.diagnostic_read_only),
+        *_bool_arg("navigation-collection", config.navigation_collection),
     ]
     if config.hand_type == "dex1":
         args += ["--dex1-released-q", *(str(q) for q in config.dex1_released_q),
@@ -651,6 +655,7 @@ def _build_teleop_args(config: DecoupledVLACollectionLaunchConfig, interface: st
         *_bool_arg("enable-visualization", config.enable_visualization),
         *_bool_arg("pico-vis-smpl", config.pico_vis_vr3pt or config.pico_vis_smpl),
         *_bool_arg("enable-real-device", config.enable_real_device),
+        *_bool_arg("navigation-collection", config.navigation_collection),
     ]
     return args
 
@@ -705,6 +710,7 @@ def _build_exporter_args(config: DecoupledVLACollectionLaunchConfig) -> list[str
         str(config.discard_audio_cue_volume),
         *_bool_arg("overwrite-existing-dataset", config.overwrite_existing_dataset),
         *_bool_arg("profile-timing", config.profile_timing),
+        *_bool_arg("navigation-collection", config.navigation_collection),
         "--profile-interval",
         str(config.profile_interval),
     ]

@@ -264,6 +264,12 @@ def main(config: ControlLoopConfig):
 
                 msg = deepcopy(obs)
                 msg.update(mode.status())
+                if config.navigation_collection:
+                    # This is a policy input, not measured odometry.
+                    msg["navigation_policy_velocity"] = (
+                        np.asarray(wbc_policy.lower_body_policy.cmd).reshape(3).copy()
+                        if mode.state == "running" else np.zeros(3)
+                    )
                 if wbc_config.get("HAND_TYPE") == "dex1" and config.with_hands:
                     # Store the actual slew-limited DDS targets from this step.
                     for side in ("left", "right"):

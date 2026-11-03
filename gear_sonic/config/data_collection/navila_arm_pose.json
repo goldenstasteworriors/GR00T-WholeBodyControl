@@ -1,0 +1,19 @@
+{
+  "units": "degrees",
+  "joints": {
+    "left_shoulder_pitch_joint": -21.81,
+    "right_shoulder_pitch_joint": -21.81,
+    "left_shoulder_roll_joint": 15.63,
+    "right_shoulder_roll_joint": -15.63,
+    "left_shoulder_yaw_joint": 0.62,
+    "right_shoulder_yaw_joint": -0.62,
+    "left_elbow_joint": -42.57,
+    "right_elbow_joint": -42.57,
+    "left_wrist_roll_joint": -19.41,
+    "right_wrist_roll_joint": 19.41,
+    "left_wrist_pitch_joint": 26.08,
+    "right_wrist_pitch_joint": 26.08,
+    "left_wrist_yaw_joint": 6.10,
+    "right_wrist_yaw_joint": -6.10
+  }
+}

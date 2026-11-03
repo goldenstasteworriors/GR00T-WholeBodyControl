@@ -78,6 +78,9 @@ DEFAULT_INSPIRE_HAND_POSE_CONFIG = (
 class DecoupledVLADataExporterConfig:
     """CLI config for decoupled WBC -> Sonic VLA data export."""
 
+    navigation_collection: bool = False
+    """Record navigation commands, control mode and source timestamps for NaVILA."""
+
     dataset_name: str | None = None
     """Dataset name. Defaults to a timestamp."""
 
@@ -1241,6 +1244,11 @@ class DecoupledVLADataCollector:
         self._add_teleop_features(frame_data, observation_state)
         self._add_images_to_frame_data(frame_data)
 
+        if self.config.navigation_collection:
+            from decoupled_wbc.control.policy.navigation_collection_policy import navigation_frame
+
+            frame_data.update(navigation_frame(proprio, stamp))
+
         self.data_exporter.add_frame(frame_data)
         self._last_camera_recording_slot = camera_slot
         self._new_camera_group = False
@@ -1343,6 +1351,11 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
             for key, value in wrist_modality.items():
                 modality_config.setdefault(key, {}).update(value)
 
+        if config.navigation_collection:
+            from decoupled_wbc.control.policy.navigation_collection_policy import navigation_features, ARM_PROFILE
+
+            dataset_features.update(navigation_features())
+
         text_to_speech = TextToSpeech() if config.text_to_speech else None
         audio_cue = AudioCue(volume=config.audio_cue_volume) if config.audio_cues else None
         script_config = {
@@ -1376,6 +1389,15 @@ def main(config: DecoupledVLADataExporterConfig) -> None:
                 ),
             },
         }
+
+        if config.navigation_collection:
+            script_config["navigation_collection"] = {
+                "arm_profile": json.loads(ARM_PROFILE.read_text()),
+                "velocity_frame": "body: x forward, y left, yaw counterclockwise",
+                "velocity_source": "balance/walk command input, NOT measured odometry",
+                "state_image_pairing": "latest received state at each fresh camera group",
+                "completion": "human-reviewed labels; recording stop is not task success",
+            }
 
         data_exporter = Gr00tDataExporter.create(
             save_root=f"{config.root_output_dir}/{config.dataset_name}",
