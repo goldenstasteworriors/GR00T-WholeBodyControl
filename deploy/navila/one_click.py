@@ -1,4 +1,4 @@
-"""Tmux launchers. No robot process starts before explicit START."""
+"""Tmux launchers. PREVIEW/LIVE are read-only; robot control requires START."""
 import argparse
 import json
 import os
@@ -41,7 +41,7 @@ def launch_pane(pane, label, cmd):
     title = tmux("display-message", "-p", "-t", pane, "#{pane_title}")
     # Idempotent launch: do not replace an already running process.
     if dead != "1" and not title.startswith("Waiting:"):
-        print(f"{label} 已在运行；保留当前进程。", flush=True)
+        print(f"{label} is already running; keeping the current process.", flush=True)
         return False
     tmux("select-pane", "-t", pane, "-T", label)
     tmux("respawn-pane", "-k", "-t", pane, cmd)
@@ -55,7 +55,7 @@ def attach(session):
     if sys.stdin.isatty() and sys.stdout.isatty():
         action = "switch-client" if os.environ.get("TMUX") else "attach-session"
         return call(["tmux", action, "-t", session]).returncode
-    print(f"已启动；进入界面：tmux attach-session -t {session}")
+    print(f"Started. Open the interface: tmux attach-session -t {session}")
     return 0
 
 
@@ -63,15 +63,15 @@ def start_thinkpad(args):
     if not has_session(TP_SESSION):
         menu = tmux("new-session", "-d", "-P", "-F", "#{pane_id}",
                     "-s", TP_SESSION, "-n", "run", "-x", "160", "-y", "45",
-                    idle_command("菜单"))
+                    idle_command("Menu"))
         tmux("set-option", "-t", TP_SESSION, "remain-on-exit", "on")
         tmux("set-option", "-t", TP_SESSION, "mouse", "on")
         control = tmux("split-window", "-h", "-P", "-F", "#{pane_id}",
-                       "-t", menu, idle_command("控制器：等待 START"))
+                       "-t", menu, idle_command("Control: waiting for START"))
         camera = tmux("split-window", "-v", "-P", "-F", "#{pane_id}",
-                      "-t", control, idle_command("相机：等待 START"))
+                      "-t", control, idle_command("Camera: waiting for START"))
         navigation = tmux("split-window", "-v", "-P", "-F", "#{pane_id}",
-                          "-t", camera, idle_command("推理：等待 GO"))
+                          "-t", camera, idle_command("Output: PREVIEW, LIVE, or GO"))
         panes = {"menu": menu, "control": control, "camera": camera, "navigation": navigation}
         for label, pane in panes.items():
             tmux("select-pane", "-t", pane, "-T", "Waiting:" + label)
@@ -79,14 +79,14 @@ def start_thinkpad(args):
         LAYOUT.parent.mkdir(parents=True, exist_ok=True)
         LAYOUT.write_text(json.dumps({"panes": panes, "instruction": args.instruction,
                                      "steps": args.steps}, ensure_ascii=False, indent=2) + "\n")
-        launch_pane(menu, "菜单 / e 回车急停",
+        launch_pane(menu, "Menu / e+Enter: ESTOP",
                     command("python3", HERE / "one_click.py", "console-thinkpad"))
         tmux("select-pane", "-t", menu)
     else:
-        print("复用已有界面；不会重复启动控制器。", flush=True)
+        print("Reusing the existing interface; no duplicate controller will be started.", flush=True)
         menu = json.loads(LAYOUT.read_text())["panes"]["menu"]
         if tmux("display-message", "-p", "-t", menu, "#{pane_dead}") == "1":
-            launch_pane(menu, "菜单 / e 回车急停",
+            launch_pane(menu, "Menu / e+Enter: ESTOP",
                         command("python3", HERE / "one_click.py", "console-thinkpad"))
         tmux("select-pane", "-t", menu)
     return attach(TP_SESSION)
@@ -113,41 +113,47 @@ def stop_from_menu(local):
     script = "estop_local.sh" if local else "estop_thinkpad.sh"
     result = call(["bash", str(HERE / script)], stdin=subprocess.DEVNULL)
     if result.returncode:
-        print("急停未确认；请查看上方结果。", flush=True)
+        print("ESTOP NOT CONFIRMED. See the result above.", flush=True)
 
 
 def console_thinkpad():
     layout = json.loads(LAYOUT.read_text())
     panes = layout["panes"]
     confirmed = False
-    print("ThinkPad 一键界面（机器人可暂不连接）", flush=True)
-    print("未确认前，不启动控制、相机或导航进程。", flush=True)
-    print("接回机器人后：START 确认初始化 → 控制窗 ready 后按 ] → 菜单 GO 导航。", flush=True)
-    print("START 会启动真实关节初始化；不是只读模式。", flush=True)
-    print("e 回车：阻尼急停 | s：窗口状态 | q：脱离界面（保留进程）", flush=True)
-    print("控制窗 d 也是原急停；这里没有新增超时/限幅。", flush=True)
-    print(f"任务：{layout['instruction']}\n最多段数：{layout['steps']}", flush=True)
+    print("ThinkPad launcher. PREVIEW works with the saved image while disconnected.", flush=True)
+    print("No robot controller starts before START.", flush=True)
+    print("Robot: START to initialize, ] in Control after ready, then GO in this menu.", flush=True)
+    print("START performs real joint initialization. PREVIEW and LIVE never control the robot.", flush=True)
+    print("e+Enter: damping ESTOP | s: pane status | q: detach (keep processes)", flush=True)
+    print("Control pane: d for ESTOP. No added navigation watchdog or action caps.", flush=True)
+    print(f"Instruction: {layout['instruction']}\nSteps: {layout['steps']}", flush=True)
     while True:
         try:
-            choice = input("START / GO / e / s / q > ").strip().upper()
+            choice = input("PREVIEW/LIVE/START/GO/e/s/q > ").strip().upper()
         except EOFError:
             return 0
-        if choice == "START":
+        if choice in {"PREVIEW", "LIVE"}:
+            args = ["bash", HERE / "preview.sh", "--instruction", layout["instruction"]]
+            if choice == "LIVE":
+                args += ["--live", "--steps", layout["steps"]]
+            if launch_pane(panes["navigation"], "Preview only / no control", command(*args)):
+                print("Read-only output started. No controller or movement command is created.", flush=True)
+        elif choice == "START":
             confirmed = True
-            launch_pane(panes["control"], "控制器 / d 急停",
+            launch_pane(panes["control"], "Control / d: ESTOP",
                         command("bash", HERE / "run_control.sh", "--real"))
-            launch_pane(panes["camera"], "相机",
+            launch_pane(panes["camera"], "Camera",
                         command("bash", HERE / "one_click_camera.sh"))
-            print("右上控制窗：等待 ready，按 ] 站立；左上菜单：GO 导航。", flush=True)
+            print("Top-right Control: wait for ready, then press ]. Top-left menu: GO to navigate.", flush=True)
             tmux("select-pane", "-t", panes["control"])
         elif choice == "GO":
             if not confirmed:
-                print("尚未确认初始化，请先输入 START。", flush=True)
+                print("Initialization is not confirmed. Enter START first.", flush=True)
                 continue
-            launch_pane(panes["navigation"], "NaVILA 导航",
+            launch_pane(panes["navigation"], "NaVILA navigation",
                         command("bash", HERE / "run_bridge.sh", "--instruction",
                                 layout["instruction"], "--execute", "--steps", layout["steps"]))
-            print("导航已启动；菜单 e 回车或控制窗 d 可急停。", flush=True)
+            print("Navigation requested. Menu e+Enter or Control d requests ESTOP.", flush=True)
         elif choice == "E":
             stop_from_menu(False)
         elif choice == "S":
@@ -156,19 +162,36 @@ def console_thinkpad():
         elif choice == "Q":
             call(["tmux", "detach-client"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            print("输入 START 或 GO 才会启动相应进程。", flush=True)
+            print("PREVIEW/LIVE show outputs only. START/GO operate the robot.", flush=True)
+
+
+def workstation_preview(live):
+    panes = tmux("list-panes", "-t", PC_SESSION + ":estop", "-F", "#{pane_id}").splitlines()
+    if len(panes) == 1:
+        pane = tmux("split-window", "-h", "-P", "-F", "#{pane_id}", "-t", panes[0],
+                    idle_command("Preview output"))
+        tmux("select-pane", "-t", pane, "-T", "Waiting:preview")
+    else:
+        pane = panes[1]
+    args = ["bash", HERE / "preview_local.sh"]
+    if live:
+        args += ["--live", "--steps", "20"]
+    launch_pane(pane, "Preview only / no control", command(*args))
+    tmux("select-pane", "-t", panes[0])
 
 
 def console_workstation():
-    print("本机中转已启动；机器人由 ThinkPad 确认后启动。", flush=True)
-    print("e 回车：SSH 阻尼急停 | s：中转状态 | q：脱离界面（保留中转）", flush=True)
-    print("本机急停需 SSH 连通；不经过 server02。", flush=True)
+    print("Relay is running. Robot control requires confirmation on ThinkPad.", flush=True)
+    print("p: saved-image preview | l: live preview | e: ESTOP | s: status | q: detach", flush=True)
+    print("Local ESTOP requires SSH to ThinkPad; it does not pass through server02.", flush=True)
     while True:
         try:
-            choice = input("e / s / q > ").strip().lower()
+            choice = input("p / l / e / s / q > ").strip().lower()
         except EOFError:
             return 0
-        if choice == "e":
+        if choice in {"p", "l"}:
+            workstation_preview(choice == "l")
+        elif choice == "e":
             stop_from_menu(True)
         elif choice == "s":
             call(["bash", str(HERE / "local_relay.sh"), "status"])
@@ -196,7 +219,7 @@ def main():
     if args.mode == "console-workstation":
         return console_workstation()
     print(args.label, flush=True)
-    print("此窗口尚未启动机器人进程。", flush=True)
+    print("No robot process has been started in this pane.", flush=True)
     while True:
         time.sleep(60)
 

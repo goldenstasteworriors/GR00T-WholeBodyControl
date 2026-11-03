@@ -1,0 +1,191 @@
+NaVILA / G1 real-robot workflow
+Updated: 2026-11-03
+
+Use QUICKSTART.txt for the one-command launchers and preview-only mode.
+Run commands line by line; do not manually wrap long lines.
+Use English task instructions consistently.
+
+Locations:
+Workstation = local ykj computer
+ThinkPad 1 = controller terminal
+ThinkPad 2 = camera terminal
+ThinkPad 3 = inference terminal
+ThinkPad 4 = estop terminal
+
+E1. Workstation: Manual estop
+
+```bash
+bash /home/ykj/Desktop/navila_estop.sh
+```
+
+E2. ThinkPad 4: Manual estop
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/estop_thinkpad.sh
+```
+
+E3. Control pane: Keyboard estop
+
+```text
+d
+```
+
+01. Site: Connect and power G1
+
+Connect G1 Ethernet to ThinkPad.
+
+02. Site: Adjust camera view
+
+Include the walking direction.
+
+03. server02: Start model
+
+```bash
+bash /home/user/ykj/project/NaVILA/deploy_server02/one_click.sh
+```
+
+04. Workstation: Start relay
+
+```bash
+bash /home/ykj/navila-g1-link/deploy/navila/local_relay.sh start
+```
+
+05. ThinkPad 2: Start camera service
+
+```bash
+ssh -o BatchMode=yes -- 'g1' 'systemctl is-active --quiet sonic_d435i_camera.service || sudo -n systemctl restart sonic_d435i_camera.service'
+```
+
+06. ThinkPad 2: View camera
+
+```bash
+source /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/scripts/thinkpad_collection_env.sh
+python gear_sonic/scripts/run_camera_viewer.py --camera-host 192.168.123.164 --camera-port 5555
+```
+
+07. ThinkPad 3: Preview without control
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/preview.sh --live --steps 1
+```
+
+08. Site: Support robot
+
+09. Old controller: Exit if present
+
+```text
+Ctrl+C
+```
+
+10. ThinkPad 1: Start real control
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_control.sh --real
+```
+
+Joint initialization starts here.
+
+11. ThinkPad 1: Wait for ready
+
+```text
+ready
+```
+
+12. ThinkPad 1: Enable standing
+
+```text
+]
+```
+
+13. ThinkPad 3: Execute one action
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_bridge.sh --instruction "Find the beaker and stop in front of it." --execute --steps 1
+```
+
+14. ThinkPad 3: Continue if needed
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_bridge.sh --instruction "Find the beaker and stop in front of it." --execute --steps 20
+```
+
+15. Site: Check stopping position
+
+A model stop is not task verification.
+
+16. Site: Support robot
+
+17. ThinkPad 4: Request damping
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/estop_thinkpad.sh
+```
+
+18. ThinkPad 3: Exit inference
+
+```text
+Ctrl+C
+```
+
+19. ThinkPad 1: Exit controller
+
+```text
+Ctrl+C
+```
+
+20. Camera window: Close preview
+
+Focus the image window first.
+
+```text
+q
+```
+
+21. Workstation: Stop relay
+
+```bash
+bash /home/ykj/navila-g1-link/deploy/navila/local_relay.sh stop
+```
+
+22. server02: Optionally stop inference
+
+```bash
+tmux kill-session -t navila-server02
+```
+
+RECOVERY AFTER MANUAL ESTOP
+
+R1. Inference pane: Exit previous task
+
+```text
+Ctrl+C
+```
+
+R2. Control pane: Reinitialize
+
+```text
+]
+```
+
+R3. Control pane: Wait for ready
+
+R4. Control pane: Enable standing
+
+```text
+]
+```
+
+R5. Inference pane: Start a new task
+
+Repeat step 14, or use GO in the one-command interface.
+
+SSH RELAY RECOVERY
+
+N1. ThinkPad: Request manual estop
+N2. Workstation: Stop relay
+N3. Workstation: Start relay
+N4. ThinkPad: Follow recovery steps
+
+Real walking and physical stopping accuracy have not been verified by
+the deployment agent. No movement was executed during preview validation.
+The added navigation watchdogs and caps were removed at the user's request.

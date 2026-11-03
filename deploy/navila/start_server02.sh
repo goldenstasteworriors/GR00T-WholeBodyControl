@@ -8,7 +8,7 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     printf -v start_cmd 'bash %q > %q 2>&1' "$ROOT/deploy_server02/serve.sh" "$LOG"
     tmux new-session -d -s "$SESSION" "$start_cmd"
 fi
-echo 'NaVILA 服务启动中...'
+echo 'Starting NaVILA service...'
 while ! ss -lnt | grep -q '127.0.0.1:54321'; do
     if ! tmux has-session -t "$SESSION" 2>/dev/null; then
         tail -n 30 "$LOG"
@@ -16,6 +16,6 @@ while ! ss -lnt | grep -q '127.0.0.1:54321'; do
     fi
     sleep 1
 done
-echo 'NaVILA 已监听 127.0.0.1:54321'
-echo "日志：$LOG"
-echo '此服务器只推理，不启动机器人控制。'
+echo 'NaVILA is listening on 127.0.0.1:54321'
+echo "Log: $LOG"
+echo 'Inference only. This server does not start robot control.'

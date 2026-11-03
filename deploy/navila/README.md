@@ -1,129 +1,172 @@
-# NaVILA → ThinkPad Balance/Walk → G1：人工急停版
+# NaVILA on server02 with ThinkPad and G1
 
-本版按用户要求移除了上一版新增的导航防护措施，仅增加两端人工阻尼急停入口。原 Balance/Walk 权重、原控制器的初始化、人工站立使能、关节处理和阻尼逻辑保持原样。
+All deployment filenames, menus, and instructions in this directory are English.
+The original Balance/Walk models and controller behavior remain unchanged.
 
-独立工程：/home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link
+## Preview only: no robot control
 
-分支：codex/navila-g1-01a19ca8
+Use this mode to inspect the navigation VLA output. It never creates a WBC
+publisher, starts the robot controller, or executes a predicted action.
+There is no `--execute` option in the preview program.
 
-会话：01a19ca8-ac6e-7460-a4da-6a193efe13ca，任务轮次 11。
-
-## 一键入口
-
-三机一键命令及确认步骤见同目录《一键启动说明.txt》。ThinkPad 首次启动只建立四个等待窗口；明确输入 START 才初始化真实控制，再沿用 ] 站立，GO 开始导航。两端菜单 e 回车为人工急停。机器人断开时已验证未确认不启动任何机器人进程；没有恢复已移除的超时/限幅。
-
-## 两端急停
-
-以下代码块各是一条完整命令，不需要手动换行。
-
-**在本机执行：**
+On ThinkPad, run one complete line:
 
 ```bash
-bash /home/ykj/navila-g1-link/deploy/navila/estop_local.sh
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/preview.sh
 ```
 
-**在 ThinkPad 执行：**
+The default input is the previously captured G1 image at
+`.runtime/navila/ego-view.jpg`. This is a saved image, not a live view.
+It is already present on this ThinkPad and is not committed to Git.
+
+To read the existing live camera stream without controlling G1:
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/preview.sh --live --steps 20
+```
+
+For a different instruction and image on ThinkPad:
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/preview.sh --image /absolute/path/to/image.jpg --instruction "Find the beaker and stop in front of it."
+```
+
+On the local workstation:
+
+```bash
+bash /home/ykj/Desktop/navila_preview.sh
+```
+
+Pass `--live --steps 20` for live input. All `--image` paths refer to
+ThinkPad, including when launched from the workstation. Use `--steps 0`
+to continue until Ctrl+C. The model service and SSH relay must be running.
+Preview does not start camera services or stop other independently running
+controllers. Live mode requires the existing camera stream at port 5555.
+
+Each result includes the raw `response`, optional `parsed_action`,
+`round_trip_s`, `source`, and `execute: false`. An unrecognized response
+is still printed with a parsing error instead of being discarded.
+Images do not change in response to predicted actions, because none are executed.
+
+## One-command startup
+
+See `QUICKSTART.txt`. Run each command on its named host:
+
+```bash
+# server02
+bash /home/user/ykj/project/NaVILA/deploy_server02/one_click.sh
+```
+
+```bash
+# Local workstation
+bash /home/ykj/Desktop/navila_start.sh
+```
+
+```bash
+# ThinkPad
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/start_thinkpad.sh
+```
+
+ThinkPad menu:
+- `PREVIEW`: saved-image output only; available before START.
+- `LIVE`: live-camera output only; available before START.
+- `START`: explicit confirmation to initialize real joint control and camera preview.
+- Press `]` in the Control pane after `ready` to enable the original standing policy.
+- `GO`: execute navigation after START; the default budget is 20 actions.
+- `e`: manual damping estop; `s`: pane status; `q`: detach without stopping processes.
+
+Workstation menu: `p` for saved-image preview, `l` for live preview,
+`e` for SSH estop, `s` for relay status, and `q` to detach.
+Preview opens beside the menu so the estop menu stays available.
+Repeated startup reuses the existing session and task settings.
+
+## Manual estop
+
+Local workstation:
+
+```bash
+bash /home/ykj/Desktop/navila_estop.sh
+```
+
+ThinkPad:
 
 ```bash
 bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/estop_thinkpad.sh
 ```
 
-**在 ThinkPad 的控制器终端：按 d。**
+The Control pane also accepts `d`. The scripts send SIGUSR1 to the
+registered controller, reusing the original DampingShutdown implementation.
+A current `damping_latched` acknowledgement confirms the controller call,
+not a measurement that the robot has physically stopped. A read-only
+diagnostic acknowledgement explicitly says no actuator writes occurred.
+The workstation requires SSH connectivity to ThinkPad; ThinkPad's local
+method does not depend on server02 or the workstation connection.
 
-两端脚本对同一个控制器发送 SIGUSR1，直接复用原 DampingShutdown.request_estop → env.enter_damping；不经过 NaVILA/server02、不等待推理。控制器进入阻尼并保持该状态，程序不退出；这不是导航零速站立，也不是断电。
+These methods target the controller launched by this project's
+`run_control.sh`, not arbitrary official G1 control programs.
+PID/start-time checks select the intended process. The acknowledgement
+wait is only for reporting a manual estop request, not a navigation watchdog.
 
-成功时输出 JSON 中 state=damping_latched。该回执表示控制器已执行进入阻尼的调用，不等于传感器测得机器人已经静止。diagnostic_read_only=true 表示只是只读测试，没有发送电机指令。脚本会等待本次回执，失败返回非零，不把“SSH 命令发出”误报成急停完成。
+## Control behavior
 
-本机脚本依赖本机到 ThinkPad 的 SSH 连接；ThinkPad 本地脚本及控制窗口的 d 键不依赖该连接或 server02。两个脚本针对本目录 run_control.sh 启动并登记的控制器，不是通用的 G1 官方控制程序急停。原采集工作目录没有改动。
+At the user's request, the added navigation lease/watchdog, camera/state
+freshness checks, inference deadlines, action caps, publisher conflict
+checks, and automatic zero command on bridge exceptions were removed.
+They have not been reintroduced. The original controller and whole-body
+policy match baseline `c1495a7`; only optional estop registration and
+acknowledgement were added to `damping_shutdown.py`.
 
-本机 ConnectTimeout=3 与急停回执等待 3 秒只用于报告人工急停请求的通信结果，不是机器人运动超时规则。PID/start-time 检查只用于定位正确控制进程，避免把信号发给别的进程。
+Execution uses the original ROS topic `ControlPolicy/upper_body_pose`
+with `navigate_cmd=[vx,vy,wz]` and `target_time`.
+Default speeds are 0.5 m/s and pi/6 rad/s, configurable through
+`--linear-speed` and `--angular-speed`, without additional clipping.
+A 75 cm or 45 degree action therefore requests 1.5 seconds at the default
+speed. These are time-based estimates, not odometry feedback.
 
-## 本版删除的内容
+An action's normal completion sends zero velocity before the next
+observation. A model stop also sends zero. Manual damping ends the task.
+Closing the bridge alone is not an estop method. Original controller
+initialization and joint handling are unchanged.
 
-- 删除 navigation_lease.py，控制入口与全身策略恢复至原 c1495a7 版本；不再附加指令有效期、接收端超时归零或速度覆盖。
-- 删除相机 0.5 秒、控制状态 0.25 秒新鲜度检查和断流故障锁定。
-- 删除推理 8 秒超时、观测到执行 4 秒限制和启动等待 120 秒限制。
-- 删除前进最多 25 cm、转向最多 15°的截短，以及额外的速度范围检查。
-- 删除离散距离/角度白名单；解析格式支持任意数值，如 125 cm、90°，不再限于 25/50/75 和 15/30/45。
-- 删除竞争发布器检查、额外控制进程互斥和有线 carrier 预检。
-- 删除 bridge 异常退出时自动发布零速的逻辑。关闭 bridge 不作为急停方法；人工急停用上面的两个脚本或 d。
+## Deployment
 
-保留的动作文本解析、JSON/TCP 收发和原控制器行为属于接口本身。无法解析的文本会报错，不编造一个运动动作。相机沿用最后取得的画面，不判断其是否过期。发生网络或进程异常时没有本次新增的自动停止机制。
+- ThinkPad project: `/home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link`
+- Environment: existing Conda `decoupled_vla_collection`
+- G1 camera: `192.168.123.164:5555`, stream `ego_view`, RGB 640x480
+- ThinkPad Ethernet: `enx00e04c36c4e8`
+- Local ROS domain: 73; robot SDK remains separate
+- Model service: server02 loopback `127.0.0.1:54321`, NaVILA-8B FP16
+- Relay: workstation SSH tunnels; the workstation must remain online
+- Model input: eight history/current frames, front-padded with black images initially
 
-## 动作执行
+No dependencies, GPU drivers, or CUDA versions were changed for these launchers.
+The full real-robot workflow is in `REAL_ROBOT_TEST.txt`.
 
-使用原 ROS topic ControlPolicy/upper_body_pose，发布 navigate_cmd=[vx,vy,wz] 和 target_time，由原上层插值/低层策略接收。单位为 m/s、m/s、rad/s。
+## Validation
 
-默认前进速度 0.5 m/s，转向速度 π/6 rad/s；通过 --linear-speed / --angular-speed 可自行指定，不做额外限幅。模型输出 75 cm 就按完整 75 cm 计算执行时长，45°也按完整 45°计算，默认均为 1.5 秒。仍是按时间估计距离/角度，不是导航位姿闭环。
+Previous tests covered real RGB-to-model requests, the original ONNX models,
+real 29-joint read-only computation, and both manual estop commands against a
+read-only controller. No real walking or physical estop effectiveness was tested.
 
-每段动作执行时约 50 Hz 发布指令，段结束发一次零速，再采图/推理下一段；模型输出 stop 时也发零速。这是完成动作的语义，不是超时保护。没有独立的零速心跳或强制 0.5 秒停顿。收到明确的 damped 状态会结束当前导航任务，属于人工急停效果。
+The new preview was tested with the saved image and the live G1 camera.
+Example raw replies included turning right 45 degrees, turning left 45
+degrees, and moving forward 25 cm. They were only displayed, never executed.
+These tests demonstrate the pipeline, not beaker approach accuracy.
 
-## 链路和启动
+Relevant reports are under `.runtime/navila/`: `preview-image.jsonl`,
+`preview-live.jsonl`, `manual-estop-unit.json`, `estop-status.json`,
+and the one-click startup checks. Earlier watchdog test reports refer
+only to the superseded implementation.
 
-G1 相机 ZMQ 5555 → ThinkPad → 本机 SSH 中转 → server02 NaVILA → ThinkPad ROS → 原 Balance/Walk → G1。
+## Files
 
-G1 地址 192.168.123.164；ThinkPad 有线网卡 enx00e04c36c4e8；ego_view 为 RGB 640×480。NaVILA 输入保持 8 帧历史，不足时前补黑帧。环境仍是现有 Conda decoupled_vla_collection，没有安装依赖或修改驱动。
+- `preview.py`, `preview.sh`, `preview_local.sh`: output-only inference.
+- `one_click.py`: English tmux menus and explicit START/GO.
+- `start_thinkpad.sh`, `start_workstation.sh`, `start_server02.sh`: launchers.
+- `one_click_camera.sh`: existing camera service/viewer startup.
+- `bridge.py`: navigation inference and optional original WBC command publication.
+- `estop.py`, `estop_local.sh`, `estop_thinkpad.sh`: manual damping estop.
+- `QUICKSTART.txt`, `REAL_ROBOT_TEST.txt`: English instructions.
 
-server02 仍使用上一轮的部署：代码 /home/user/ykj/project/NaVILA，环境/权重 /data/ykj/navila，tmux navila-server02。当前通信仍依赖本机中转在线。
-
-本机启动中转：
-
-```bash
-bash /home/ykj/navila-g1-link/deploy/navila/local_relay.sh start
-```
-
-查看中转：
-
-```bash
-bash /home/ykj/navila-g1-link/deploy/navila/local_relay.sh status
-```
-
-若中转断开，分别执行 stop 和 start。relay_ssh_config 是已有部署配置，Git 忽略，不包含密钥。
-
-ThinkPad 只读推理：
-
-```bash
-bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_bridge.sh --instruction "Find the beaker and stop in front of it." --steps 1
-```
-
-ThinkPad 只读控制诊断（不切换模式、不写电机）：
-
-```bash
-bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_control.sh --read-only
-```
-
-ThinkPad 真实控制启动，会退出官方运动模式并进行关节初始化：
-
-```bash
-bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_control.sh --real
-```
-
-等待 ready 后，在控制器终端按 ] 启用原 Balance 站立。导航启动如下；--steps 决定本次最多执行多少段，未指定时为 1：
-
-```bash
-bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/run_bridge.sh --instruction "Find the beaker and stop in front of it." --execute --steps 1
-```
-
-急停后的恢复沿用原流程：damped 状态按 ] 重新初始化，ready 后再次按 ] 站立；重新启动导航任务。没有自动恢复行走。
-
-## 验证范围
-
-2026-11-03：
-
-- 本版真实相机推理复测约 1.186 秒成功，未发送移动指令。
-- 上一版真实相机到 server02 推理已测，约 1.06–2.01 秒；恢复 SSH 后请求也通过。当前相机主要朝向实验桌面，烧杯停靠尚未闭环验证。
-- 本版验证完整 75 cm / 45°时长都是 1.5 秒，125 cm / 90°可解析；原插值在不接收新指令时保持目标，没有新增超时归零。
-- 使用同一个真实 G1 只读控制进程，分别执行 ThinkPad 急停脚本和本机急停脚本，两次都获得当前请求的 damping_latched 回执。ROS 状态确认 damped 且 use_policy_action=false。
-- 测试没有发出实际电机动作；没有进行实机行走或带电机写入的急停效果测试。实际阻尼发送复用的是原工程已存在的入口。
-- 验证记录位于 .runtime/navila/manual-estop-unit.json、estop-thinkpad-result.json、estop-status.json、manual-estop-readonly.log；本机回执在 /home/ykj/navila-g1-link/runtime/estop-local-result.json。
-- 旧 verification.json 中的 watchdog/限幅结果仅代表上一版，不适用于本版。
-
-## 文件
-
-- deploy/navila/bridge.py：取消附加限制，使用原导航接口。
-- deploy/navila/estop.py：控制器登记、人工 SIGUSR1 请求和回执。
-- deploy/navila/estop_local.sh：本机 SSH 急停入口。
-- deploy/navila/estop_thinkpad.sh：ThinkPad 本地急停入口。
-- deploy/navila/run_control.sh：配置急停登记目录，保留原控制启动参数。
-- decoupled_wbc/control/utils/damping_shutdown.py：仅增加可选的登记和急停回执，不改变原阻尼逻辑。
-- 原 run_g1_control_loop.py 和 g1_decoupled_whole_body_policy.py 已恢复；navigation_lease.py 已删除。
+Branch: `codex/navila-g1-01a19ca8`.
+Session: `01a19ca8-ac6e-7460-a4da-6a193efe13ca`.

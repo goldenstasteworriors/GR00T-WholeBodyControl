@@ -1,0 +1,158 @@
+NaVILA: startup and output-only preview
+Updated: 2026-11-03
+
+Run each command as one line.
+Do not manually wrap long lines.
+Conversation language remains independent of these English files.
+
+1. server02: Start inference
+
+```bash
+bash /home/user/ykj/project/NaVILA/deploy_server02/one_click.sh
+```
+
+2. Workstation: Start relay
+
+```bash
+bash /home/ykj/Desktop/navila_start.sh
+```
+
+3. ThinkPad: Open interface
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/start_thinkpad.sh
+```
+
+The ThinkPad desktop also contains navila_start.sh.
+Opening the interface does not initialize the robot.
+
+4. ThinkPad menu: Preview saved image
+
+```text
+PREVIEW
+```
+
+Press Enter. No START or GO is required.
+Default input: a previously saved G1 snapshot.
+No controller, ROS motion publisher, or action execution is started.
+
+5. ThinkPad menu: Preview live camera
+
+```text
+LIVE
+```
+
+Press Enter. The existing G1 camera must be available.
+Only images are read; predicted actions are not executed.
+
+6. Workstation: Preview directly
+
+```bash
+bash /home/ykj/Desktop/navila_preview.sh
+```
+
+7. Workstation: Preview live directly
+
+```bash
+bash /home/ykj/Desktop/navila_preview.sh --live --steps 20
+```
+
+8. ThinkPad: Preview directly
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/preview.sh
+```
+
+The ThinkPad desktop also contains navila_preview.sh.
+Use --image /absolute/path/on/thinkpad.jpg for another image.
+Use --instruction "Your English navigation instruction." to change the task.
+Use --steps 0 to keep previewing until Ctrl+C.
+The model and relay must already be running.
+Raw responses are printed even when action parsing fails.
+Look for "execute": false in each preview result.
+
+REAL ROBOT CONTROL IS SEPARATE
+
+9. Site: Connect and support G1
+
+Connect G1 Ethernet to ThinkPad.
+Power G1 and position the camera for navigation.
+
+10. ThinkPad menu: Confirm initialization
+
+```text
+START
+```
+
+This starts real joint initialization and the camera viewer.
+
+11. Control pane: Wait for ready
+
+```text
+ready
+```
+
+12. Control pane: Enable standing
+
+```text
+]
+```
+
+13. ThinkPad menu: Confirm navigation
+
+```text
+GO
+```
+
+This executes predicted actions. The default budget is 20 actions.
+Default instruction:
+Find the beaker and stop in front of it.
+
+MANUAL ESTOP
+
+14. Either menu: Request damping
+
+```text
+e
+```
+
+Press Enter. The Control pane also accepts d.
+The workstation uses SSH; ThinkPad can request estop locally.
+A damping acknowledgement is not measured physical standstill.
+
+15. Workstation: Independent estop
+
+```bash
+bash /home/ykj/Desktop/navila_estop.sh
+```
+
+16. ThinkPad: Independent estop
+
+```bash
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/estop_thinkpad.sh
+```
+
+The ThinkPad desktop also contains navila_estop.sh.
+
+17. Either menu: Detach
+
+```text
+q
+```
+
+Detaching does not stop processes or request estop.
+Rerun the startup command to return.
+Click panes to focus; Ctrl+b then z toggles zoom.
+Workstation p/l starts saved-image/live preview beside its estop menu.
+Menus and existing sessions are reused without restarting active control.
+
+Desktop files on both machines:
+navila_start.sh
+navila_estop.sh
+navila_preview.sh
+navila_quickstart.txt
+navila_real_robot_test.txt
+
+Preview never starts the robot controller. It does not stop another
+controller that was already running independently.
+No removed navigation watchdog or action cap has been reintroduced.
