@@ -184,3 +184,11 @@ are displayed. Process generation filters exclude previous runs while the proces
 is alive. Pane history limits the available command history. Physical completion
 and displacement are not measured by this observer.
 Use the third Enter in the robot menu to start navigation.
+
+## Raised startup arm reference
+
+The NaVILA control launcher loads the symmetric raised arm profile in
+`startup_arm_pose.json` via `NAVILA_STARTUP_ARM_POSE`.
+See `STARTUP_ARM_POSE.md` for the dataset extraction, joint angles, mirroring,
+offline model validation and restart instructions. This reference is held during
+navigation. Robot defaults and other launchers remain unchanged.

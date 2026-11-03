@@ -201,3 +201,13 @@ A displayed command is not a measurement of actual displacement.
 Ctrl+C in the dashboard launch terminal closes only the dashboard.
 Existing control, navigation, model service and relay continue running.
 The older navila_viewer.sh remains a separate output-only inference test.
+
+RAISED STARTUP ARMS
+
+The next NaVILA controller launch loads startup_arm_pose.json.
+Both arms use a symmetric raised reference extracted from the final second
+of the 90 retained episodes in the user-specified Oct 29 dataset.
+The left arm is mirrored from the right; dataset left-arm values are unused.
+Navigation holds this arm target. See STARTUP_ARM_POSE.md for angles and analysis.
+Exit an old controller using x, rerun navila_start.sh, then use the usual
+three Enter presses. Existing live control is not changed by file updates.

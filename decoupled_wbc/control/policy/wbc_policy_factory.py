@@ -23,6 +23,11 @@ def get_startup_upper_body_policy(robot_model, wbc_config, init_time):
     startup_elbow_angle = wbc_config.get("startup_final_elbow_angle", 0.0)
     startup_body_pose[robot_model.dof_index("left_elbow_joint")] = startup_elbow_angle
     startup_body_pose[robot_model.dof_index("right_elbow_joint")] = startup_elbow_angle
+    if os.environ.get("NAVILA_STARTUP_ARM_POSE"):
+        from deploy.navila.startup_pose import apply_arm_pose
+        startup_body_pose = apply_arm_pose(
+            robot_model, startup_body_pose, os.environ["NAVILA_STARTUP_ARM_POSE"]
+        )
     current_upper_body_pose = startup_body_pose[
         robot_model.get_joint_group_indices("upper_body")
     ]

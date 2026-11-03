@@ -15,6 +15,7 @@ if [[ $# != 0 ]]; then echo 'Unexpected extra arguments' >&2; exit 2; fi
 source "$REPO/scripts/thinkpad_collection_env.sh"
 export ROS_DOMAIN_ID=73 ROS_LOCALHOST_ONLY=1
 export NAVILA_ESTOP_DIR="$REPO/.runtime/navila/estop"
+export NAVILA_STARTUP_ARM_POSE="$REPO/deploy/navila/startup_arm_pose.json"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
 IFACE=enx00e04c36c4e8

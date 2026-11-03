@@ -1,0 +1,23 @@
+{
+  "description": "Raised symmetric arms from final one-second right-arm measured poses. Left arm is a sagittal mirror; dataset left arm is unused.",
+  "units": "rad",
+  "source_dataset": "/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/outputs/thinkpad_imports/whole_pipeline_20261029_161210",
+  "aggregation": "Median across episode medians of final 30 observation.state frames; discarded episodes excluded.",
+  "episodes_used": 90,
+  "joints": {
+    "right_shoulder_pitch_joint": -0.38057105243206024,
+    "right_shoulder_roll_joint": -0.2727969139814377,
+    "right_shoulder_yaw_joint": -0.010770822409540415,
+    "right_elbow_joint": -0.7429470717906952,
+    "right_wrist_roll_joint": 0.33874310553073883,
+    "right_wrist_pitch_joint": 0.4551219195127487,
+    "right_wrist_yaw_joint": -0.10653077438473701,
+    "left_shoulder_pitch_joint": -0.38057105243206024,
+    "left_shoulder_roll_joint": 0.2727969139814377,
+    "left_shoulder_yaw_joint": 0.010770822409540415,
+    "left_elbow_joint": -0.7429470717906952,
+    "left_wrist_roll_joint": -0.33874310553073883,
+    "left_wrist_pitch_joint": 0.4551219195127487,
+    "left_wrist_yaw_joint": 0.10653077438473701
+  }
+}
