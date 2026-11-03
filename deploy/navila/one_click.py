@@ -111,7 +111,7 @@ def start_workstation():
 
 def stop_from_menu(local):
     script = "estop_local.sh" if local else "estop_thinkpad.sh"
-    result = call(["bash", str(HERE / script)])
+    result = call(["bash", str(HERE / script)], stdin=subprocess.DEVNULL)
     if result.returncode:
         print("急停未确认；请查看上方结果。", flush=True)
 
