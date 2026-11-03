@@ -9,8 +9,9 @@ import subprocess
 import threading
 import time
 
-from deploy.navila.bridge import Camera, infer, parse_action, sample_history
+from deploy.navila.bridge import encode_image, infer, parse_action, sample_history
 from deploy.navila.navigation_monitor import NavigationMonitor
+from deploy.navila.viewer_camera import ViewerCamera
 
 
 def main():
@@ -19,7 +20,7 @@ def main():
     parser.add_argument("--port", type=int, default=8767)
     parser.add_argument("--observe", action="store_true", help="Observe the real navigation process; no inference")
     args = parser.parse_args()
-    camera = Camera("192.168.123.164", 5555, "ego_view")
+    camera = ViewerCamera("192.168.123.164", 5555, "ego_view")
     lock = threading.Lock()
     stop = threading.Event()
     state = dict(app="navila-preview", instruction=args.instruction, execute=False,
@@ -85,10 +86,11 @@ def main():
                 body, mime = html, "text/html; charset=utf-8"
             elif path == "/api/state":
                 with lock:
-                    body = json.dumps({**state, "camera_error": camera.error}).encode()
+                    body = json.dumps({**state, "camera_error": camera.error, **camera.status()}).encode()
                 mime = "application/json"
             elif path == "/api/frame":
-                body = base64.b64decode(camera.snapshot()[0]) if camera.sample else b""
+                sample = camera.sample
+                body = base64.b64decode(encode_image(sample[0])) if sample else b""
                 mime = "image/jpeg"
                 status = 200 if body else 503
             elif path == "/api/model-frame":

@@ -192,3 +192,11 @@ The NaVILA control launcher loads the symmetric raised arm profile in
 See `STARTUP_ARM_POSE.md` for the dataset extraction, joint angles, mirroring,
 offline model validation and restart instructions. This reference is held during
 navigation. Robot defaults and other launchers remain unchanged.
+
+### Camera subscription recovery
+
+The dashboard uses `viewer_camera.py`, separate from the execution bridge's
+camera client. A video-only reconnect recreates a silent subscription after
+three seconds without frames, including after robot/camera service restart.
+The UI shows frame counter and receive age and hides a failed frame.
+No execution watchdog, stop action or navigation timing change is introduced.

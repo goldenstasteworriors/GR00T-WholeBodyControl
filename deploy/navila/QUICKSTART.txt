@@ -211,3 +211,11 @@ The left arm is mirrored from the right; dataset left-arm values are unused.
 Navigation holds this arm target. See STARTUP_ARM_POSE.md for angles and analysis.
 Exit an old controller using x, rerun navila_start.sh, then use the usual
 three Enter presses. Existing live control is not changed by file updates.
+
+DASHBOARD CAMERA AFTER ROBOT REBOOT
+
+The dashboard reconnects only its video subscription after three seconds
+without a new frame. Frame count, time since last received frame and reconnect
+count are displayed below the video. A failed video fetch hides the old frame.
+This changes no navigation timeout, motion command or robot control process.
+If updating an already open page, reload it once.
