@@ -172,3 +172,15 @@ only to the superseded implementation.
 
 Branch: `codex/navila-g1-01a19ca8`.
 Session: `01a19ca8-ac6e-7460-a4da-6a193efe13ca`.
+
+## Real robot execution monitor
+
+On the workstation, run `bash /home/ykj/Desktop/navila_monitor.sh`.
+The dashboard opens at `http://127.0.0.1:8768`. It reads actual bridge JSON
+stdout from the existing ThinkPad navigation pane and subscribes to the camera.
+It never invokes inference, creates a motion publisher, or restarts robot control.
+Latest prediction, recent commands, issued velocities and planned segment duration
+are displayed. Process generation filters exclude previous runs while the process
+is alive. Pane history limits the available command history. Physical completion
+and displacement are not measured by this observer.
+Use the third Enter in the robot menu to start navigation.

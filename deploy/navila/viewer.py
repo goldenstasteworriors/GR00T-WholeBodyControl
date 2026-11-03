@@ -5,24 +5,39 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import signal
+import subprocess
 import threading
 import time
 
 from deploy.navila.bridge import Camera, infer, parse_action, sample_history
+from deploy.navila.navigation_monitor import NavigationMonitor
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--instruction", default="Walk to the table and stop in front of it.")
     parser.add_argument("--port", type=int, default=8767)
+    parser.add_argument("--observe", action="store_true", help="Observe the real navigation process; no inference")
     args = parser.parse_args()
     camera = Camera("192.168.123.164", 5555, "ego_view")
     lock = threading.Lock()
     stop = threading.Event()
     state = dict(app="navila-preview", instruction=args.instruction, execute=False,
+                 mode="observe" if args.observe else "preview",
                  phase="Waiting for camera", latest=None, history=[], error=None)
     model_frame = b""
     html = Path(__file__).with_name("viewer.html").read_bytes()
+
+    def observe():
+        monitor = NavigationMonitor()
+        while not stop.is_set():
+            try:
+                observed = monitor.read()
+            except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+                observed = dict(phase="Waiting for navigation interface", error=str(exc))
+            with lock:
+                state.update(observed)
+            stop.wait(0.4)
 
     def predict():
         nonlocal model_frame
@@ -94,8 +109,8 @@ def main():
                 pass
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    threading.Thread(target=predict, daemon=True).start()
-    print(f"Preview only: http://127.0.0.1:{args.port}", flush=True)
+    threading.Thread(target=observe if args.observe else predict, daemon=True).start()
+    print(f"{'Execution monitor' if args.observe else 'Preview only'}: http://127.0.0.1:{args.port}", flush=True)
     try:
         server.serve_forever(poll_interval=0.2)
     finally:

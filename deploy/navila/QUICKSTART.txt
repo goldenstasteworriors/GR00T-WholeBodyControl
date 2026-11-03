@@ -183,3 +183,21 @@ bash /home/ykj/Desktop/navila_exit.sh
 If initialization exits, press Enter to retry after fixing the reported error.
 If still initializing, wait for ready before pressing Enter to stand.
 After running appears, press Enter again to begin navigation.
+
+REAL ROBOT NAVIGATION MONITOR (WORKSTATION)
+
+Run this command on one line:
+
+bash /home/ykj/Desktop/navila_monitor.sh
+
+Open http://127.0.0.1:8768 if the browser does not open automatically.
+This is an observer of the actual navigation process in the ThinkPad tmux pane.
+It makes no model requests and sends no movement commands.
+Start navigation with the third Enter in the ThinkPad menu as usual.
+The page shows live camera, actual raw VLA response, predicted distance/angle,
+round-trip latency, issued velocity and planned segment duration.
+Before navigation starts, the page says Waiting for real navigation.
+A displayed command is not a measurement of actual displacement.
+Ctrl+C in the dashboard launch terminal closes only the dashboard.
+Existing control, navigation, model service and relay continue running.
+The older navila_viewer.sh remains a separate output-only inference test.

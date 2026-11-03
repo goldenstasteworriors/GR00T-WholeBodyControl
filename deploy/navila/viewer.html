@@ -9,22 +9,70 @@
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,sans-serif}main{max-width:1440px;margin:auto;padding:24px}header{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid var(--border);padding-bottom:16px}h1{font-size:24px;margin:0}h2{font-size:16px;margin:0;color:var(--muted)}.badge{font-size:12px;letter-spacing:.08em;color:var(--accent);border:1px solid var(--accent);padding:6px 12px}.task{font-size:24px;margin:20px 0}.grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(0,1fr);gap:24px}.camera{background:#080a0b;position:relative;aspect-ratio:4/3;display:grid;place-items:center;border:1px solid var(--border)}.camera img{width:100%;height:100%;object-fit:contain;position:absolute}.caption{display:flex;justify-content:space-between;gap:12px;align-items:center;margin:12px 0;color:var(--muted);font-size:14px}button{background:var(--panel);border:1px solid var(--border);padding:8px 12px;color:var(--text);cursor:pointer;border-radius:4px}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.command{background:var(--panel);border:1px solid var(--border);padding:24px;min-height:340px}.action{font-size:clamp(30px,4vw,56px);line-height:1.1;font-weight:650;color:var(--accent);margin:24px 0 12px;overflow-wrap:anywhere}.amount{font-size:40px;margin-bottom:24px}.stats{display:flex;gap:32px;color:var(--muted);border-top:1px solid var(--border);padding-top:16px}.stats strong{display:block;color:var(--text);font-size:22px}.raw{margin-top:20px}.raw p{margin:8px 0;overflow-wrap:anywhere}.status{font-size:14px;color:var(--muted)}.error{color:var(--error);margin:12px 0}.history{margin-top:24px}table{border-collapse:collapse;width:100%;font-size:14px;margin-top:8px}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--border)}th{color:var(--muted);font-weight:500}td:last-child,th:last-child{text-align:right}footer{margin-top:24px;color:var(--muted);font-size:13px}#feed-note{position:absolute;bottom:8px;left:8px;background:#101416dd;padding:4px 8px;font-size:12px}#age{font-variant-numeric:tabular-nums}@media(max-width:800px){main{padding:16px}.grid{grid-template-columns:1fr;gap:16px}.task{font-size:20px}.command{min-height:0}.action{font-size:40px}header{align-items:flex-start}.badge{max-width:150px}.stats{gap:24px}}@media(max-width:400px){h1{font-size:20px}.badge{font-size:10px;padding:4px 8px}.caption{align-items:flex-start}.action{font-size:32px}.amount{font-size:32px}}
 </style>
 <main>
-<header><h1>NaVILA / Live preview</h1><span class="badge">OUTPUT ONLY · NO MOTION</span></header>
+<header><h1 id="title">NaVILA / Live preview</h1><span id="badge" class="badge">OUTPUT ONLY · NO MOTION</span></header>
 <p class="task" id="instruction">Connecting to preview…</p>
 <div class="grid">
 <section aria-label="Camera view"><div class="camera"><span>Waiting for camera…</span><img id="frame" alt="G1 forward-facing camera" hidden><span id="feed-note">Live camera</span></div><div class="caption"><span id="camera-status">Waiting for camera</span><button id="view-toggle" type="button">Show model input</button></div></section>
-<section aria-label="Current model command"><div class="command"><h2>Latest predicted command</h2><div aria-live="polite"><div class="action" id="action">Waiting…</div><div class="amount" id="amount">—</div></div><div class="stats"><div>Prediction<strong id="step">—</strong></div><div>Round trip<strong id="latency">—</strong></div></div><div class="raw"><h2>Raw model response</h2><p id="raw">The first response will appear here.</p></div></div><p class="status"><span id="phase">Connecting</span> · <span id="age">No prediction yet</span></p><p id="error" class="error" role="alert" hidden></p></section>
+<section aria-label="Current model command"><div class="command"><h2 id="command-heading">Latest predicted command</h2><div aria-live="polite"><div class="action" id="action">Waiting…</div><div class="amount" id="amount">—</div></div><div class="stats"><div>Prediction<strong id="step">—</strong></div><div>Round trip<strong id="latency">—</strong></div></div><div class="raw"><h2>Raw model response</h2><p id="raw">The first response will appear here.</p></div></div><p class="status"><span id="phase">Connecting</span> · <span id="age">No prediction yet</span></p><p id="segment" class="status" hidden></p><p id="error" class="error" role="alert" hidden></p></section>
 </div>
 <section class="history"><h2>Recent predictions</h2><table><thead><tr><th scope="col">#</th><th scope="col">Command</th><th scope="col">Round trip</th></tr></thead><tbody id="history"><tr><td colspan="3">Waiting for the first prediction.</td></tr></tbody></table></section>
-<footer>Predictions are displayed only. No controller or motion publisher is started. Live video continues while inference runs; “Show model input” displays the latest frame used for the completed prediction. The model also receives earlier frames as history.</footer>
+<footer id="footer">Predictions are displayed only. No controller or motion publisher is started. Live video continues while inference runs; “Show model input” displays the latest frame used for the completed prediction. The model also receives earlier frames as history.</footer>
 </main>
 <script>
 const el=id=>document.getElementById(id);
-let modelView=false,lastStep=0,lastReceived=null,frameURL=null;
+let modelView=false,lastStep=null,lastReceived=null,frameURL=null;
 const labels={forward:'↑ MOVE FORWARD',left:'↶ TURN LEFT',right:'↷ TURN RIGHT',stop:'■ STOP'};
 function command(item){return item.action ? `${labels[item.action]}${item.action==='stop'?'':` ${item.amount} ${item.action==='forward'?'cm':'°'}`}` : 'UNPARSED RESPONSE'}
 el('view-toggle').onclick=()=>{modelView=!modelView;el('view-toggle').textContent=modelView?'Show live camera':'Show model input';el('feed-note').textContent=modelView?'Input for latest completed prediction':'Live camera';};
-async function pollState(){try{const response=await fetch('/api/state',{cache:'no-store'});if(!response.ok)throw Error('Preview service unavailable');const s=await response.json();el('instruction').textContent=s.instruction;el('phase').textContent=s.phase;const error=s.error||s.camera_error||(s.latest&&s.latest.parse_error);el('error').hidden=!error;el('error').textContent=error||'';if(s.latest){const p=s.latest;if(p.step!==lastStep){lastStep=p.step;lastReceived=Date.now();el('action').textContent=labels[p.action]||'UNPARSED';el('amount').textContent=p.action==='stop'?'Stop requested':p.amount===null?'See raw response':`${p.amount} ${p.action==='forward'?'cm':'°'}`;el('step').textContent=String(p.step).padStart(2,'0');el('latency').textContent=p.round_trip_s.toFixed(2)+' s';el('raw').textContent=typeof p.response==='string'?p.response:JSON.stringify(p.response);el('history').replaceChildren(...s.history.map(item=>{const row=document.createElement('tr');[item.step,command(item),item.round_trip_s.toFixed(2)+' s'].forEach(value=>{const cell=document.createElement('td');cell.textContent=value;row.append(cell)});return row}));}}if(lastReceived)el('age').textContent=((Date.now()-lastReceived)/1000).toFixed(1)+' s since received';}catch(error){el('phase').textContent='Disconnected';el('error').hidden=false;el('error').textContent=error.message;}setTimeout(pollState,400)}
+async function pollState(){
+ try{
+  const response=await fetch('/api/state',{cache:'no-store'});
+  if(!response.ok)throw Error('Dashboard service unavailable');
+  const s=await response.json();
+  const observing=s.mode==='observe';
+  el('title').textContent=observing?'NaVILA / Robot navigation':'NaVILA / Live preview';
+  el('badge').textContent=observing?'ACTUAL COMMANDS · READ ONLY':'OUTPUT ONLY · NO MOTION';
+  el('command-heading').textContent=observing?'Latest real navigation command':'Latest predicted command';
+  el('view-toggle').hidden=observing;
+  if(observing){
+   modelView=false;
+   el('footer').textContent='Observing the actual navigation process on ThinkPad. This page sends no motion commands and makes no model requests. The live camera is separate from the frame captured for each prediction. A displayed command is not measured displacement.';
+  }
+  el('instruction').textContent=s.instruction;
+  el('phase').textContent=s.phase;
+  const error=s.error||s.camera_error||(s.latest&&s.latest.parse_error);
+  el('error').hidden=!error;el('error').textContent=error||'';
+  el('segment').hidden=!s.segment;
+  if(s.segment)el('segment').textContent='Issued velocity [vx, vy, wz]: ['+s.segment.velocity.map(v=>v.toFixed(3)).join(', ')+'] · m/s, m/s, rad/s · Planned duration: '+s.segment.duration_s.toFixed(2)+' s';
+  if(s.latest){
+   const p=s.latest;
+   const key=String(p.time);
+   if(key!==lastStep){
+    lastStep=key;lastReceived=Date.now();
+    el('action').textContent=labels[p.action]||'UNPARSED';
+    el('amount').textContent=p.action==='stop'?'Stop requested':p.amount===null?'See raw response':p.amount+' '+(p.action==='forward'?'cm':'°');
+    el('step').textContent=String(p.step).padStart(2,'0');
+    el('latency').textContent=p.round_trip_s.toFixed(2)+' s';
+    el('raw').textContent=typeof p.response==='string'?p.response:JSON.stringify(p.response);
+    el('history').replaceChildren(...s.history.map(item=>{
+     const row=document.createElement('tr');
+     [item.step,command(item),item.round_trip_s.toFixed(2)+' s'].forEach(value=>{const cell=document.createElement('td');cell.textContent=value;row.append(cell)});
+     return row;
+    }));
+   }
+  }else{
+   lastStep=null;lastReceived=null;
+   el('action').textContent='Waiting…';el('amount').textContent='—';
+   el('step').textContent='—';el('latency').textContent='—';
+   el('raw').textContent=observing?'No real navigation prediction received yet.':'Waiting for prediction.';
+   el('history').replaceChildren();el('age').textContent='No prediction yet';
+  }
+  if(lastReceived)el('age').textContent=((Date.now()-lastReceived)/1000).toFixed(1)+' s since received';
+ }catch(error){
+  el('phase').textContent='Disconnected';el('error').hidden=false;el('error').textContent=error.message;
+ }
+ setTimeout(pollState,400);
+}
 async function pollFrame(){try{const response=await fetch(modelView?'/api/model-frame':'/api/frame',{cache:'no-store'});if(!response.ok)throw Error(modelView?'Waiting for first prediction':'Waiting for camera');const next=URL.createObjectURL(await response.blob());await new Promise((resolve,reject)=>{const image=new Image();image.onload=resolve;image.onerror=reject;image.src=next});el('frame').src=next;el('frame').hidden=false;if(frameURL)URL.revokeObjectURL(frameURL);frameURL=next;el('camera-status').textContent=modelView?'Latest model input frame':'Live camera · 640 × 480';}catch(error){el('camera-status').textContent=error.message||'Camera unavailable';}setTimeout(pollFrame,200)}
 pollState();pollFrame();
 </script>
