@@ -1,4 +1,4 @@
-"""Tmux launchers. PREVIEW/LIVE are read-only; robot control requires START."""
+"""Tmux launchers. Enter initializes; Enter after ready starts navigation."""
 import argparse
 import json
 import os
@@ -61,6 +61,7 @@ def attach(session):
 
 def start_thinkpad(args):
     if not has_session(TP_SESSION):
+        previous = json.loads(LAYOUT.read_text()) if LAYOUT.exists() else {}
         menu = tmux("new-session", "-d", "-P", "-F", "#{pane_id}",
                     "-s", TP_SESSION, "-n", "run", "-x", "160", "-y", "45",
                     idle_command("Menu"))
@@ -78,8 +79,8 @@ def start_thinkpad(args):
         tmux("select-layout", "-t", TP_SESSION + ":run", "tiled")
         LAYOUT.parent.mkdir(parents=True, exist_ok=True)
         LAYOUT.write_text(json.dumps({"panes": panes,
-                                     "instruction": args.instruction or "Find the beaker and stop in front of it.",
-                                     "steps": args.steps if args.steps is not None else 20},
+                                     "instruction": args.instruction or previous.get("instruction", "Walk to the table and stop in front of it."),
+                                     "steps": args.steps if args.steps is not None else previous.get("steps", 20)},
                                     ensure_ascii=False, indent=2) + "\n")
         launch_pane(menu, "Menu / e+Enter: ESTOP",
                     command("python3", HERE / "one_click.py", "console-thinkpad"))
@@ -126,24 +127,68 @@ def stop_from_menu(local):
         print("ESTOP NOT CONFIRMED. See the result above.", flush=True)
 
 
+def controller_state(pane):
+    if tmux("display-message", "-p", "-t", pane, "#{pane_dead}") == "1":
+        return "exited"
+    output = tmux("capture-pane", "-p", "-J", "-t", pane, "-S", "-2000")
+    for line in reversed(output.splitlines()):
+        for state in ("ready", "running", "damped", "initializing"):
+            if f"[CollectionMode] {state}" in line:
+                return state
+    return "initializing"
+
+
+def exit_thinkpad():
+    """Explicit user exit: interrupt only this launcher's worker panes."""
+    if not has_session(TP_SESSION):
+        print("ThinkPad launcher is already closed.", flush=True)
+        return 0
+    if not LAYOUT.exists():
+        print("No launcher layout on this host. Run exit_thinkpad.sh on ThinkPad or exit_local.sh on the workstation.", flush=True)
+        return 1
+    panes = json.loads(LAYOUT.read_text())["panes"]
+    active = []
+    for key in ("navigation", "camera", "control"):
+        pane = panes[key]
+        if (tmux("display-message", "-p", "-t", pane, "#{pane_dead}") != "1"
+                and not tmux("display-message", "-p", "-t", pane, "#{pane_title}").startswith("Waiting:")):
+            tmux("send-keys", "-t", pane, "C-c")
+            active.append(pane)
+    # Give the original controller's SIGINT damping/shutdown path time to finish.
+    end = time.monotonic() + 8
+    while active and time.monotonic() < end:
+        active = [p for p in active if tmux("display-message", "-p", "-t", p, "#{pane_dead}") != "1"]
+        if active:
+            time.sleep(0.1)
+    if active:
+        print(f"Exit still pending in panes {active}. Ctrl+C was sent; interface remains open.", flush=True)
+        return 1
+    print("Workers exited. Closing ThinkPad interface. Server and relay remain running.", flush=True)
+    tmux("kill-session", "-t", TP_SESSION)
+    return 0
+
+
 def console_thinkpad():
     layout = json.loads(LAYOUT.read_text())
     panes = layout["panes"]
     confirmed = False
     print("ThinkPad launcher. PREVIEW works with the saved image while disconnected.", flush=True)
-    print("No robot controller starts before START.", flush=True)
-    print("Robot: START to initialize, ] in Control after ready, then GO in this menu.", flush=True)
-    print("START performs real joint initialization. PREVIEW and LIVE never control the robot.", flush=True)
-    print("e+Enter: damping ESTOP | s: pane status | q: detach (keep processes)", flush=True)
+    print("Press Enter: initialize real joints. Wait for ready, then Enter: stand and navigate.", flush=True)
+    print("Stay in this menu; no Control-pane key is required.", flush=True)
+    print("PREVIEW/LIVE: output only | e: damping ESTOP | x or Ctrl+C: exit workers and interface", flush=True)
+    print("s: pane status | q: detach (keep processes) | START/GO remain available", flush=True)
     print("Control pane: d for ESTOP. No added navigation watchdog or action caps.", flush=True)
     print(f"Instruction: {layout['instruction']}\nSteps: {layout['steps']}", flush=True)
     while True:
         try:
-            choice = input("PREVIEW/LIVE/START/GO/e/s/q > ").strip().upper()
-        except EOFError:
-            return 0
+            choice = input("Enter: initialize/start | PREVIEW/LIVE/e/x/s/q > ").strip().upper()
+        except (EOFError, KeyboardInterrupt):
+            return exit_thinkpad()
         # Read settings for each new launch, including reused interfaces.
         layout = json.loads(LAYOUT.read_text())
+        if choice == "":
+            state = controller_state(panes["control"]) if confirmed else "exited"
+            choice = "START" if state in {"exited", "damped"} else "GO"
         if choice in {"PREVIEW", "LIVE"}:
             args = ["bash", HERE / "preview.sh", "--instruction", layout["instruction"]]
             if choice == "LIVE":
@@ -151,17 +196,36 @@ def console_thinkpad():
             if launch_pane(panes["navigation"], "Preview only / no control", command(*args)):
                 print("Read-only output started. No controller or movement command is created.", flush=True)
         elif choice == "START":
+            state = controller_state(panes["control"]) if confirmed else "exited"
+            if state == "damped":
+                tmux("send-keys", "-t", panes["control"], "]")
+                print("Reinitializing. Wait for ready, then press Enter here.", flush=True)
+                continue
+            if confirmed and state != "exited":
+                print(f"Controller state: {state}. Press Enter after ready to start navigation.", flush=True)
+                continue
             confirmed = True
+            tmux("clear-history", "-t", panes["control"])
             launch_pane(panes["control"], "Control / d: ESTOP",
                         command("bash", HERE / "run_control.sh", "--real"))
             launch_pane(panes["camera"], "Camera",
                         command("bash", HERE / "one_click_camera.sh"))
-            print("Top-right Control: wait for ready, then press ]. Top-left menu: GO to navigate.", flush=True)
-            tmux("select-pane", "-t", panes["control"])
+            print("Initializing. Wait for ready in Control, then press Enter HERE to stand and navigate.", flush=True)
+            tmux("select-pane", "-t", panes["menu"])
         elif choice == "GO":
             if not confirmed:
-                print("Initialization is not confirmed. Enter START first.", flush=True)
+                print("Press Enter once to initialize first.", flush=True)
                 continue
+            state = controller_state(panes["control"])
+            if state == "exited":
+                confirmed = False
+                print("Controller exited. See Control error. Reconnect if needed; Enter retries initialization; x exits.", flush=True)
+                continue
+            if state not in {"ready", "running"}:
+                print(f"Controller state: {state}. Wait for ready, then press Enter again.", flush=True)
+                continue
+            if state == "ready":
+                tmux("send-keys", "-t", panes["control"], "]")
             print(f"Navigation instruction: {layout['instruction']}", flush=True)
             launch_pane(panes["navigation"], "NaVILA navigation",
                         command("bash", HERE / "run_bridge.sh", "--instruction",
@@ -169,13 +233,15 @@ def console_thinkpad():
             print("Navigation requested. Menu e+Enter or Control d requests ESTOP.", flush=True)
         elif choice == "E":
             stop_from_menu(False)
+        elif choice in {"X", "EXIT"}:
+            return exit_thinkpad()
         elif choice == "S":
             print(tmux("list-panes", "-t", TP_SESSION + ":run",
                        "-F", "#{pane_index} #{pane_title} alive=#{==:#{pane_dead},0} #{pane_current_command}"), flush=True)
         elif choice == "Q":
             call(["tmux", "detach-client"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            print("PREVIEW/LIVE show outputs only. START/GO operate the robot.", flush=True)
+            print("Enter: initialize/start | PREVIEW/LIVE: output only | e: ESTOP | x: exit", flush=True)
 
 
 def workstation_preview(live):
@@ -218,7 +284,7 @@ def main():
     tp = sub.add_parser("thinkpad")
     tp.add_argument("--instruction", default=None, help="Task for the next launch; omitted keeps the existing task")
     tp.add_argument("--steps", type=int, default=None, help="Action budget; omitted keeps the existing value (new session: 20)")
-    for name in ("workstation", "console-thinkpad", "console-workstation"):
+    for name in ("workstation", "console-thinkpad", "console-workstation", "exit-thinkpad"):
         sub.add_parser(name)
     idle = sub.add_parser("idle")
     idle.add_argument("label")
@@ -231,6 +297,8 @@ def main():
         return console_thinkpad()
     if args.mode == "console-workstation":
         return console_workstation()
+    if args.mode == "exit-thinkpad":
+        return exit_thinkpad()
     print(args.label, flush=True)
     print("No robot process has been started in this pane.", flush=True)
     while True:

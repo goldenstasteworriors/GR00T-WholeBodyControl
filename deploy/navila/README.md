@@ -71,8 +71,10 @@ ThinkPad menu:
 - `PREVIEW`: saved-image output only; available before START.
 - `LIVE`: live-camera output only; available before START.
 - `START`: explicit confirmation to initialize real joint control and camera preview.
-- Press `]` in the Control pane after `ready` to enable the original standing policy.
-- `GO`: execute navigation after START; the default budget is 20 actions.
+- Press Enter once in the menu to initialize; after `ready`, press Enter again in the same menu to enable standing and navigate.
+- `GO`: alias for the second Enter; the default budget is 20 actions.
+- `x` or Ctrl+C in the menu: explicitly interrupt workers and close this interface. `q` only detaches.
+- `exit_thinkpad.sh` / workstation `exit_local.sh`: independent explicit exit.
 - `e`: manual damping estop; `s`: pane status; `q`: detach without stopping processes.
 
 Workstation menu: `p` for saved-image preview, `l` for live preview,
@@ -161,7 +163,7 @@ only to the superseded implementation.
 ## Files
 
 - `preview.py`, `preview.sh`, `preview_local.sh`: output-only inference.
-- `one_click.py`: English tmux menus and explicit START/GO.
+- `one_click.py`: English tmux menus, two-Enter startup, explicit worker exit, and START/GO aliases.
 - `start_thinkpad.sh`, `start_workstation.sh`, `start_server02.sh`: launchers.
 - `one_click_camera.sh`: existing camera service/viewer startup.
 - `bridge.py`: navigation inference and optional original WBC command publication.

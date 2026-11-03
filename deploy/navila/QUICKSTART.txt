@@ -78,31 +78,13 @@ REAL ROBOT CONTROL IS SEPARATE
 Connect G1 Ethernet to ThinkPad.
 Power G1 and position the camera for navigation.
 
-10. ThinkPad menu: Confirm initialization
+10. ThinkPad top-left menu: Press Enter once
+This starts real joint initialization. Stay in the top-left menu.
 
-```text
-START
-```
+11. Wait for ready in the Control pane
 
-This starts real joint initialization and the camera viewer.
-
-11. Control pane: Wait for ready
-
-```text
-ready
-```
-
-12. Control pane: Enable standing
-
-```text
-]
-```
-
-13. ThinkPad menu: Confirm navigation
-
-```text
-GO
-```
+12. ThinkPad top-left menu: Press Enter again
+This enables standing and starts navigation. No ] key or GO is required.
 
 This executes predicted actions. The default budget is 20 actions.
 Instruction used above:
@@ -179,3 +161,21 @@ tmux send-keys -t navila-viewer:preview C-c
 Passing --instruction updates the next launch even in an existing interface.
 Omitting --instruction preserves the existing task. Running navigation keeps
 its original instruction; a new task takes effect on the next GO.
+
+EXIT AFTER FAILURE
+
+In the ThinkPad top-left menu, type x and press Enter, or press Ctrl+C.
+This interrupts navigation, camera and controller, then closes the interface.
+The controller uses its original damping shutdown. Server and relay stay online.
+q only detaches and leaves workers running. e requests damping ESTOP.
+
+ThinkPad terminal, one line:
+
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/exit_thinkpad.sh
+
+Workstation terminal, one line:
+
+bash /home/ykj/Desktop/navila_exit.sh
+
+If initialization exits, press Enter to retry after fixing the reported error.
+If still initializing, wait for ready before pressing Enter to begin walking.
