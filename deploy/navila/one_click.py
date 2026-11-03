@@ -77,14 +77,24 @@ def start_thinkpad(args):
             tmux("select-pane", "-t", pane, "-T", "Waiting:" + label)
         tmux("select-layout", "-t", TP_SESSION + ":run", "tiled")
         LAYOUT.parent.mkdir(parents=True, exist_ok=True)
-        LAYOUT.write_text(json.dumps({"panes": panes, "instruction": args.instruction,
-                                     "steps": args.steps}, ensure_ascii=False, indent=2) + "\n")
+        LAYOUT.write_text(json.dumps({"panes": panes,
+                                     "instruction": args.instruction or "Find the beaker and stop in front of it.",
+                                     "steps": args.steps if args.steps is not None else 20},
+                                    ensure_ascii=False, indent=2) + "\n")
         launch_pane(menu, "Menu / e+Enter: ESTOP",
                     command("python3", HERE / "one_click.py", "console-thinkpad"))
         tmux("select-pane", "-t", menu)
     else:
         print("Reusing the existing interface; no duplicate controller will be started.", flush=True)
-        menu = json.loads(LAYOUT.read_text())["panes"]["menu"]
+        layout = json.loads(LAYOUT.read_text())
+        if args.instruction is not None:
+            layout["instruction"] = args.instruction
+        if args.steps is not None:
+            layout["steps"] = args.steps
+        LAYOUT.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n")
+        print(f"Next launch instruction: {layout['instruction']} | Steps: {layout['steps']}", flush=True)
+        print("An already running navigation process keeps its original instruction.", flush=True)
+        menu = layout["panes"]["menu"]
         if tmux("display-message", "-p", "-t", menu, "#{pane_dead}") == "1":
             launch_pane(menu, "Menu / e+Enter: ESTOP",
                         command("python3", HERE / "one_click.py", "console-thinkpad"))
@@ -132,6 +142,8 @@ def console_thinkpad():
             choice = input("PREVIEW/LIVE/START/GO/e/s/q > ").strip().upper()
         except EOFError:
             return 0
+        # Read settings for each new launch, including reused interfaces.
+        layout = json.loads(LAYOUT.read_text())
         if choice in {"PREVIEW", "LIVE"}:
             args = ["bash", HERE / "preview.sh", "--instruction", layout["instruction"]]
             if choice == "LIVE":
@@ -150,6 +162,7 @@ def console_thinkpad():
             if not confirmed:
                 print("Initialization is not confirmed. Enter START first.", flush=True)
                 continue
+            print(f"Navigation instruction: {layout['instruction']}", flush=True)
             launch_pane(panes["navigation"], "NaVILA navigation",
                         command("bash", HERE / "run_bridge.sh", "--instruction",
                                 layout["instruction"], "--execute", "--steps", layout["steps"]))
@@ -203,8 +216,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
     tp = sub.add_parser("thinkpad")
-    tp.add_argument("--instruction", default="Find the beaker and stop in front of it.")
-    tp.add_argument("--steps", type=int, default=20)
+    tp.add_argument("--instruction", default=None, help="Task for the next launch; omitted keeps the existing task")
+    tp.add_argument("--steps", type=int, default=None, help="Action budget; omitted keeps the existing value (new session: 20)")
     for name in ("workstation", "console-thinkpad", "console-workstation"):
         sub.add_parser(name)
     idle = sub.add_parser("idle")

@@ -20,7 +20,7 @@ bash /home/ykj/Desktop/navila_start.sh
 3. ThinkPad: Open interface
 
 ```bash
-bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/start_thinkpad.sh
+bash /home/data-collection/GR00T-WholeBodyControl-worktrees/navila-g1-link/deploy/navila/start_thinkpad.sh --instruction "Walk to the table and stop in front of it."
 ```
 
 The ThinkPad desktop also contains navila_start.sh.
@@ -105,8 +105,8 @@ GO
 ```
 
 This executes predicted actions. The default budget is 20 actions.
-Default instruction:
-Find the beaker and stop in front of it.
+Instruction used above:
+Walk to the table and stop in front of it.
 
 MANUAL ESTOP
 
@@ -175,3 +175,7 @@ The model service and G1 camera must be online. The workstation relay is reused.
 To stop the preview started by the assistant in tmux:
 
 tmux send-keys -t navila-viewer:preview C-c
+
+Passing --instruction updates the next launch even in an existing interface.
+Omitting --instruction preserves the existing task. Running navigation keeps
+its original instruction; a new task takes effect on the next GO.
