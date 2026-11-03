@@ -6,7 +6,11 @@ import socket
 import time
 
 import numpy as np
-from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
+from cyclonedds.domain import DomainParticipant
+from cyclonedds.qos import Policy, Qos
+from cyclonedds.sub import DataReader
+from cyclonedds.topic import Topic
+from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorStates_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 
@@ -15,6 +19,7 @@ def check(network: str, duration: float = 20.0, check_grippers: bool = True) -> 
     if network not in dict(socket.if_nameindex()).values():
         raise ValueError(f"Network interface does not exist: {network}")
     ChannelFactoryInitialize(0, network)
+    participant = DomainParticipant(0)
     samples = {}
 
     def receive(topic, msg):
@@ -38,19 +43,20 @@ def check(network: str, duration: float = 20.0, check_grippers: bool = True) -> 
     subscribers = []
     try:
         for topic, message_type in topics:
-            sub = ChannelSubscriber(topic, message_type)
-            # Decode only on demand, rather than consuming the entire 1 kHz
-            # body stream in Python while DDS discovers the gripper readers.
-            sub.Init(None, 0)
+            # Poll the latest state without decoding the entire 1 kHz body
+            # stream. SDK Read(timeout) misreports an empty take iterator as
+            # "[Reader] take sample error"; a nonblocking take returns [].
+            sub = DataReader(participant, Topic(participant, topic, message_type),
+                             qos=Qos(Policy.History.KeepLast(1)))
             subscribers.append(sub)
         print(f"Waiting up to {duration:g}s for fresh body" +
               (" and both Dex1 states..." if check_grippers else " state (no gripper I/O)..."), flush=True)
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline:
             for (topic, _), sub in zip(topics, subscribers):
-                message = sub.Read(timeout=0.02)
-                if message is not None:
-                    receive(topic, message)
+                messages = sub.take(1)
+                if messages:
+                    receive(topic, messages[0])
             now = time.monotonic()
             if all(is_valid(topic, samples.get(topic), now) for topic, _ in topics):
                 break
@@ -70,8 +76,7 @@ def check(network: str, duration: float = 20.0, check_grippers: bool = True) -> 
             ok = ok and valid
         return bool(ok)
     finally:
-        for sub in subscribers:
-            sub.Close()
+        subscribers.clear()
 
 
 def check_camera(host: str, port: int, timeout: float = 5.0,
