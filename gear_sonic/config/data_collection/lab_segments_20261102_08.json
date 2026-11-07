@@ -591,10 +591,10 @@
       "dataset": "whole_pipeline_20261106_102227",
       "episode": 8,
       "start_frame": 2603,
-      "end_frame": 2830,
+      "end_frame": 3074,
       "task": "RETURN_TUBE_TO_RACK",
       "review": "ego contact sheet + gripper events + wrist trajectory; close-up views for ambiguous cases",
-      "note": "Reviewed successful primitive; omit leading/inter-operation waiting and trailing idle.",
+      "note": "Reviewed successful primitive; omit leading/inter-operation waiting and trailing idle. Extended through delayed empty-hand lift after release.",
       "source_operator_discarded": false
     },
     {
@@ -2401,7 +2401,7 @@
       "dataset": "whole_pipeline_20261107_141330",
       "episode": 50,
       "start_frame": 0,
-      "end_frame": 360,
+      "end_frame": 420,
       "task": "TAKE_TUBE",
       "review": "ego contact sheet + gripper events + wrist trajectory",
       "note": "Rack pickup before transfer to bath table.",
@@ -2421,7 +2421,7 @@
       "dataset": "whole_pipeline_20261107_141330",
       "episode": 51,
       "start_frame": 0,
-      "end_frame": 330,
+      "end_frame": 375,
       "task": "TAKE_TUBE",
       "review": "ego contact sheet + gripper events + wrist trajectory",
       "note": "Rack pickup before transfer to bath table.",
@@ -2430,7 +2430,7 @@
     {
       "dataset": "whole_pipeline_20261107_141330",
       "episode": 51,
-      "start_frame": 345,
+      "start_frame": 375,
       "end_frame": 1021,
       "task": "PLACE_TUBE_IN_BATH",
       "review": "ego contact sheet + gripper events + wrist trajectory",
@@ -2927,13 +2927,6 @@
       "episode": 8,
       "start_frame": 2245,
       "end_frame": 2278,
-      "reason": "Outside a selected completed primitive: waiting, failed/incomplete sub-operation, reset, or redundant context."
-    },
-    {
-      "dataset": "whole_pipeline_20261106_102227",
-      "episode": 8,
-      "start_frame": 2830,
-      "end_frame": 3074,
       "reason": "Outside a selected completed primitive: waiting, failed/incomplete sub-operation, reset, or redundant context."
     },
     {
@@ -4419,20 +4412,6 @@
       "start_frame": 0,
       "end_frame": 497,
       "reason": "Wrist video confirms tube remains in rack; failed pickup."
-    },
-    {
-      "dataset": "whole_pipeline_20261107_141330",
-      "episode": 50,
-      "start_frame": 360,
-      "end_frame": 420,
-      "reason": "Outside a selected completed primitive: waiting, failed/incomplete sub-operation, reset, or redundant context."
-    },
-    {
-      "dataset": "whole_pipeline_20261107_141330",
-      "episode": 51,
-      "start_frame": 330,
-      "end_frame": 345,
-      "reason": "Outside a selected completed primitive: waiting, failed/incomplete sub-operation, reset, or redundant context."
     }
   ]
 }
