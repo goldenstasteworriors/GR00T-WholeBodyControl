@@ -26,6 +26,9 @@ PROMPTS = {
     "RETURN_DROPPER": "Use the left gripper to return the held dropper directly to the indicated source bottle and release it.",
     "RETURN_TUBE_TO_RACK": "Use the right gripper to place the held test tube into the indicated empty rack slot and release it once supported.",
     "PLACE_TUBE_IN_BATH": "Use the right gripper to place the held test tube at the indicated supported position in the water bath and release it once stable.",
+    "WALK_BACKWARD": "Walk backward while keeping the test tube held by the right gripper, then stop.",
+    "WALK_LEFT_HOLDING_TUBE": "Walk to the left while keeping the test tube held by the right gripper, then stop.",
+    "WALK_FORWARD_TO_BATH": "Walk forward while keeping the test tube held by the right gripper. Stop in front of the indicated beaker, ready to place the tube inside. Keep holding the tube.",
 }
 
 
@@ -158,7 +161,11 @@ def cut_video(job):
     return len(clips)
 
 
-def export(root, annotation_path, dest, workers):
+def segment_key(segment):
+    return tuple(segment[k] for k in ("dataset", "episode", "start_frame", "end_frame", "task"))
+
+
+def export(root, annotation_path, dest, workers, reuse=None):
     annotation = read_json(annotation_path)
     segments = annotation["segments"]
     if not segments:
@@ -171,6 +178,13 @@ def export(root, annotation_path, dest, workers):
     task_indices = {name: i for i, name in enumerate(tasks)}
     total, episode_meta, stats_meta, provenance = 0, [], [], []
     jobs = defaultdict(list)
+    reused = {}
+    if reuse is not None:
+        reuse_info = read_json(reuse / "meta/info.json")
+        if reuse_info["features"] != info["features"] or reuse_info["fps"] != info["fps"]:
+            raise ValueError("Reuse dataset FPS/features differ")
+        reused = {segment_key(s): s["output_episode"] for s in
+                  read_json(reuse / "meta/segment_provenance.json")}
     cache_key, source_df = None, None
     for episode, segment in enumerate(segments):
         source = root / segment["dataset"]
@@ -199,6 +213,11 @@ def export(root, annotation_path, dest, workers):
         stats_meta.append({"episode_index": episode, "stats": numeric_stats(df)})
         provenance.append({"output_episode": episode, **segment})
         for view in video_keys(info):
+            if segment_key(segment) in reused:
+                target = episode_path(dest, info, episode, view)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(episode_path(reuse, reuse_info, reused[segment_key(segment)], view), target)
+                continue
             source_video = episode_path(source, source_info, segment["episode"], view)
             jobs[str(source_video)].append({**segment, "output_episode": episode,
                                            "video_path": str(episode_path(dest, info, episode, view))})
@@ -228,15 +247,70 @@ def export(root, annotation_path, dest, workers):
     print(json.dumps(summary, indent=2), flush=True)
 
 
+def start_images(root, dest):
+    """Save the actual first decoded frame of every exported clip in all views."""
+    info = read_json(root / "meta/info.json")
+    provenance = read_json(root / "meta/segment_provenance.json")
+    views = video_keys(info)
+    grouped = defaultdict(list)
+    records = []
+    dest.mkdir(parents=True, exist_ok=False)
+    for segment in provenance:
+        episode, task = segment["output_episode"], segment["task"]
+        directory = dest / task / f"episode_{episode:06d}"
+        directory.mkdir(parents=True)
+        triptych = Image.new("RGB", (960, 270), "white")
+        draw = ImageDraw.Draw(triptych)
+        images = {}
+        for j, view in enumerate(views):
+            with av.open(str(episode_path(root, info, episode, view))) as container:
+                frame = next(container.decode(video=0))
+                picture = frame.to_image()
+            name = view.rsplit(".", 1)[-1]
+            picture.save(directory / f"{name}.png")
+            images[name] = str((directory / f"{name}.png").relative_to(dest))
+            triptych.paste(picture.resize((320, 240)), (j * 320, 0))
+            draw.text((j * 320 + 4, 241), f"ep{episode:06d} {name}", fill="black")
+        draw.text((4, 256), f"{segment['dataset']} / ep{segment['episode']} / frame {segment['start_frame']}", fill="black")
+        triptych.save(directory / "three_views.jpg", quality=92)
+        grouped[task].append((episode, directory / "three_views.jpg"))
+        records.append({**segment, "start_images": images,
+                        "three_views": str((directory / "three_views.jpg").relative_to(dest))})
+    overview = Image.new("RGB", (960, len(grouped) * 294), "white")
+    d = ImageDraw.Draw(overview)
+    galleries = {}
+    for row, (task, clips) in enumerate(grouped.items()):
+        pages = []
+        for offset in range(0, len(clips), 6):
+            page = Image.new("RGB", (960, min(6, len(clips) - offset) * 294), "white")
+            pd = ImageDraw.Draw(page)
+            for j, (_, path) in enumerate(clips[offset:offset+6]):
+                pd.text((4, j * 294 + 3), task, fill="black")
+                with Image.open(path) as picture:
+                    page.paste(picture, (0, j * 294 + 24))
+            path = dest / task / f"gallery_{offset//6:03d}.jpg"
+            page.save(path, quality=88)
+            pages.append(str(path.relative_to(dest)))
+        galleries[task] = pages
+        d.text((4, row * 294 + 3), f"{task} ({len(clips)} clips)", fill="black")
+        with Image.open(clips[0][1]) as picture:
+            overview.paste(picture, (0, row * 294 + 24))
+    overview.save(dest / "overview.jpg", quality=90)
+    write_json(dest / "index.json", {"dataset": str(root.resolve()), "views": views,
+                                    "episodes": records, "galleries": galleries})
+    print(f"Saved {len(records) * len(views)} lossless start images", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["review", "export"])
+    parser.add_argument("mode", choices=["review", "export", "starts"])
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--dataset", default="")
     parser.add_argument("--annotations", type=Path)
     parser.add_argument("--samples", type=int, default=16)
     parser.add_argument("--workers", type=int, default=3)
+    parser.add_argument("--reuse", type=Path, help="Copy unchanged videos from a previous export")
     args = parser.parse_args()
     if args.mode == "review":
         source = args.root / args.dataset
@@ -244,10 +318,12 @@ def main():
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
             results = list(pool.map(review_episode, [(source, args.output, ep, args.samples) for ep in episodes]))
         write_json(args.output / "episodes.json", results)
+    elif args.mode == "starts":
+        start_images(args.root, args.output)
     else:
         if args.annotations is None:
             parser.error("export requires --annotations")
-        export(args.root, args.annotations, args.output, args.workers)
+        export(args.root, args.annotations, args.output, args.workers, args.reuse)
 
 
 if __name__ == "__main__":
