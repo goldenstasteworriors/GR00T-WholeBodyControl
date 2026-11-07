@@ -81,20 +81,20 @@
       "dataset": "whole_pipeline_20261103_192642",
       "episode": 1,
       "start_frame": 1050,
-      "end_frame": 1485,
+      "end_frame": 1425,
       "task": "DISPENSE_TO_HELD_TUBE",
       "review": "ego contact sheet + gripper events + wrist trajectory; close-up views for ambiguous cases",
-      "note": "Manually selected completed primitive from a trial with retries/dropped droppers; exclude failed returns, repeated-aspiration pickup attempts, and human resets.",
+      "note": "Manually selected completed primitive from a trial with retries/dropped droppers; exclude failed returns, repeated-aspiration pickup attempts, and human resets. Endpoint refined to the raised withdrawal plateau before the failed return descent.",
       "source_operator_discarded": false
     },
     {
       "dataset": "whole_pipeline_20261103_192642",
       "episode": 1,
-      "start_frame": 1485,
+      "start_frame": 1425,
       "end_frame": 1710,
       "task": "RETURN_DROPPER",
       "review": "ego contact sheet + gripper events + wrist trajectory; close-up views for ambiguous cases",
-      "note": "Manually selected completed primitive from a trial with retries/dropped droppers; exclude failed returns, repeated-aspiration pickup attempts, and human resets.",
+      "note": "Manually selected completed primitive from a trial with retries/dropped droppers; exclude failed returns, repeated-aspiration pickup attempts, and human resets. Endpoint refined to the raised withdrawal plateau before the failed return descent.",
       "source_operator_discarded": false
     },
     {
@@ -241,10 +241,10 @@
       "dataset": "whole_pipeline_20261103_192642",
       "episode": 7,
       "start_frame": 945,
-      "end_frame": 1425,
+      "end_frame": 1392,
       "task": "DISPENSE_TO_HELD_TUBE",
       "review": "ego contact sheet + gripper events + wrist trajectory; close-up views for ambiguous cases",
-      "note": "Manually selected completed primitive from a trial with retries/dropped droppers; exclude failed returns, repeated-aspiration pickup attempts, and human resets.",
+      "note": "Manually selected completed primitive from a trial with retries/dropped droppers; exclude failed returns, repeated-aspiration pickup attempts, and human resets. Endpoint refined to the raised withdrawal plateau before the failed return descent.",
       "source_operator_discarded": true
     },
     {
@@ -261,10 +261,10 @@
       "dataset": "whole_pipeline_20261103_192642",
       "episode": 7,
       "start_frame": 2325,
-      "end_frame": 2925,
+      "end_frame": 2865,
       "task": "DISPENSE_TO_HELD_TUBE",
       "review": "ego contact sheet + gripper events + wrist trajectory; close-up views for ambiguous cases",
-      "note": "Manually selected completed primitive from a trial with retries/dropped droppers; exclude failed returns, repeated-aspiration pickup attempts, and human resets.",
+      "note": "Manually selected completed primitive from a trial with retries/dropped droppers; exclude failed returns, repeated-aspiration pickup attempts, and human resets. Endpoint refined to the raised withdrawal plateau before the failed return descent.",
       "source_operator_discarded": true
     },
     {
@@ -2617,7 +2617,7 @@
     {
       "dataset": "whole_pipeline_20261103_192642",
       "episode": 7,
-      "start_frame": 1425,
+      "start_frame": 1392,
       "end_frame": 1770,
       "reason": "Outside a selected completed primitive: waiting, failed/incomplete sub-operation, reset, or redundant context."
     },
@@ -2631,7 +2631,7 @@
     {
       "dataset": "whole_pipeline_20261103_192642",
       "episode": 7,
-      "start_frame": 2925,
+      "start_frame": 2865,
       "end_frame": 3210,
       "reason": "Outside a selected completed primitive: waiting, failed/incomplete sub-operation, reset, or redundant context."
     },
