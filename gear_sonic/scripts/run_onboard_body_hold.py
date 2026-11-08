@@ -43,6 +43,8 @@ class BodyHoldSession:
                 self.last = copy.deepcopy(packet)
                 self.last_received = now
                 self.phase = "position"
+                if packet["context"] and packet["context"]["running"]:
+                    self.balance.start(packet["context"])
 
     def disconnect(self):
         with self.lock:
@@ -51,7 +53,6 @@ class BodyHoldSession:
             self.latched = True
             context = self.last.get("context") if self.last else None
             if self.phase == "position" and context and context["running"]:
-                self.balance.start(context)
                 self.phase = "balance_hold"
             elif self.phase == "position":
                 self.phase = "pose_hold"
@@ -64,6 +65,15 @@ class BodyHoldSession:
             if self.last is None:
                 return None
             motors = copy.deepcopy(self.last["motors"])
+            if self.phase == "position" and self.last["context"] and self.last["context"]["running"]:
+                # Keep collecting local feedback through the detection interval,
+                # instead of starting Balance with a stale history after loss.
+                self.balance.observe(
+                    [m.q for m in state.motor_state[:29]],
+                    [m.dq for m in state.motor_state[:29]],
+                    state.imu_state.quaternion, state.imu_state.gyroscope,
+                    self.last["context"]["navigation"],
+                )
             if self.phase == "damping":
                 for m in motors:
                     m[1:] = [0.0, 0.0, 0.0, 0.0, 8.0]

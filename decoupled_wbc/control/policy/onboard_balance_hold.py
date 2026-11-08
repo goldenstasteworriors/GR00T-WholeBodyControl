@@ -29,12 +29,12 @@ class OnboardBalanceHold:
         for row in np.asarray(context["history"], dtype=np.float32).reshape(-1, 86):
             self.history.append(row.copy())
 
-    def step(self, q, dq, quaternion, gyroscope):
+    def observe(self, q, dq, quaternion, gyroscope, navigation=(0.0, 0.0, 0.0)):
         cfg = self.config
         defaults = np.zeros(29, dtype=np.float32)
         defaults[:15] = cfg["default_angles"]
         obs = np.zeros(86, dtype=np.float32)
-        # Navigation is permanently zero after the disconnect latch.
+        obs[:3] = np.asarray(navigation) * cfg["cmd_scale"]
         obs[3] = self.height
         obs[4:7] = self.rpy
         obs[7:10] = np.asarray(gyroscope) * cfg["ang_vel_scale"]
@@ -43,7 +43,11 @@ class OnboardBalanceHold:
         obs[42:71] = np.asarray(dq) * cfg["dof_vel_scale"]
         obs[71:86] = self.action
         self.history.append(obs)
-        inputs = np.concatenate(self.history).reshape(1, cfg["num_obs"])
+        return np.concatenate(self.history).reshape(1, cfg["num_obs"])
+
+    def step(self, q, dq, quaternion, gyroscope):
+        # Navigation is permanently zero after the disconnect latch.
+        inputs = self.observe(q, dq, quaternion, gyroscope)
         self.action = self.session.run(None, {self.input_name: inputs})[0].reshape(15)
-        return self.action * cfg["action_scale"] + cfg["default_angles"]
+        return self.action * self.config["action_scale"] + self.config["default_angles"]
 

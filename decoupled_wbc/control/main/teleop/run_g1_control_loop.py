@@ -189,6 +189,7 @@ def main(config: ControlLoopConfig):
                                 "running": mode.state == "running",
                                 "history": lower.obs_buffer.tolist(),
                                 "action": lower.action.tolist(),
+                                "navigation": np.asarray(lower.cmd).reshape(3).tolist(),
                                 "height": float(np.asarray(lower.height_cmd).reshape(-1)[0]),
                                 "rpy": [float(lower.roll_cmd), float(lower.pitch_cmd), float(lower.yaw_cmd)],
                             }
