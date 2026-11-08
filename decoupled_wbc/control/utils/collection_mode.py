@@ -1,6 +1,7 @@
 """Manual collection transitions: damped -> initializing -> ready -> running."""
 
 import queue
+import os
 
 from decoupled_wbc.control.policy.wbc_policy_factory import get_startup_upper_body_policy
 
@@ -18,6 +19,7 @@ class CollectionMode:
         self.last_start_event = 0
         self.keyboard_events = queue.SimpleQueue()
         self.connection_latched = False
+        self.initialization_only = os.environ.get("DECOUPLED_INITIALIZATION_ONLY") == "1"
 
     def handle_keyboard_button(self, key):
         if key == "]":
@@ -65,6 +67,9 @@ class CollectionMode:
             self.state = "initializing"
             print("[CollectionMode] initializing; press again only after ready", flush=True)
         elif self.state == "ready":
+            if self.initialization_only:
+                print("[CollectionMode] initialization-only test: standing/teleop disabled", flush=True)
+                return
             self.state = "running"
             self.policy.lower_body_policy.cmd[:] = 0.0
             self.policy.lower_body_policy.use_policy_action = True
@@ -114,4 +119,5 @@ class CollectionMode:
             "initialization_epoch": self.initialization_epoch,
             "start_stop_event_id": self.last_start_event,
             "connection_latched": self.connection_latched,
+            "initialization_only": self.initialization_only,
         }

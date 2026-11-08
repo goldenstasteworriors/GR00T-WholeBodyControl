@@ -144,6 +144,7 @@ def _runtime_env_prefix(repo_root: Path, config: "DecoupledVLACollectionLaunchCo
         f"export ROS_DOMAIN_ID={config.ros_domain_id} && "
         f"export DECOUPLED_PROFILE_TIMING={int(config.profile_timing)} && "
         f"export SONIC_ONBOARD_BODY_HOST={shlex.quote(os.environ.get('SONIC_ONBOARD_BODY_HOST', ''))} && "
+        f"export DECOUPLED_INITIALIZATION_ONLY={shlex.quote(os.environ.get('DECOUPLED_INITIALIZATION_ONLY', ''))} && "
         f"export SONIC_HAND_TASK={shlex.quote(config.hand_task)} && "
         f"export SONIC_HAND_TASK_CONFIG={shlex.quote(str(hand_task_config))} && "
     )

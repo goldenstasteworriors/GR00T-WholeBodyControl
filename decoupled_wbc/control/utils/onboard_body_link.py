@@ -32,6 +32,8 @@ class OnboardBodyLink:
         self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.socket.settimeout(None)
         self.lock = threading.Lock()
+        self.command_lock = threading.Lock()
+        self.closed = threading.Event()
         self.received = threading.Condition()
         self.sequence = 0
         self.acknowledged = 0
@@ -40,6 +42,20 @@ class OnboardBodyLink:
         self.confirmed = threading.Event()
         self.status = {}
         threading.Thread(target=self._receive, daemon=True).start()
+        threading.Thread(target=self._heartbeat, daemon=True).start()
+
+    def _heartbeat(self):
+        # Connection health must not depend on model loading, DDS observation
+        # waits or initialization interpolation in the control thread.
+        while not self.closed.wait(0.02):
+            if self.disconnected:
+                return
+            try:
+                with self.lock:
+                    send_packet(self.socket, {"kind": "heartbeat"})
+            except OSError:
+                self.disconnected = True
+                return
 
     def _receive(self):
         try:
@@ -47,7 +63,7 @@ class OnboardBodyLink:
                 status = receive_packet(self.socket)
                 with self.received:
                     self.status = status
-                    self.acknowledged = int(status.get("sequence", 0))
+                    self.acknowledged = max(self.acknowledged, int(status.get("sequence", 0)))
                     if status.get("latched"):
                         self.disconnected = True
                     if status.get("damping_confirmed"):
@@ -68,10 +84,11 @@ class OnboardBodyLink:
             "context": self.context,
         }
         try:
-            with self.lock:
+            with self.command_lock:
                 self.sequence += 1
                 packet["sequence"] = self.sequence
-                send_packet(self.socket, packet)
+                with self.lock:
+                    send_packet(self.socket, packet)
                 with self.received:
                     if not self.received.wait_for(lambda: self.acknowledged >= self.sequence, timeout=0.2):
                         self.disconnected = True
@@ -85,6 +102,7 @@ class OnboardBodyLink:
 
     def close(self):
         # Explicit process exit is different from an unexplained network loss.
+        self.closed.set()
         self.confirmed.clear()
         try:
             with self.lock:

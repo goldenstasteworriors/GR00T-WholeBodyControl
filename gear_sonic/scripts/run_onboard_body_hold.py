@@ -35,6 +35,8 @@ class BodyHoldSession:
             if kind == "exit":
                 self.exit_requested = True
                 self.phase = "damping"
+            elif kind == "heartbeat" and not self.latched:
+                self.last_received = now
             elif kind == "damping":
                 self.last = copy.deepcopy(packet)
                 self.last_received = now
@@ -46,7 +48,7 @@ class BodyHoldSession:
                 if packet["context"] and packet["context"]["running"]:
                     self.balance.start(packet["context"])
 
-    def disconnect(self):
+    def disconnect(self, reason="connection lost"):
         with self.lock:
             if self.latched:
                 return
@@ -56,12 +58,12 @@ class BodyHoldSession:
                 self.phase = "balance_hold"
             elif self.phase == "position":
                 self.phase = "pose_hold"
-            print(f"[BodyHold] DISCONNECTED: {self.phase}; restart required", flush=True)
+            print(f"[BodyHold] DISCONNECTED: {self.phase}; {reason}; restart required", flush=True)
 
     def step(self, state, now):
         with self.lock:
             if self.last_received is not None and now - self.last_received > self.loss_after:
-                self.disconnect()
+                self.disconnect(f"no connection packet for {(now - self.last_received) * 1000:.1f}ms")
             if self.last is None:
                 return None
             motors = copy.deepcopy(self.last["motors"])
@@ -173,7 +175,7 @@ def main():
                     send_packet(connection, {"latched": session.latched, "phase": session.phase,
                                              "sequence": packet.get("sequence", 0)})
         except (OSError, EOFError):
-            session.disconnect()
+            session.disconnect("TCP connection closed")
 
     # Accept exactly one controller. There is deliberately no accept/reconnect loop.
     listener = socket.socket()
