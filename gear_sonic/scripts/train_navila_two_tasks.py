@@ -84,6 +84,15 @@ def main():
                 "terminal_success": "user_confirmed_2026-11-09",
             }, indent=2) + "\n")
             shutil.copyfile(dataset_root / "dataset_report.json", out / "dataset_report.json")
+            sample = self.train_dataset[0]
+            target = sample["labels"][sample["labels"] != -100]
+            if not target.numel():
+                raise ValueError("Tokenization masked every target token")
+            (out / "sample_token_audit.json").write_text(json.dumps({
+                "input_tokens": sample["input_ids"].numel(),
+                "supervised_tokens": target.numel(),
+                "decoded_supervision": self.tokenizer.decode(target.tolist()),
+            }, indent=2) + "\n")
 
         def _get_eval_sampler(self, eval_dataset):
             # Sequential evaluation includes every held-out sample exactly once.
@@ -104,6 +113,8 @@ def main():
                         "global_step": self.state.global_step,
                         "gpu_peak_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
                         "gpu_peak_reserved_gib": torch.cuda.max_memory_reserved() / 2**30,
+                        "nonzero_lora_b_tensors": sum(int(torch.count_nonzero(p).item() > 0)
+                            for name, p in self.model.named_parameters() if "lora_B" in name),
                         "baseline_validation": baseline, "final_validation": validation, "heldout_test": test,
                         "evaluation_scope": "offline teacher-forced loss; not real-robot navigation success"}
             (Path(self.args.output_dir) / "run_summary.json").write_text(json.dumps(evidence, indent=2) + "\n")
