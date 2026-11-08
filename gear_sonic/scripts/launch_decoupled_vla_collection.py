@@ -822,6 +822,7 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
             print("Robot/camera preflight failed; collection was not started.")
             raise SystemExit(result.returncode)
     if (config.pico_preflight and not config.sim and config.enable_real_device
+            and os.environ.get("DECOUPLED_INITIALIZATION_ONLY") != "1"
             and "pico" in (config.body_control_device, config.hand_control_device)):
         # Service placement belongs to the selected deployment topology. A
         # read-only preflight must not start a second service on the wrong host.
@@ -845,6 +846,8 @@ def main(config: DecoupledVLACollectionLaunchConfig) -> None:
     label = "READ-ONLY diagnostic; actuator output disabled" if config.diagnostic_read_only else (
         "Simulation" if config.sim else "Real Robot"
     )
+    if not config.diagnostic_read_only and os.environ.get("DECOUPLED_INITIALIZATION_ONLY") == "1":
+        label += "; initialization only, standing/teleop disabled"
     print(f"  Mode:          {label}")
     print(f"  Interface:     {interface}")
     print(f"  ROS domain:    {config.ros_domain_id} (robot SDK remains on domain 0)")
