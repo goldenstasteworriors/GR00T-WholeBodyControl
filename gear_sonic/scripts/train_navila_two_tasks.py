@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sys
+from functools import partial
 from pathlib import Path
 from unittest import mock
 
@@ -123,7 +124,15 @@ def main():
     module.make_supervised_data_module = lab_data
     module.LLaVATrainer = LabTrainer
     sys.argv = [sys.argv[0], *training_arguments]
-    with mock.patch("transformers.image_processing_utils.normalize", new=patched_normalize):
+    # The official forward unconditionally all-reduces this factor. With one
+    # process it is identically 1, so no distributed process group is needed.
+    checkpoint = torch.utils.checkpoint.checkpoint
+    with (
+        mock.patch("transformers.image_processing_utils.normalize", new=patched_normalize),
+        mock.patch("llava.model.language_model.llava_llama.calculate_loss_weight",
+                   new=lambda labels, ignore_index=-100: 1.0),
+        mock.patch("torch.utils.checkpoint.checkpoint", new=partial(checkpoint, use_reentrant=False)),
+    ):
         module.train()
 
 

@@ -14,9 +14,10 @@ export TOKENIZERS_PARALLELISM=false
 export WANDB_DISABLED=true
 export RUN_NAME="$NAVILA_RUN_NAME"
 export OMP_NUM_THREADS=4
+unset RANK LOCAL_RANK WORLD_SIZE MASTER_ADDR MASTER_PORT
 mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$NAVILA_JOB_ROOT/runs"
 cd "$NAVILA_JOB_ROOT/NaVILA"
-exec "$NAVILA_JOB_ROOT/env/bin/torchrun" --standalone --nnodes=1 --nproc_per_node=1 \
+exec "$NAVILA_JOB_ROOT/env/bin/python" \
   "$TOOLS_ROOT/gear_sonic/scripts/train_navila_two_tasks.py" \
   --navila-repo "$NAVILA_JOB_ROOT/NaVILA" \
   --lab-dataset "$NAVILA_JOB_ROOT/navila_two_tasks_weak_20261109" \
