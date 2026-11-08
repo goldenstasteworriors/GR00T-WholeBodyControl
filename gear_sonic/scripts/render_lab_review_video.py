@@ -8,10 +8,8 @@ import csv
 from fractions import Fraction
 from functools import cache
 from pathlib import Path
-import subprocess
 
 import av
-from imageio_ffmpeg import get_ffmpeg_exe
 from PIL import Image, ImageDraw, ImageFont
 
 from review_lab_primitive_starts import TITLES
@@ -80,19 +78,30 @@ def render_clip(job):
 
 
 def concat(rows, target):
-    listing = target.with_suffix(".concat.txt")
-    listing.write_text("".join("file '" + row["video"].replace("'", "'\\''") + "'\n" for row in rows))
-    metadata = target.with_suffix(".ffmetadata")
-    offset, chapters = 0, [";FFMETADATA1\n"]
-    for row in rows:
-        start = round(offset * 1000 / 30)
-        offset += row["video_frames"]
-        title = f"{row['review_id']} / {row['dataset']} / EP{row['episode']:06d}"
-        chapters.append(f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={start}\nEND={round(offset*1000/30)}\ntitle={title}\n")
-    metadata.write_text("".join(chapters))
-    subprocess.run([get_ffmpeg_exe(), "-nostdin", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
-                    "-f", "ffmetadata", "-i", str(metadata), "-map_metadata", "1", "-map_chapters", "1",
-                    "-c", "copy", "-movflags", "+faststart", str(target)], check=True)
+    # Offset integer stream timestamps directly. Summing container durations
+    # rounded to microseconds would slowly drift from the exact 30fps grid.
+    offset, chapters, stream = 0, [], None
+    with av.open(str(target), "w") as output:
+        for i, row in enumerate(rows):
+            chapters.append({"id": i, "start": offset, "end": offset + row["video_frames"],
+                             "time_base": Fraction(1, 30), "metadata": {
+                                 "title": f"{row['review_id']} / {row['dataset']} / EP{row['episode']:06d}"}})
+            with av.open(row["video"]) as source:
+                input_stream = source.streams.video[0]
+                if stream is None:
+                    stream = output.add_stream_from_template(input_stream)
+                for packet in source.demux(input_stream):
+                    if packet.dts is None:
+                        continue
+                    shift = Fraction(offset, 30) / packet.time_base
+                    if shift.denominator != 1:
+                        raise ValueError("Clip timestamps cannot represent exact frame offsets")
+                    packet.pts += int(shift)
+                    packet.dts += int(shift)
+                    packet.stream = stream
+                    output.mux(packet)
+            offset += row["video_frames"]
+        output.set_chapters(chapters)
     return offset
 
 
