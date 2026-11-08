@@ -194,6 +194,7 @@ def main():
         listener.close()
         if connection is None:
             return
+        session.phase = "connected"
         status_path.write_text(json.dumps({"phase": "connected", "latched": False,
                                            "read_only": args.read_only}) + "\n")
         connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
