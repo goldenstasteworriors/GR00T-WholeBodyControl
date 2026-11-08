@@ -3,7 +3,6 @@
 import argparse
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import ExitStack
 import csv
 from fractions import Fraction
 from functools import cache
