@@ -110,7 +110,11 @@ class CollectionMode:
         if self.state == "initializing":
             if self.env.safety_monitor.startup_complete and now - self.initialization_started >= 2.0:
                 self.state = "ready"
-                print("[CollectionMode] ready; a new combination enables standing", flush=True)
+                message = (
+                    "ready; initialization-only mode, standing/teleop disabled"
+                    if self.initialization_only else "ready; a new combination enables standing"
+                )
+                print(f"[CollectionMode] {message}", flush=True)
         self.policy.lower_body_policy.use_policy_action = self.state == "running"
 
     def status(self):
