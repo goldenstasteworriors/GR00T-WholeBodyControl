@@ -1,9 +1,9 @@
 {
-  "version": "dispense_complete_manual_review_20261108",
+  "version": "dispense_complete_manual_review_20261108_broken_dropper_excluded",
   "task_definition": "Both hands raised with dropper and tube already held -> right hand carries tube to center -> left hand aligns and dispenses -> left and right hands raised again, both objects retained. Exclude dropper pickup, aspiration, return and tube release.",
   "interval_convention": "source frame indices [start, end)",
   "reviewed_previous_ids": 46,
-  "retained_previous_ids": 43,
+  "retained_previous_ids": 41,
   "rejected": [
     {
       "review_id": "DISPENSE_TO_HELD_TUBE-001",
@@ -22,6 +22,20 @@
       "dataset": "whole_pipeline_20261103_192642",
       "episode": 4,
       "reason": "Multiple dropper grasp failures until 67.4 s; right arm starts moving while left is still lifting the dropper around 70-72 s. Missing initial bilateral raised ready pose, with additional retries after squeeze. Excluded from strict complete-cycle set."
+    },
+    {
+      "review_id": "DISPENSE_TO_HELD_TUBE-022",
+      "dataset": "whole_pipeline_20261107_141330",
+      "episode": 6,
+      "reason": "User confirmed broken dropper in this original trial; excluded from effective dispensing data.",
+      "exclusion_source": "user confirmation 2026-11-08"
+    },
+    {
+      "review_id": "DISPENSE_TO_HELD_TUBE-034",
+      "dataset": "whole_pipeline_20261107_141330",
+      "episode": 19,
+      "reason": "User confirmed broken dropper in this original trial; excluded from effective dispensing data.",
+      "exclusion_source": "user confirmation 2026-11-08"
     }
   ],
   "review_method": "Every source context contact sheet, every retained start in three views, every squeeze alignment in three views, and every ending at 0.5 s spacing reviewed. Full-frame-rate source movies were not watched frame by frame. EEF xyz is used to capture approach motion before the arm enters ego view.",
@@ -299,21 +313,6 @@
     },
     {
       "dataset": "whole_pipeline_20261107_141330",
-      "episode": 6,
-      "task": "DISPENSE_TO_HELD_TUBE",
-      "review_id": "DISPENSE_TO_HELD_TUBE-022",
-      "source_operator_discarded": false,
-      "dispense_squeeze_frame": 1608,
-      "start_frame": 1004,
-      "end_frame": 1890,
-      "previous_v2_episode": 224,
-      "previous_start_frame": 1013,
-      "previous_end_frame": 1882,
-      "review": "Full action context sampled at 1 Hz; final start and squeeze verified in all three views; ending compared at 0.5 s spacing; actual EEF xyz and gripper events checked. No model API used.",
-      "note": "Starts with both objects held and both hands raised before right-arm approach; includes tube transport to center, left alignment and squeeze, then both arms raised again; ends before returning dropper."
-    },
-    {
-      "dataset": "whole_pipeline_20261107_141330",
       "episode": 7,
       "task": "DISPENSE_TO_HELD_TUBE",
       "review_id": "DISPENSE_TO_HELD_TUBE-023",
@@ -474,21 +473,6 @@
       "previous_v2_episode": 283,
       "previous_start_frame": 1033,
       "previous_end_frame": 2039,
-      "review": "Full action context sampled at 1 Hz; final start and squeeze verified in all three views; ending compared at 0.5 s spacing; actual EEF xyz and gripper events checked. No model API used.",
-      "note": "Starts with both objects held and both hands raised before right-arm approach; includes tube transport to center, left alignment and squeeze, then both arms raised again; ends before returning dropper."
-    },
-    {
-      "dataset": "whole_pipeline_20261107_141330",
-      "episode": 19,
-      "task": "DISPENSE_TO_HELD_TUBE",
-      "review_id": "DISPENSE_TO_HELD_TUBE-034",
-      "source_operator_discarded": false,
-      "dispense_squeeze_frame": 1871,
-      "start_frame": 1289,
-      "end_frame": 2169,
-      "previous_v2_episode": 288,
-      "previous_start_frame": 1298,
-      "previous_end_frame": 2174,
       "review": "Full action context sampled at 1 Hz; final start and squeeze verified in all three views; ending compared at 0.5 s spacing; actual EEF xyz and gripper events checked. No model API used.",
       "note": "Starts with both objects held and both hands raised before right-arm approach; includes tube transport to center, left alignment and squeeze, then both arms raised again; ends before returning dropper."
     },
