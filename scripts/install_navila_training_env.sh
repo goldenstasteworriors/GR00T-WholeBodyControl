@@ -4,6 +4,7 @@
 # The optional system/Conda CUDA-toolkit install is intentionally omitted.
 set -euo pipefail
 export NAVILA_JOB_ROOT="${NAVILA_JOB_ROOT:-/nix/ykj/navila_two_tasks_20261109}"
+NAVILA_TOOLS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export HF_HOME="$NAVILA_JOB_ROOT/cache/huggingface"
 export XDG_CACHE_HOME="$NAVILA_JOB_ROOT/cache/xdg"
 export TMPDIR="$NAVILA_JOB_ROOT/cache/tmp"
@@ -25,4 +26,5 @@ cp -r ./llava/train/transformers_replace/. "$NAVILA_SITE_PACKAGES/transformers/"
 cp -r ./llava/train/deepspeed_replace/. "$NAVILA_SITE_PACKAGES/deepspeed/"
 "$NAVILA_PYTHON" -c 'import torch,flash_attn,transformers,peft,deepspeed; print(torch.__version__,flash_attn.__version__,transformers.__version__,peft.__version__,deepspeed.__version__)'
 mkdir -p "$NAVILA_JOB_ROOT/models"
-"$NAVILA_PYTHON" -c 'import os; from huggingface_hub import snapshot_download; snapshot_download("a8cheng/navila-llama3-8b-8f", local_dir=os.environ["NAVILA_JOB_ROOT"]+"/models/navila-llama3-8b-8f", local_dir_use_symlinks=False, max_workers=4)'
+"$NAVILA_PYTHON" "$NAVILA_TOOLS_ROOT/gear_sonic/scripts/download_navila_model.py" \
+  --destination "$NAVILA_JOB_ROOT/models/navila-llama3-8b-8f"
