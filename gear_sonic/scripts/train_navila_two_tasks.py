@@ -95,6 +95,10 @@ def main():
                 "train_annotations": options.lab_train_file,
                 "effective_train_samples": len(self.train_dataset),
                 "initial_adapter": str(options.lab_initial_adapter) if options.lab_initial_adapter else None,
+                "learning_rate": self.args.learning_rate,
+                "configured_epochs": self.args.num_train_epochs,
+                "gradient_accumulation_steps": self.args.gradient_accumulation_steps,
+                "selection_metric": self.args.metric_for_best_model,
             }, indent=2) + "\n")
             sample = self.train_dataset[0]
             target = sample["labels"][sample["labels"] != -100]
