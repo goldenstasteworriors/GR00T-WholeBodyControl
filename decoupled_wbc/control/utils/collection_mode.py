@@ -80,6 +80,7 @@ class CollectionMode:
             if not self.connection_latched:
                 print("[CollectionMode] onboard connection latched; teleop disabled until restart", flush=True)
             self.connection_latched = True
+            self.policy.lower_body_policy.use_policy_action = False
             if self.state != "damped":
                 self.state = "disconnected"
         if self.initialization_started is None:
