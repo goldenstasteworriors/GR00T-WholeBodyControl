@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 
 import av
+from imageio_ffmpeg import get_ffmpeg_exe
 from PIL import Image, ImageDraw, ImageFont
 
 from review_lab_primitive_starts import TITLES
@@ -89,7 +90,7 @@ def concat(rows, target):
         title = f"{row['review_id']} / {row['dataset']} / EP{row['episode']:06d}"
         chapters.append(f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={start}\nEND={round(offset*1000/30)}\ntitle={title}\n")
     metadata.write_text("".join(chapters))
-    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
+    subprocess.run([get_ffmpeg_exe(), "-nostdin", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
                     "-f", "ffmetadata", "-i", str(metadata), "-map_metadata", "1", "-map_chapters", "1",
                     "-c", "copy", "-movflags", "+faststart", str(target)], check=True)
     return offset
@@ -103,6 +104,7 @@ def main():
     parser.add_argument("--exclude-task", action="append", default=[])
     parser.add_argument("--speed", type=int, default=3, choices=[1, 2, 3, 4])
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--reuse-clips", action="store_true", help="Reuse completed clips from the same source intervals")
     args = parser.parse_args()
     info = read_json(args.dataset / "meta/info.json")
     if info["fps"] != 30:
@@ -127,10 +129,21 @@ def main():
         rows.append({**segment, "review_id": review_id})
     task_order = {task: i for i, task in enumerate(TITLES)}
     rows.sort(key=lambda r: (task_order[r["task"]], r["review_id"]))
-    args.output.mkdir(parents=True, exist_ok=False)
-    (args.output / "clips").mkdir()
-    with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        rendered = list(pool.map(render_clip, [(args.dataset, args.output, info, row, args.speed) for row in rows]))
+    args.output.mkdir(parents=True, exist_ok=args.reuse_clips)
+    (args.output / "clips").mkdir(exist_ok=args.reuse_clips)
+    if args.reuse_clips:
+        rendered = []
+        for row in rows:
+            path = args.output / "clips" / f"{row['review_id']}.mp4"
+            count = (row["end_frame"] - row["start_frame"] + args.speed - 1) // args.speed
+            with av.open(str(path)) as container:
+                stream = container.streams.video[0]
+                if stream.frames != count or (stream.width, stream.height) != (960, 320):
+                    raise ValueError(f"Invalid cached clip: {path}")
+            rendered.append({**row, "speed": args.speed, "video": str(path.resolve()), "video_frames": count})
+    else:
+        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+            rendered = list(pool.map(render_clip, [(args.dataset, args.output, info, row, args.speed) for row in rows]))
     class_videos, offset = {}, 0
     for task in TITLES:
         selected = [r for r in rendered if r["task"] == task]
