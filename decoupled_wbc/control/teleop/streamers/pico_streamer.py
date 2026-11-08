@@ -422,6 +422,12 @@ class PicoStreamer(BaseStreamer):
         strafe_input = -pico_data["left_joystick"][0]
         yaw_input = -pico_data["right_joystick"][0]
 
+        # Keep one translation axis; equal magnitudes prefer forward/backward.
+        if abs(fwd_bwd_input) >= abs(strafe_input):
+            strafe_input = 0.0
+        else:
+            fwd_bwd_input = 0.0
+
         lin_vel_x = self._apply_dead_zone(fwd_bwd_input, DEAD_ZONE) * MAX_LINEAR_VEL
         lin_vel_y = self._apply_dead_zone(strafe_input, DEAD_ZONE) * MAX_LINEAR_VEL
         ang_vel_z = self._apply_dead_zone(yaw_input, DEAD_ZONE) * MAX_ANGULAR_VEL
