@@ -267,6 +267,10 @@ class G1Env(HumanoidEnv):
             }
         )
 
+        link = self.body().body_command_sender.onboard_link
+        if link is not None and link.disconnected:
+            return
+
         if self.with_hands:
             left_hand_actuator_q = self.robot_model.get_hand_actuated_joints(
                 action["q"], side="left"

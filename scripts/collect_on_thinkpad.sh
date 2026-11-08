@@ -40,6 +40,11 @@ echo 'Waiting for the three-camera startup to complete...'
 python -c 'from gear_sonic.scripts.check_dex1_connection import check_camera; raise SystemExit(0 if check_camera("192.168.123.164",5555,timeout=30.0) else 1)'
 echo '[Startup 3/4] Starting/reusing ThinkPad PICO PC Service'
 bash scripts/thinkpad_pico_services.sh start
+if [[ "${COLLECTION_READ_ONLY:-0}" != 1 && "${COLLECTION_PREFLIGHT_ONLY:-0}" != 1 ]]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- g1 \
+        'cd /home/unitree/GR00T-WholeBodyControl/.worktrees/onboard-body-hold && bash scripts/onboard_body_service.sh start'
+    export SONIC_ONBOARD_BODY_HOST=192.168.123.164
+fi
 diagnostic_args=()
 if [[ "${NAVILA_COLLECTION:-0}" == 1 ]]; then
     diagnostic_args+=(--navigation-collection)

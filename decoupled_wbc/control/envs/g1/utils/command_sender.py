@@ -52,8 +52,16 @@ class BodyCommandSender:
         for _, value in self.config["WeakMotorJointIndex"].items():
             self.weak_motor_joint_index.append(value)
         # init low cmd publisher
-        self.lowcmd_publisher_ = ChannelPublisher("rt/lowcmd", LowCmd_)
-        self.lowcmd_publisher_.Init()
+        onboard_host = os.environ.get("SONIC_ONBOARD_BODY_HOST")
+        self.onboard_link = None
+        if onboard_host and config["ENV_TYPE"] == "real" and not config.get("diagnostic_read_only", False):
+            from decoupled_wbc.control.utils.onboard_body_link import OnboardBodyPublisher
+
+            self.lowcmd_publisher_ = OnboardBodyPublisher(onboard_host)
+            self.onboard_link = self.lowcmd_publisher_.link
+        else:
+            self.lowcmd_publisher_ = ChannelPublisher("rt/lowcmd", LowCmd_)
+            self.lowcmd_publisher_.Init()
         self.InitLowCmd()
         self.low_state = None
         self.crc = CRC()

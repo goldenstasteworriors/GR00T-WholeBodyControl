@@ -17,6 +17,7 @@ class CollectionMode:
         self.initialization_epoch = 0
         self.last_start_event = 0
         self.keyboard_events = queue.SimpleQueue()
+        self.connection_latched = False
 
     def handle_keyboard_button(self, key):
         if key == "]":
@@ -41,6 +42,9 @@ class CollectionMode:
             self._advance(now)
 
     def _advance(self, now):
+        if self.connection_latched:
+            print("[CollectionMode] connection lost; restart both control processes to resume", flush=True)
+            return
         if self.state == "damped":
             lower = self.policy.lower_body_policy
             lower.use_policy_action = False
@@ -71,6 +75,13 @@ class CollectionMode:
             print("[CollectionMode] still initializing; request consumed without enabling standing", flush=True)
 
     def update(self, goal, now):
+        link = self.env.body().body_command_sender.onboard_link
+        if link is not None and link.disconnected:
+            if not self.connection_latched:
+                print("[CollectionMode] onboard connection latched; teleop disabled until restart", flush=True)
+            self.connection_latched = True
+            if self.state != "damped":
+                self.state = "disconnected"
         if self.initialization_started is None:
             self.initialization_started = now
         event_id = int(goal.get("start_stop_event_id", 0))
@@ -84,6 +95,8 @@ class CollectionMode:
             reason = self.shutdown.estop_reason or "teleop_emergency_stop"
             self.shutdown.estop_requested.clear()
             self.enter_damping(reason)
+            return
+        if self.connection_latched:
             return
         # Only distinct rising-edge IDs can progress the two-step restart.
         if fresh or keyboard or goal.get("toggle_policy_action", False):
@@ -99,4 +112,5 @@ class CollectionMode:
             "control_mode": self.state,
             "initialization_epoch": self.initialization_epoch,
             "start_stop_event_id": self.last_start_event,
+            "connection_latched": self.connection_latched,
         }

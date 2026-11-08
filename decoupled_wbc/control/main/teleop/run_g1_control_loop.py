@@ -167,7 +167,7 @@ def main(config: ControlLoopConfig):
 
                 # Measure policy action calculation time
                 with telemetry.timer("policy_action"):
-                    if mode.state == "damped":
+                    if mode.state in {"damped", "disconnected"}:
                         wbc_action = {"q": obs["q"].copy()}
                     else:
                         wbc_action = wbc_policy.get_action(time=t_now)
@@ -181,7 +181,17 @@ def main(config: ControlLoopConfig):
                         mode.enter_damping(shutdown.estop_reason)
                     if mode.state == "damped":
                         env.send_damping()
-                    else:
+                    elif mode.state != "disconnected":
+                        sender = env.body().body_command_sender
+                        if sender.onboard_link is not None:
+                            lower = wbc_policy.lower_body_policy
+                            sender.onboard_link.context = {
+                                "running": mode.state == "running",
+                                "history": lower.obs_buffer.tolist(),
+                                "action": lower.action.tolist(),
+                                "height": float(np.asarray(lower.height_cmd).reshape(-1)[0]),
+                                "rpy": [float(lower.roll_cmd), float(lower.pitch_cmd), float(lower.yaw_cmd)],
+                            }
                         env.queue_action(wbc_action)
 
                 # Publish status information for InteractiveModeController
