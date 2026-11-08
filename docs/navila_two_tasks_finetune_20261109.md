@@ -55,6 +55,14 @@ BF16、LoRA rank 16、alpha 32、dropout 0.05，单步 batch 为 1，累计 8 �
 
 补训从初训适配器继续，使用 148 个平衡采样样本、学习率 1e-4、6 epoch 配置。每轮验证生成时会剥离监督答案，只将任务描述与历史图像送入模型。测试轨迹不参与优化或模型选择。
 
+最终任务适配器按验证集“前进 F1 与停止 F1 的平均值”选取，同时考虑漏停及提前停止；格式不合法的输出计为错误。训练内部的全动作类别平衡准确率仍保留作诊断。选择工具可在检查点落盘后运行，独立保存当前最优适配器，避免被训练状态轮转移除：
+
+```bash
+python gear_sonic/scripts/select_navila_goal_adapter.py --run-dir /nix/ykj/navila_two_tasks_20261109/runs/20261109_navila_two_tasks_stop_balanced_lora_gpu2 --output /nix/ykj/navila_two_tasks_20261109/runs/20261109_navila_two_tasks_selected_goal_lora_gpu2
+```
+
+该命令使用训练环境中的 Python，整行执行。`goal_selection_manifest.json` 记录实际选中检查点及验证集 F1，`source_run_summary.json` 保留训练内部选模结果，二者有明确区分。
+
 ## 复现补训
 
 先进入服务器终端。以下第一条命令独立执行；第二个代码块整段复制，反斜杠表示续行。
