@@ -115,7 +115,8 @@ def main():
     observation_requested = threading.Event()
     observation_ready = threading.Event()
     observation = [None]
-    status_path = repo / ".runtime/onboard_body_hold_status.json"
+    status_name = "onboard_body_hold_status" + (f"_{args.port}" if args.port != 5560 else "")
+    status_path = repo / f".runtime/{status_name}.json"
     status_path.parent.mkdir(parents=True, exist_ok=True)
     for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(number, lambda *_: stopped.set())
@@ -183,6 +184,8 @@ def main():
         listener.close()
         if connection is None:
             return
+        status_path.write_text(json.dumps({"phase": "connected", "latched": False,
+                                           "read_only": args.read_only}) + "\n")
         connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         threading.Thread(target=serve, args=(connection,), daemon=True).start()
         previous_status = None
