@@ -9,10 +9,11 @@ export XDG_CACHE_HOME="$NAVILA_JOB_ROOT/cache/xdg"
 export TMPDIR="$NAVILA_JOB_ROOT/cache/tmp"
 export PIP_CACHE_DIR="$NAVILA_JOB_ROOT/cache/pip"
 export DS_BUILD_OPS=0
+export CUDA_VISIBLE_DEVICES="${NAVILA_TRAIN_GPU:-2}"
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR" "$XDG_CACHE_HOME"
 NAVILA_PYTHON="$NAVILA_JOB_ROOT/env/bin/python"
 if [[ ! -d "$NAVILA_JOB_ROOT/NaVILA/.git" ]]; then
-  git clone https://github.com/AnjieCheng/NaVILA.git "$NAVILA_JOB_ROOT/NaVILA"
+  git clone --depth 1 https://github.com/AnjieCheng/NaVILA.git "$NAVILA_JOB_ROOT/NaVILA"
   git -C "$NAVILA_JOB_ROOT/NaVILA" checkout 76b98f233dd0fff05dfcd69435eec6740febff9d
 fi
 cd "$NAVILA_JOB_ROOT/NaVILA"
