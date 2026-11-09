@@ -30,6 +30,87 @@ def save_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
+def export_sam_success_review(dataset, output):
+    """Compare every originally accepted SAM box with the current annotation."""
+    root = dataset / "initial_ego_boxes"
+    original = json.loads((root / "sam_review_v1/annotations.json").read_text())
+    current = {r["review_id"]: r for r in json.loads((root / "review_v3/annotations.json").read_text())["episodes"]}
+    output.mkdir(parents=True, exist_ok=False)
+    (output / "images").mkdir()
+    font = ImageFont.truetype(FONT, 16)
+    small = ImageFont.truetype(FONT, 12)
+    sections, records = [], []
+    for row in sorted(original["episodes"], key=lambda r: (r["task"], r["review_id"])):
+        if not row["targets"] or row["targets"][0]["source"] != "sam2_single_image_candidate":
+            continue
+        rid, prompt = row["review_id"], row["prompt"]
+        selected = max((c for c in row["sam_candidates"] if c["satisfies_points"]), key=lambda c: c["score"])
+        assert selected["box"] == row["targets"][0]["box"]
+        now = current[rid]
+        replaced = bool(now["targets"] and now["targets"][0]["source"] == "assistant_current_frame_region_proposal")
+        frame = root / "frames" / f"{rid}.png"
+        assert hashlib.sha256(frame.read_bytes()).hexdigest() == row["reference_image_sha256"]
+        image = Image.open(frame).convert("RGB")
+        panel = Image.new("RGB", (1280, 650), "#14202b")
+        panel.paste(image, (0, 110))
+        panel.paste(image, (640, 110))
+        draw = ImageDraw.Draw(panel)
+        draw.text((8, 3), f"{rid} | EP{row['episode_index']:06d} | ego 首帧", font=font, fill="white")
+        draw.text((8, 27), f"左：原 SAM 采用框（青）及原点 | 候选 {selected['candidate']} | 分数 {selected['score']:.3f}", font=font, fill="#47dcff")
+        draw.text((648, 27), "右：后来人工指定的框（黄）" if replaced else "右：当前保留的 SAM 框（青）", font=font, fill="#ffcf40" if replaced else "#47dcff")
+        draw.text((8, 53), "绿 P 为正点；红 N 为负点；紫框是原输入框。点由锚帧配准传播。", font=font, fill="white")
+        draw.text((8, 78), "本页仅供对照：人工覆盖不代表原 SAM 框一定错误，尚未修改当前标注。", font=font, fill="#ffdc72")
+        for box, dx, color in ((prompt.get("seed_box"), 0, "#d06dff"),
+                               (selected["box"], 0, "#47dcff"),
+                               (now["targets"][0]["box"] if now["targets"] else None, 640, "#ffcf40" if replaced else "#47dcff")):
+            if box:
+                x1, y1, x2, y2 = box
+                draw.rectangle((x1 + dx, y1 + 110, x2 - 1 + dx, y2 + 109), outline=color, width=2)
+        for prefix, field, color in (("P", "positive_points", "#37ff74"), ("N", "negative_points", "#ff4242")):
+            for i, (x, y) in enumerate(prompt.get(field, []), 1):
+                draw.ellipse((x - 4, y + 106, x + 4, y + 114), fill=color, outline="black", width=1)
+                draw.text((min(x + 6, 612), max(110, y + 96)), f"{prefix}{i}", font=small, fill=color, stroke_width=1, stroke_fill="black")
+        draw.text((8, 597), f"原正点：{prompt.get('positive_points', [])}", font=font, fill="#37ff74")
+        draw.text((8, 622), f"原负点：{prompt.get('negative_points', [])}", font=font, fill="#ff7575")
+        draw.text((648, 597), f"原 SAM 框：{selected['box']}", font=font, fill="#47dcff")
+        draw.text((648, 622), f"当前框：{now['targets'][0]['box'] if now['targets'] else None}", font=font, fill="#ffcf40" if replaced else "#47dcff")
+        panel.save(output / "images" / f"{rid}.jpg", quality=95)
+        mask = root / "sam_review_v1/masks" / f"{rid}.png"
+        assert mask.exists()
+        record = {"review_id": rid, "task": row["task"], "episode_index": row["episode_index"],
+                  "frame_sha256": row["reference_image_sha256"], "positive_points": prompt["positive_points"],
+                  "negative_points": prompt.get("negative_points", []), "sam_input_box": prompt.get("seed_box"),
+                  "selected_sam_candidate": selected, "all_sam_candidates": row["sam_candidates"],
+                  "replaced_by_manual_box": replaced, "current_targets": now["targets"]}
+        records.append(record)
+        coords = {k: record[k] for k in ("positive_points", "negative_points", "sam_input_box")}
+        coords.update(sam_output_box=selected["box"], current_box=now["targets"][0]["box"] if now["targets"] else None)
+        section = [f"## {rid} / EP{row['episode_index']:06d}", "",
+                   "**后来被人工框覆盖**" if replaced else "当前保留原 SAM 框", "",
+                   f"![{rid} 原 SAM 框、原点和当前框](images/{rid}.jpg)", "",
+                   f"[原始首帧](../../frames/{rid}.png) · [原 SAM 采用掩码](../../sam_review_v1/masks/{rid}.png)", "",
+                   "```json", json.dumps(coords, ensure_ascii=False), "```", "",
+                   "| SAM 候选 | 分数 | 满足点约束 | 输出框 | 当时采用 |",
+                   "|---|---:|---|---|---|"]
+        for candidate in row["sam_candidates"]:
+            section.append(f"| {candidate['candidate']} | {candidate['score']:.4f} | {'是' if candidate['satisfies_points'] else '否'} | {candidate['box']} | {'是' if candidate['candidate'] == selected['candidate'] else ''} |")
+        section.append("")
+        sections.append((record, "\n".join(section)))
+    counts = dict(Counter("manual_override" if r["replaced_by_manual_box"] else "sam_retained" for r in records))
+    intro = ["# 原 SAM2 出框与提示点对照", "", f"共 {len(records)} 段。{counts.get('manual_override', 0)} 段后来被人工框覆盖，{counts.get('sam_retained', 0)} 段保留 SAM 框。", "",
+             "左图：最初被程序采用的 SAM 框＋原正负点＋输入框。右图：当前框。全部使用同一 ego 首帧。",
+             "", "人工覆盖不代表原 SAM 一定错误；本次只补齐对照，尚未改回任何标注。", "",
+             "[仅查看后来被人工框覆盖的片段](manual_overrides.md)", ""]
+    tasks = sorted({r["task"] for r in records})
+    intro += [f"- [{task}](task_{task}.md)" for task in tasks] + [""]
+    (output / "README.md").write_text("\n".join(intro) + "\n" + "\n".join(s for _, s in sections))
+    (output / "manual_overrides.md").write_text("# 原 SAM 出框后被人工覆盖的片段\n\n[全部 225 段](README.md)\n\n" + "\n".join(s for r, s in sections if r["replaced_by_manual_box"]))
+    for task in tasks:
+        (output / f"task_{task}.md").write_text(f"# {task}\n\n[返回全部](README.md)\n\n" + "\n".join(s for r, s in sections if r["task"] == task))
+    save_json(output / "manifest.json", {"counts": counts, "episodes": records})
+    print(json.dumps({"total": len(records), **counts}), flush=True)
+
+
 def export_method_videos(output, ffmpeg):
     for group in ("sam2", "manual", "unresolved"):
         folder = output / "by_method" / group
@@ -233,8 +314,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--sam-source", required=True, type=Path)
-    parser.add_argument("--checkpoint", required=True, type=Path)
+    parser.add_argument("--sam-source", type=Path)
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--success-review-only", action="store_true",
+                        help="Export originally accepted SAM boxes and points without model inference")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--ffmpeg", help="Optional ffmpeg executable for per-method videos")
-    run(parser.parse_args())
+    args = parser.parse_args()
+    if args.success_review_only:
+        export_sam_success_review(args.dataset, args.output)
+    else:
+        if not args.sam_source or not args.checkpoint:
+            parser.error("--sam-source and --checkpoint are required for rejected-prompt replay")
+        run(args)
