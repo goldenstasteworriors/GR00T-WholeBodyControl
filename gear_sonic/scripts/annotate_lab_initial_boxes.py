@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -27,6 +28,92 @@ RULES = {
 
 def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def review(dataset, previous_path, corrections_path, output, ffmpeg="ffmpeg"):
+    """Apply explicit first-frame corrections without reusing SAM scores as identity confidence."""
+    data = json.loads(previous_path.read_text())
+    corrections = json.loads(corrections_path.read_text())
+    output.mkdir(parents=True, exist_ok=False)
+    for name in ("overlays", "galleries", "videos"):
+        (output / name).mkdir()
+    grouped = defaultdict(list)
+    font = ImageFont.truetype("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 16)
+    labels = {"TAKE_TUBE": "取试管", "TAKE_DROPPER_AND_ASPIRATE": "拿滴管并取液",
+              "RETURN_DROPPER": "放回滴管", "RETURN_TUBE_TO_RACK": "放回试管槽",
+              "PLACE_TUBE_IN_BATH": "放入水浴烧杯"}
+    for record in data["episodes"]:
+        rid, task = record["review_id"], record["task"]
+        if task not in RULES:
+            assert not record["targets"]
+            continue
+        frame = dataset / "initial_ego_boxes/frames" / f"{rid}.png"
+        assert hashlib.sha256(frame.read_bytes()).hexdigest() == record["reference_image_sha256"]
+        if rid in corrections.get("not_visible", []):
+            record["targets"] = []
+            record["status"] = "unresolved_ego_visibility_or_identity"
+        elif rid in corrections["boxes"]:
+            role, entity = RULES[task]
+            record["targets"] = [{"camera": CAMERA, "role": role, "entity": entity,
+                                  "box": corrections["boxes"][rid],
+                                  "source": "assistant_current_frame_region_proposal"}]
+            record["status"] = "assistant_corrected_pending_user_review"
+        else:
+            record["status"] = ("sam_candidate_pending_user_review" if record["targets"]
+                                else "unresolved_segmentation")
+        record["needs_user_review"] = True
+        record["user_approved"] = False
+        record["annotation_note"] = corrections.get("notes", {}).get(rid, "")
+        panel = Image.new("RGB", (640, 570), "#14202b")
+        panel.paste(Image.open(frame).convert("RGB"), (0, 90))
+        draw = ImageDraw.Draw(panel)
+        draw.text((8, 2), f"{rid} | EP{record['episode_index']:06d}", font=font, fill="white")
+        draw.text((8, 25), f"{labels[task]} · ego 首帧 · 待用户核对", font=font, fill="#ffdc72")
+        note = record["annotation_note"] or ("没有可确认的首帧框" if not record["targets"] else "框坐标为原始 640×480 图像坐标")
+        draw.text((8, 50), note[:43], font=font, fill="#ffdc72")
+        for mark in record["targets"]:
+            mark.pop("confidence", None)
+            x1, y1, x2, y2 = mark["box"]
+            assert 0 <= x1 < x2 <= 640 and 0 <= y1 < y2 <= 480, (rid, mark)
+            color = "#45ff86" if mark["role"] == 0 else "#ffcf40"
+            draw.rectangle((x1, y1 + 90, x2 - 1, y2 + 89), outline=color, width=3)
+        panel.save(output / "overlays" / f"{rid}.png")
+        grouped[task].append((rid, panel))
+    galleries, videos = {}, {}
+    lines = ["# Ego 初始框检查", "", "本目录是待核对标注；尚未获得用户确认。全部框位于原始 ego 首帧，未移动切分起点。",
+             "", "绿色：操作物。黄色：接收物／目标槽位。加液及行走按用户要求不标框。",
+             "", "没有可靠首帧目标的片段留空，并列在末尾。检查时请提供类别和编号。", ""]
+    for task, tiles in grouped.items():
+        galleries[task] = []
+        lines += [f"## {labels[task]}（{len(tiles)} 段）", "", f"[逐段视频，每段首帧停留 1 秒](videos/{task}.mp4)", ""]
+        for offset in range(0, len(tiles), 12):
+            page = Image.new("RGB", (1280, 4 * 380), "#14202b")
+            for j, (_, tile) in enumerate(tiles[offset:offset + 12]):
+                page.paste(tile.resize((426, 380)), (j % 3 * 426, j // 3 * 380))
+            name = f"galleries/{task}_{offset//12:02d}.jpg"
+            page.save(output / name, quality=95)
+            galleries[task].append(name)
+            lines += [f"![{task} {offset+1}–{min(offset+12,len(tiles))}]({name})", ""]
+        playlist = output / "videos" / f"{task}.ffconcat"
+        playlist.write_text("ffconcat version 1.0\n" + "".join(
+            f"file '../overlays/{rid}.png'\nduration 1\n" for rid, _ in tiles)
+            + f"file '../overlays/{tiles[-1][0]}.png'\n")
+        subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-safe", "0", "-i", str(playlist),
+                        "-t", str(len(tiles)), "-r", "30", "-c:v", "libx264", "-preset", "fast",
+                        "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                        str(output / "videos" / f"{task}.mp4")], check=True)
+        videos[task] = f"videos/{task}.mp4"
+    unresolved = [r for r in data["episodes"] if r["task"] in RULES and not r["targets"]]
+    lines += ["## 无可靠首帧框的片段", ""]
+    lines += [f"- [{r['review_id']}](overlays/{r['review_id']}.png)：{r['annotation_note'] or r['status']}" for r in unresolved]
+    data.update(galleries=galleries, videos=videos, review_state="pending_user_review",
+                status_counts=dict(Counter(r["status"] for r in data["episodes"])),
+                previous_annotations=str(previous_path.resolve()),
+                corrections_sha256=hashlib.sha256(corrections_path.read_bytes()).hexdigest())
+    write_json(output / "annotations.json", data)
+    write_json(output / "corrections_used.json", corrections)
+    (output / "README.md").write_text("\n".join(lines) + "\n")
+    print(json.dumps(data["status_counts"], ensure_ascii=False))
 
 
 def run(dataset, prompts_path, output, sam_source=None, checkpoint=None, device="cpu"):
@@ -150,13 +237,23 @@ def run(dataset, prompts_path, output, sam_source=None, checkpoint=None, device=
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, type=Path)
-    parser.add_argument("--prompts", required=True, type=Path)
+    parser.add_argument("--prompts", type=Path)
+    parser.add_argument("--review-from", type=Path)
+    parser.add_argument("--corrections", type=Path)
+    parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--sam-source", type=Path)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
-    run(args.dataset, args.prompts, args.output, args.sam_source, args.checkpoint, args.device)
+    if args.review_from:
+        if not args.corrections:
+            parser.error("--review-from requires --corrections")
+        review(args.dataset, args.review_from, args.corrections, args.output, args.ffmpeg)
+    else:
+        if not args.prompts:
+            parser.error("--prompts is required for SAM annotation")
+        run(args.dataset, args.prompts, args.output, args.sam_source, args.checkpoint, args.device)
 
 
 if __name__ == "__main__":
