@@ -99,7 +99,8 @@ def review(dataset, previous_path, corrections_path, output, ffmpeg="ffmpeg"):
             f"file '../overlays/{rid}.png'\nduration 1\n" for rid, _ in tiles)
             + f"file '../overlays/{tiles[-1][0]}.png'\n")
         subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-safe", "0", "-i", str(playlist),
-                        "-t", str(len(tiles)), "-r", "30", "-c:v", "libx264", "-preset", "fast",
+                        "-vf", "fps=30", "-frames:v", str(len(tiles) * 30),
+                        "-c:v", "libx264", "-preset", "fast",
                         "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                         str(output / "videos" / f"{task}.mp4")], check=True)
         videos[task] = f"videos/{task}.mp4"
