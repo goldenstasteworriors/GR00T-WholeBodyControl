@@ -24,10 +24,15 @@
 
 from collections import defaultdict, deque
 from enum import Enum, IntEnum
+import gc
+import json
 import os
+import queue
 import subprocess
+import sys
 import threading
 import time
+import traceback
 
 import msgpack
 import numpy as np
@@ -139,6 +144,57 @@ class StreamMode(Enum):
     PLANNER_FROZEN_UPPER_BODY = 3
     POSE_PAUSE = 4
     PLANNER_VR_3PT = 5
+
+
+class _StablePressLatch:
+    """Emit one event per deliberate press and require a stable full release."""
+
+    def __init__(
+        self,
+        press_seconds: float = 0.12,
+        release_seconds: float = 0.25,
+        min_interval_seconds: float = 0.75,
+    ):
+        self.press_seconds = press_seconds
+        self.release_seconds = release_seconds
+        self.min_interval_seconds = min_interval_seconds
+        self.armed = True
+        self.press_started_s = None
+        self.release_started_s = None
+        self.last_trigger_s = float("-inf")
+
+    def update(
+        self, pressed: bool, fully_released: bool, now_s: float | None = None
+    ) -> bool:
+        """Return True once after a stable press; partial release never rearms."""
+        now_s = time.monotonic() if now_s is None else now_s
+
+        if pressed:
+            self.release_started_s = None
+            if self.press_started_s is None:
+                self.press_started_s = now_s
+            if (
+                self.armed
+                and now_s - self.press_started_s >= self.press_seconds
+                and now_s - self.last_trigger_s >= self.min_interval_seconds
+            ):
+                self.armed = False
+                self.last_trigger_s = now_s
+                return True
+            return False
+
+        self.press_started_s = None
+        if fully_released:
+            if self.release_started_s is None:
+                self.release_started_s = now_s
+            elif (
+                not self.armed
+                and now_s - self.release_started_s >= self.release_seconds
+            ):
+                self.armed = True
+        else:
+            self.release_started_s = None
+        return False
 
 
 ### Parse 3 point pose from SMPL
@@ -814,12 +870,13 @@ class PicoReader:
 
     def __init__(self, max_queue_size: int = 15):
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = threading.Thread(target=self._run, name="PicoReader", daemon=True)
         self._last_t = None
         self._fps_ema = 0.0
         self._last_stamp_ns = None
         self._latest = None
         self._lock = threading.Lock()
+        self._slow_frame_diagnostics = None
 
     def start(self):
         self._thread.start()
@@ -831,6 +888,10 @@ class PicoReader:
     def get_latest(self):
         with self._lock:
             return self._latest
+
+    def set_slow_frame_diagnostics(self, diagnostics) -> None:
+        """Attach the optional non-blocking diagnostics sink after startup."""
+        self._slow_frame_diagnostics = diagnostics
 
     @property
     def disconnected(self) -> bool:
@@ -851,15 +912,82 @@ class PicoReader:
 
     def _run(self):
         last_report = time.time()
+        last_fresh_sample_ns = time.perf_counter_ns()
+        stale_reported = False
+        unavailable_started_ns: int | None = None
+        unavailable_reported = False
         while not self._stop.is_set():
-            if not xrt.is_body_data_available():
+            diagnostics = self._slow_frame_diagnostics
+            call_started_ns = time.perf_counter_ns()
+            body_available = xrt.is_body_data_available()
+            if diagnostics is not None:
+                diagnostics.record_slow_call(
+                    "reader.is_body_data_available",
+                    call_started_ns,
+                    time.perf_counter_ns(),
+                )
+            if not body_available:
+                now_ns = time.perf_counter_ns()
+                if unavailable_started_ns is None:
+                    unavailable_started_ns = now_ns
+                unavailable_ns = now_ns - unavailable_started_ns
+                if (
+                    diagnostics is not None
+                    and not unavailable_reported
+                    and unavailable_ns >= diagnostics.stall_stack_threshold_ns
+                ):
+                    diagnostics.record_event(
+                        "reader_body_unavailable",
+                        unavailable_ms=unavailable_ns / 1e6,
+                    )
+                    unavailable_reported = True
                 time.sleep(0.001)
                 continue
+            if (
+                diagnostics is not None
+                and unavailable_reported
+                and unavailable_started_ns is not None
+            ):
+                diagnostics.record_event(
+                    "reader_body_available_recovered",
+                    unavailable_ms=(time.perf_counter_ns() - unavailable_started_ns) / 1e6,
+                )
+            unavailable_started_ns = None
+            unavailable_reported = False
+            call_started_ns = time.perf_counter_ns()
             stamp_ns = xrt.get_time_stamp_ns()
+            if diagnostics is not None:
+                diagnostics.record_slow_call(
+                    "reader.get_time_stamp_ns",
+                    call_started_ns,
+                    time.perf_counter_ns(),
+                )
             prev_stamp_ns = self._last_stamp_ns
             if prev_stamp_ns is not None and stamp_ns == prev_stamp_ns:
+                now_ns = time.perf_counter_ns()
+                stale_ns = now_ns - last_fresh_sample_ns
+                if (
+                    diagnostics is not None
+                    and not stale_reported
+                    and stale_ns >= diagnostics.stall_stack_threshold_ns
+                ):
+                    diagnostics.record_event(
+                        "reader_timestamp_stale",
+                        stale_ms=stale_ns / 1e6,
+                        xrt_timestamp_ns=int(stamp_ns),
+                    )
+                    stale_reported = True
                 time.sleep(0.000001)
                 continue
+            now_ns = time.perf_counter_ns()
+            if diagnostics is not None and stale_reported:
+                diagnostics.record_event(
+                    "reader_timestamp_recovered",
+                    stale_ms=(now_ns - last_fresh_sample_ns) / 1e6,
+                    xrt_timestamp_ns=int(stamp_ns),
+                )
+            last_fresh_sample_ns = now_ns
+            stale_reported = False
             # Compute device-based dt/fps using timestamp deltas (ns -> s)
             device_dt = ((stamp_ns - prev_stamp_ns) * 1e-9) if prev_stamp_ns is not None else 0.0
             if device_dt > 0.0:
@@ -869,7 +997,14 @@ class PicoReader:
             t_realtime = time.time()
             t_monotonic = time.monotonic()
             try:
+                call_started_ns = time.perf_counter_ns()
                 body_poses = xrt.get_body_joints_pose()
+                if diagnostics is not None:
+                    diagnostics.record_slow_call(
+                        "reader.get_body_joints_pose",
+                        call_started_ns,
+                        time.perf_counter_ns(),
+                    )
 
                 sample = {
                     "body_poses_np": np.array(body_poses),
@@ -906,6 +1041,9 @@ def _pose_stream_common(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     reader=None,
+    slow_frame_log: str = "",
+    slow_frame_threshold_ms: float = 40.0,
+    stall_stack_threshold_ms: float = 100.0,
 ):
     """Shared pose streaming loop used by run_pico."""
     if reader is None:
@@ -937,6 +1075,9 @@ def _pose_stream_common(
         record_dir=record_dir,
         record_format=record_format,
         log_prefix=log_prefix,
+        slow_frame_log=slow_frame_log,
+        slow_frame_threshold_ms=slow_frame_threshold_ms,
+        stall_stack_threshold_ms=stall_stack_threshold_ms,
     )
 
     if stop_event is None:
@@ -950,6 +1091,7 @@ def _pose_stream_common(
     finally:
         # Cleanup resources
         reader.stop()
+        streamer.close()
         three_point.close()
 
 
@@ -1249,6 +1391,249 @@ class ThreePointPose:
         print(f"[{self.log_prefix}] Wrist recalibration pending (neck preserved, measured q)")
 
 
+class SlowFrameDiagnostics:
+    """Low-overhead slow-frame logging and in-flight stall stack capture."""
+
+    _SENTINEL = object()
+
+    def __init__(
+        self,
+        log_path: str,
+        slow_frame_threshold_ms: float,
+        stall_stack_threshold_ms: float,
+    ):
+        if slow_frame_threshold_ms <= 0 or stall_stack_threshold_ms <= 0:
+            raise ValueError("Slow-frame and stall-stack thresholds must be positive")
+
+        self.log_path = os.path.abspath(os.path.expanduser(log_path))
+        self.slow_frame_threshold_ns = int(slow_frame_threshold_ms * 1e6)
+        self.stall_stack_threshold_ns = int(stall_stack_threshold_ms * 1e6)
+        self._records: queue.Queue = queue.Queue(maxsize=64)
+        self._stop = threading.Event()
+        self._stage_states: dict[str, tuple[int, str, int, int]] = {}
+        self._next_frame_token = 0
+        self._reported_stall_tokens: dict[str, int] = {}
+        self._dropped_records = 0
+        self._gc_start_ns: int | None = None
+        self._gc_events: deque[tuple[int, int, int]] = deque(maxlen=64)
+        self._closed = False
+
+        output_dir = os.path.dirname(self.log_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        self._writer_thread = threading.Thread(
+            target=self._writer_worker,
+            name="PicoSlowFrameWriter",
+            daemon=True,
+        )
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_worker,
+            name="PicoStallWatchdog",
+            daemon=True,
+        )
+        self._writer_thread.start()
+        self._watchdog_thread.start()
+        gc.callbacks.append(self._gc_callback)
+        self._submit(
+            {
+                "event": "session_start",
+                "timestamp": time.time(),
+                "pid": os.getpid(),
+                "slow_frame_threshold_ms": slow_frame_threshold_ms,
+                "stall_stack_threshold_ms": stall_stack_threshold_ms,
+            }
+        )
+        print(f"[SlowFrame] Logging enabled: {self.log_path}")
+
+    def begin_frame(self, step: int, owner: str = "pose") -> "SlowFrameTimer":
+        self._next_frame_token += 1
+        return SlowFrameTimer(self, self._next_frame_token, step, owner)
+
+    def _set_stage(
+        self, owner: str, token: int, name: str, step: int, started_ns: int
+    ) -> None:
+        self._stage_states[owner] = (token, name, step, started_ns)
+
+    def _clear_stage(self, owner: str, token: int) -> None:
+        state = self._stage_states.get(owner)
+        if state is not None and state[0] == token:
+            self._stage_states.pop(owner, None)
+
+    def record_event(self, event: str, **values) -> None:
+        self._submit({"event": event, "timestamp": time.time(), **values})
+
+    def record_slow_call(self, call: str, start_ns: int, end_ns: int) -> None:
+        duration_ns = end_ns - start_ns
+        if duration_ns < self.slow_frame_threshold_ns:
+            return
+        self.record_event(
+            "slow_call",
+            call=call,
+            duration_ms=duration_ns / 1e6,
+        )
+
+    def _submit(self, record: dict) -> None:
+        try:
+            self._records.put_nowait(record)
+        except queue.Full:
+            self._dropped_records += 1
+
+    def _writer_worker(self) -> None:
+        try:
+            with open(self.log_path, "a", encoding="utf-8", buffering=1) as output:
+                while True:
+                    record = self._records.get()
+                    if record is self._SENTINEL:
+                        return
+                    output.write(json.dumps(record, separators=(",", ":")) + "\n")
+        except Exception as exc:
+            print(f"[SlowFrame] Log writer failed: {exc}", file=sys.stderr)
+
+    def _watchdog_worker(self) -> None:
+        poll_s = min(0.02, max(0.005, self.stall_stack_threshold_ns * 1e-9 / 4.0))
+        while not self._stop.wait(poll_s):
+            now_ns = time.perf_counter_ns()
+            stalled = []
+            for owner, state in self._stage_states.copy().items():
+                token, stage, step, started_ns = state
+                elapsed_ns = now_ns - started_ns
+                if elapsed_ns < self.stall_stack_threshold_ns:
+                    continue
+                if token == self._reported_stall_tokens.get(owner):
+                    continue
+                self._reported_stall_tokens[owner] = token
+                stalled.append((owner, stage, step, elapsed_ns))
+            if not stalled:
+                continue
+
+            thread_names = {
+                thread.ident: thread.name
+                for thread in threading.enumerate()
+                if thread.ident is not None
+            }
+            current_ident = threading.get_ident()
+            stacks = {}
+            for thread_id, frame in sys._current_frames().items():
+                if thread_id == current_ident:
+                    continue
+                stacks[thread_names.get(thread_id, str(thread_id))] = "".join(
+                    traceback.format_stack(frame, limit=30)
+                )
+            for owner, stage, step, elapsed_ns in stalled:
+                self._submit({
+                    "event": "stall_stack",
+                    "timestamp": time.time(),
+                    "owner": owner,
+                    "frame_index": step,
+                    "stage": stage,
+                    "elapsed_ms": elapsed_ns / 1e6,
+                    "threads": stacks,
+                })
+
+    def _gc_callback(self, phase: str, info: dict) -> None:
+        now_ns = time.perf_counter_ns()
+        if phase == "start":
+            self._gc_start_ns = now_ns
+        elif phase == "stop" and self._gc_start_ns is not None:
+            self._gc_events.append((self._gc_start_ns, now_ns, int(info.get("generation", -1))))
+            self._gc_start_ns = None
+
+    def gc_events_between(self, start_ns: int, end_ns: int) -> list[dict]:
+        return [
+            {
+                "generation": generation,
+                "duration_ms": (gc_end_ns - gc_start_ns) / 1e6,
+            }
+            for gc_start_ns, gc_end_ns, generation in tuple(self._gc_events)
+            if gc_end_ns >= start_ns and gc_start_ns <= end_ns
+        ]
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._stage_states.clear()
+        try:
+            gc.callbacks.remove(self._gc_callback)
+        except ValueError:
+            pass
+        self._stop.set()
+        self._watchdog_thread.join(timeout=1.0)
+        try:
+            self._records.put(
+                {
+                    "event": "session_end",
+                    "timestamp": time.time(),
+                    "dropped_records": self._dropped_records,
+                },
+                timeout=1.0,
+            )
+            self._records.put(self._SENTINEL, timeout=1.0)
+        except queue.Full:
+            print("[SlowFrame] Timed out flushing diagnostics", file=sys.stderr)
+        self._writer_thread.join(timeout=2.0)
+
+
+class SlowFrameTimer:
+    """Collect stage durations for one instrumented iteration."""
+
+    def __init__(
+        self, diagnostics: SlowFrameDiagnostics, token: int, step: int, owner: str
+    ):
+        self.diagnostics = diagnostics
+        self.token = token
+        self.step = step
+        self.owner = owner
+        self.frame_start_ns = time.perf_counter_ns()
+        self.stage_start_ns = self.frame_start_ns
+        self.stage_name = "frame_start"
+        self.stage_durations_ns: dict[str, int] = {}
+        self.metadata: dict = {}
+        self.finished = False
+        diagnostics._set_stage(owner, token, self.stage_name, step, self.stage_start_ns)
+
+    def stage(self, name: str) -> None:
+        now_ns = time.perf_counter_ns()
+        self.stage_durations_ns[self.stage_name] = (
+            self.stage_durations_ns.get(self.stage_name, 0) + now_ns - self.stage_start_ns
+        )
+        self.stage_name = name
+        self.stage_start_ns = now_ns
+        self.diagnostics._set_stage(self.owner, self.token, name, self.step, now_ns)
+
+    def add_metadata(self, **values) -> None:
+        self.metadata.update(values)
+
+    def finish(self) -> None:
+        if self.finished:
+            return
+        self.finished = True
+        end_ns = time.perf_counter_ns()
+        self.stage_durations_ns[self.stage_name] = (
+            self.stage_durations_ns.get(self.stage_name, 0) + end_ns - self.stage_start_ns
+        )
+        self.diagnostics._clear_stage(self.owner, self.token)
+        total_ns = end_ns - self.frame_start_ns
+        if total_ns < self.diagnostics.slow_frame_threshold_ns:
+            return
+        self.diagnostics._submit(
+            {
+                "event": "slow_frame",
+                "timestamp": time.time(),
+                "owner": self.owner,
+                "frame_index": self.step,
+                "total_ms": total_ns / 1e6,
+                "stages_ms": {
+                    name: duration_ns / 1e6
+                    for name, duration_ns in self.stage_durations_ns.items()
+                },
+                "gc": self.diagnostics.gc_events_between(self.frame_start_ns, end_ns),
+                **self.metadata,
+            }
+        )
+
+
 class PoseStreamer:
     """Encapsulates the pose streaming loop state and logic."""
 
@@ -1263,6 +1648,9 @@ class PoseStreamer:
         record_dir: str,
         record_format: str,
         log_prefix: str = "PoseLoop",
+        slow_frame_log: str = "",
+        slow_frame_threshold_ms: float = 40.0,
+        stall_stack_threshold_ms: float = 100.0,
     ):
         self.socket = socket
         self.reader = reader
@@ -1270,6 +1658,17 @@ class PoseStreamer:
         self.target_fps = target_fps
         self.record_dir = record_dir
         self.log_prefix = log_prefix
+        self.slow_frame_diagnostics = (
+            SlowFrameDiagnostics(
+                slow_frame_log,
+                slow_frame_threshold_ms,
+                stall_stack_threshold_ms,
+            )
+            if slow_frame_log
+            else None
+        )
+        if hasattr(reader, "set_slow_frame_diagnostics"):
+            reader.set_slow_frame_diagnostics(self.slow_frame_diagnostics)
 
         # Injected dependencies
         self.reader = reader
@@ -1336,6 +1735,16 @@ class PoseStreamer:
         )
         self.yaw_accumulator = YawAccumulator()
 
+        # Keep the body-tracking visualization live while the manager is OFF without
+        # touching the streaming buffers or publishing any robot-control messages.
+        # Rendering is intentionally capped below the control rate to keep the
+        # pre-deployment preview responsive without adding unnecessary load.
+        self.preview_period_s = 1.0 / min(30, max(1, target_fps))
+        self.preview_next_render_s = 0.0
+        self.preview_last_stamp_ns = None
+        self.preview_frame_count = 0
+        self.preview_last_report_s = time.monotonic()
+
     def reset_yaw(self):
         """Called when entering pose mode. Resets yaw only.
         Calibration is triggered separately by the operator (A+B+X+Y → calibrate_now)."""
@@ -1352,20 +1761,115 @@ class PoseStreamer:
         self.step = 0
 
     def run_once(self):
-        """Execute one iteration of the pose streaming loop."""
-        sample = self.reader.get_latest()
+        timer = (
+            self.slow_frame_diagnostics.begin_frame(self.step)
+            if self.slow_frame_diagnostics is not None
+            else None
+        )
+        try:
+            return self._run_once_impl(timer)
+        finally:
+            if timer is not None:
+                timer.finish()
 
+    def close(self) -> None:
+        if hasattr(self.reader, "set_slow_frame_diagnostics"):
+            self.reader.set_slow_frame_diagnostics(None)
+        if self.slow_frame_diagnostics is not None:
+            self.slow_frame_diagnostics.close()
+
+    def render_preview_once(self) -> None:
+        """Refresh the body preview without publishing pose or control messages.
+
+        This is used only while the manager is in ``StreamMode.OFF``.  It reads
+        the same latest XRT/SMPL sample used by data collection, but deliberately
+        avoids the socket, streaming buffers, calibration, and controller state.
+        """
+        if self.three_point.vr3pt_visualizer is None:
+            time.sleep(0.01)
+            return
+
+        now_s = time.monotonic()
+        if now_s < self.preview_next_render_s:
+            time.sleep(min(0.005, self.preview_next_render_s - now_s))
+            return
+
+        sample = self.reader.get_latest()
         if sample is None:
             time.sleep(0.005)
             return
 
+        stamp_ns = int(sample.get("timestamp_ns", 0))
+        if self.preview_last_stamp_ns is not None and stamp_ns <= self.preview_last_stamp_ns:
+            time.sleep(0.002)
+            return
+
+        smpl_joints_for_vis = None
+        if self.three_point.enable_smpl_vis:
+            latest_data = compute_from_body_poses(
+                self.parent_indices, self.device, sample["body_poses_np"]
+            )
+            smpl_joints_for_vis = (
+                latest_data["smpl_joints_local"].detach().cpu().numpy()[0]
+            )
+
+        self.three_point.process_smpl_pose(
+            sample["body_poses_np"], smpl_joints_local=smpl_joints_for_vis
+        )
+        self.preview_last_stamp_ns = stamp_ns
+        self.preview_next_render_s = now_s + self.preview_period_s
+        self.preview_frame_count += 1
+
+        report_elapsed_s = now_s - self.preview_last_report_s
+        if report_elapsed_s >= 5.0:
+            preview_fps = self.preview_frame_count / report_elapsed_s
+            print(
+                f"[Preview] Body visualization: {preview_fps:.2f} FPS "
+                "(robot control OFF)"
+            )
+            self.preview_frame_count = 0
+            self.preview_last_report_s = now_s
+
+    def close_preview_before_control(self) -> None:
+        """Remove the inline visualizer before entering a robot-control mode.
+
+        PyVista rendering is intentionally kept out of the active pose/planner
+        loops so an occluded or slow GUI window cannot reduce command frequency.
+        """
+        visualizer = self.three_point.vr3pt_visualizer
+        if visualizer is None:
+            return
+        visualizer.close()
+        self.three_point.vr3pt_visualizer = None
+        self.three_point.enable_smpl_vis = False
+        print("[Preview] Closed before policy start; control streaming has no GUI rendering")
+
+    def _run_once_impl(self, timer: SlowFrameTimer | None):
+        """Execute one iteration of the pose streaming loop."""
+        if timer is not None:
+            timer.stage("get_latest")
+        sample = self.reader.get_latest()
+
+        if sample is None:
+            if timer is not None:
+                timer.stage("wait_for_sample")
+            time.sleep(0.005)
+            return
+
+        if timer is not None:
+            timer.add_metadata(sample_timestamp_ns=int(sample.get("timestamp_ns", 0)))
+            timer.stage("smpl_fk")
         latest_data = compute_from_body_poses(
             self.parent_indices, self.device, sample["body_poses_np"]
         )
+        if timer is not None:
+            timer.stage("controller_inputs")
         left_menu_button, left_trigger, right_trigger, left_grip, right_grip = get_controller_inputs(
             self.reader
         )
         # Get A and B button states for data collection control
+        if timer is not None:
+            timer.stage("abxy_buttons")
         a_pressed, b_pressed, x_pressed, y_pressed = get_abxy_buttons(self.reader)
 
         # Data collection toggle logic (edge-triggered)
@@ -1380,6 +1884,8 @@ class PoseStreamer:
         self.toggle_data_collection_last = toggle_data_collection_tmp
         self.toggle_data_abort_last = toggle_data_abort_tmp
 
+        if timer is not None:
+            timer.stage("hand_ik")
         left_hand_joints, right_hand_joints = compute_hand_joints_from_inputs(
             self.left_hand_ik_solver,
             self.right_hand_ik_solver,
@@ -1388,6 +1894,8 @@ class PoseStreamer:
             right_trigger,
             right_grip,
         )
+        if timer is not None:
+            timer.stage("tensor_to_numpy")
         smpl_pose_np = (
             latest_data["smpl_pose"].detach().cpu().numpy()[:, :63].reshape(-1, 21, 3)[0]
         ).astype(np.float32)
@@ -1397,6 +1905,8 @@ class PoseStreamer:
         body_quat_np = (
             latest_data["global_orient_quat"].detach().cpu().numpy()[0].astype(np.float32)
         )
+        if timer is not None:
+            timer.stage("timestamp_gate")
         curr_stamp_ns = int(sample.get("timestamp_ns", 0))
         step_ns = int(1e9 / max(1, self.target_fps))
         if self.prev_stamp_ns is None:
@@ -1420,6 +1930,8 @@ class PoseStreamer:
             alpha = 0.0
         elif alpha > 1.0:
             alpha = 1.0
+        if timer is not None:
+            timer.stage("interpolation")
         use_joints = (1.0 - alpha) * self.prev_smpl_joints_np + alpha * smpl_joints_np
         use_pose = _interp_pose_axis_angle(self.prev_smpl_pose_np, smpl_pose_np, alpha).astype(
             np.float32
@@ -1429,6 +1941,8 @@ class PoseStreamer:
         )
         N = len(self.frame_buffer["frame_index"])
 
+        if timer is not None:
+            timer.stage("wrist_mapping")
         ##### From @Jiefeng for directly setting the joint position ######
         joint_pos = np.zeros(29)
         body_pose = use_pose.reshape(-1, 21, 3)
@@ -1496,11 +2010,15 @@ class PoseStreamer:
             if self.three_point.enable_smpl_vis
             else None
         )
+        if timer is not None:
+            timer.stage("three_point")
         vr_3pt_pose = self.three_point.process_smpl_pose(
             sample["body_poses_np"], smpl_joints_local=smpl_joints_for_vis
         )
         ##### From @Jiefeng for directly setting the joint position ######
 
+        if timer is not None:
+            timer.stage("buffer_update")
         self.frame_buffer["smpl_pose"].append(use_pose)
         self.frame_buffer["smpl_joints"].append(use_joints)
         self.frame_buffer["body_quat_w"].append(use_body_quat)
@@ -1517,11 +2035,15 @@ class PoseStreamer:
             self.buffer_cleared = False
 
         # Get joystick axes for yaw accumulation
+        if timer is not None:
+            timer.stage("controller_axes")
         _, _, rx, _ = get_controller_axes(self.reader)
         self.yaw_accumulator.update(rx, self.frame_time)
 
         # Only send if buffer is full and we're not waiting for fresh data
         if buffer_is_full and not self.buffer_cleared:
+            if timer is not None:
+                timer.stage("message_build")
             numpy_data = {
                 "smpl_pose": np.stack((self.frame_buffer["smpl_pose"]), axis=0),
                 "smpl_joints": np.stack((self.frame_buffer["smpl_joints"]), axis=0),
@@ -1552,14 +2074,22 @@ class PoseStreamer:
                 ),
             }
 
+            if timer is not None:
+                timer.stage("message_pack")
             packed_message = pack_pose_message(numpy_data, topic="pose")
+            if timer is not None:
+                timer.stage("zmq_send")
             self.socket.send(packed_message)
 
             if self.record_dir:
+                if timer is not None:
+                    timer.stage("record_npz")
                 out_path = os.path.join(self.record_dir, f"pose_{self.record_idx:06d}.npz")
                 np.savez_compressed(out_path, **numpy_data)
                 self.record_idx += 1
 
+        if timer is not None:
+            timer.stage("state_update")
         self.step += 1
         self.next_target_ns += step_ns
         self.prev_stamp_ns = curr_stamp_ns
@@ -1575,6 +2105,8 @@ class PoseStreamer:
             self.last_fps_report = current_time
         elapsed = time.time() - self.frame_start
         if elapsed < self.frame_time:
+            if timer is not None:
+                timer.stage("pacing_sleep")
             time.sleep(self.frame_time - elapsed)
         self.frame_start = time.time()
 
@@ -1623,6 +2155,9 @@ def run_pico(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     input_source: str = "xrt",
+    slow_frame_log: str = "",
+    slow_frame_threshold_ms: float = 40.0,
+    stall_stack_threshold_ms: float = 100.0,
 ):
     """Run body tracking with real-time visualization and ZMQ streaming."""
     reader = _init_input_source(input_source, buffer_size)
@@ -1653,6 +2188,9 @@ def run_pico(
             enable_waist_tracking=enable_waist_tracking,
             enable_smpl_vis=enable_smpl_vis,
             reader=reader,
+            slow_frame_log=slow_frame_log,
+            slow_frame_threshold_ms=slow_frame_threshold_ms,
+            stall_stack_threshold_ms=stall_stack_threshold_ms,
         )
     finally:
         socket.close()
@@ -1946,12 +2484,16 @@ def run_pico_manager(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     input_source: str = "xrt",
+    slow_frame_log: str = "",
+    slow_frame_threshold_ms: float = 40.0,
+    stall_stack_threshold_ms: float = 100.0,
 ):
     """
     Manager: creates shared PUB socket and runs pose/planner streamers based on current mode.
     Controller input:
       A+X: Toggle between planner and pose mode
       A+B+X+Y: Toggle policy start/stop
+      Left grip+A / left grip+B: Toggle data recording / discard
     """
     reader = _init_input_source(input_source, buffer_size)
 
@@ -1987,6 +2529,9 @@ def run_pico_manager(
         record_dir=record_dir,
         record_format=record_format,
         log_prefix="PoseLoop",
+        slow_frame_log=slow_frame_log,
+        slow_frame_threshold_ms=slow_frame_threshold_ms,
+        stall_stack_threshold_ms=stall_stack_threshold_ms,
     )
     planner_streamer = PlannerStreamer(
         socket=socket,
@@ -2012,38 +2557,85 @@ def run_pico_manager(
     #   Emergency stop from any mode: A+B+X+Y (start_combo) --> OFF
     #   POSE_PAUSE: left_menu_button held --> POSE_PAUSE, released --> POSE
     #
-    print("Manager controls: A+X=toggle mode, A+B+X+Y=start/stop policy")
+    print(
+        "Manager controls: A+X=toggle mode, A+B+X+Y=start/stop policy, "
+        "left-grip+A/B=record start-stop/discard"
+    )
     current_mode = StreamMode.OFF
     # Track which mode VR_3PT was entered from, so left_axis_click returns to it.
     # Will be either PLANNER or PLANNER_FROZEN_UPPER_BODY.
     vr3pt_parent_mode = StreamMode.PLANNER
-    prev_toggle_dc = False
-    prev_toggle_da = False
+    start_latch = _StablePressLatch()
+    ax_latch = _StablePressLatch()
+    by_latch = _StablePressLatch()
+    left_axis_latch = _StablePressLatch()
+    record_latch = _StablePressLatch()
+    abort_latch = _StablePressLatch()
     try:
-        prev_ax_pressed = False
-        prev_by_pressed = False
-        prev_start_combo = False
-        prev_left_axis_click = False
         while True:
             # Poll Pico controller for buttons/axes
-            a_pressed, b_pressed, x_pressed, y_pressed = get_abxy_buttons(reader)
+            manager_input_timer = (
+                pose_streamer.slow_frame_diagnostics.begin_frame(
+                    pose_streamer.step, owner="manager_inputs"
+                )
+                if pose_streamer.slow_frame_diagnostics is not None
+                else None
+            )
+            try:
+                if manager_input_timer is not None:
+                    manager_input_timer.stage("abxy_buttons")
+                a_pressed, b_pressed, x_pressed, y_pressed = get_abxy_buttons(reader)
 
-            left_menu_button, _, _, left_grip_mgr, _ = get_controller_inputs(reader)
+                if manager_input_timer is not None:
+                    manager_input_timer.stage("controller_inputs")
+                left_menu_button, _, _, left_grip_mgr, _ = get_controller_inputs(reader)
 
-            left_axis_click, _ = get_axis_clicks(reader)
+                if manager_input_timer is not None:
+                    manager_input_timer.stage("axis_clicks")
+                left_axis_click, _ = get_axis_clicks(reader)
+            finally:
+                if manager_input_timer is not None:
+                    manager_input_timer.finish()
 
-            # Rising edge: A+X pressed together -> toggle POSE/PLANNER mode
-            ax_pressed = (a_pressed) and (x_pressed)
-
-            # Rising edge: B+Y pressed together -> toggle POSE/PLANNER_FROZEN_UPPER_BODY mode
-            by_pressed = (b_pressed) and (y_pressed)
-
-            # Rising edge: A+B+X+Y pressed together -> toggle policy start/stop (planner=True)
-            start_combo = (a_pressed) and (b_pressed) and (x_pressed) and (y_pressed)
+            # Exact two-button chords plus a short stable-press window prevent the
+            # four-button start/stop chord from accidentally firing A+X or B+Y.
+            ax_pressed = bool(
+                a_pressed and x_pressed and not b_pressed and not y_pressed
+            )
+            by_pressed = bool(
+                b_pressed and y_pressed and not a_pressed and not x_pressed
+            )
+            start_combo = bool(a_pressed and b_pressed and x_pressed and y_pressed)
+            now_s = time.monotonic()
+            latest_input = reader.get_latest()
+            controls_fresh = bool(
+                latest_input is not None
+                and now_s - float(latest_input.get("timestamp_monotonic", 0.0)) <= 0.30
+            )
+            if controls_fresh:
+                start_event = start_latch.update(
+                    start_combo,
+                    not (a_pressed or b_pressed or x_pressed or y_pressed),
+                    now_s,
+                )
+                ax_event = ax_latch.update(
+                    ax_pressed, not (a_pressed or x_pressed), now_s
+                )
+                by_event = by_latch.update(
+                    by_pressed, not (b_pressed or y_pressed), now_s
+                )
+                left_axis_event = left_axis_latch.update(
+                    bool(left_axis_click), not left_axis_click, now_s
+                )
+            else:
+                # Do not interpret SDK fallbacks during an XRT stall as a real
+                # release. Keeping latch state prevents a held key retriggering
+                # immediately when fresh headset data returns.
+                start_event = ax_event = by_event = left_axis_event = False
 
             new_mode = current_mode
             if current_mode == StreamMode.OFF:
-                if start_combo and not prev_start_combo:
+                if start_event:
                     new_mode = StreamMode.PLANNER
                     # Calibrate VR 3pt tracking NOW: operator should be in zero-ref pose.
                     # Uses the current Pico SMPL frame + FK of all-zero body joints.
@@ -2055,34 +2647,34 @@ def run_pico_manager(
 
             elif current_mode == StreamMode.PLANNER:
                 # Chain 2: POSE <--(ax)--> PLANNER <--(left_axis_click)--> VR_3PT
-                if start_combo and not prev_start_combo:
+                if start_event:
                     new_mode = StreamMode.OFF
-                elif ax_pressed and not prev_ax_pressed:
+                elif ax_event:
                     new_mode = StreamMode.POSE
-                elif left_axis_click and not prev_left_axis_click:
+                elif left_axis_event:
                     new_mode = StreamMode.PLANNER_VR_3PT
 
             elif current_mode == StreamMode.POSE:
-                if start_combo and not prev_start_combo:
+                if start_event:
                     new_mode = StreamMode.OFF
-                elif ax_pressed and not prev_ax_pressed:
+                elif ax_event:
                     new_mode = StreamMode.PLANNER  # Enter chain 2
-                elif by_pressed and not prev_by_pressed:
+                elif by_event:
                     new_mode = StreamMode.PLANNER_FROZEN_UPPER_BODY  # Enter chain 1
                 elif left_menu_button:
                     new_mode = StreamMode.POSE_PAUSE
 
             elif current_mode == StreamMode.PLANNER_FROZEN_UPPER_BODY:
                 # Chain 1: POSE <--(by)--> FROZEN <--(left_axis_click)--> VR_3PT
-                if start_combo and not prev_start_combo:
+                if start_event:
                     new_mode = StreamMode.OFF
-                elif by_pressed and not prev_by_pressed:
+                elif by_event:
                     new_mode = StreamMode.POSE
-                elif left_axis_click and not prev_left_axis_click:
+                elif left_axis_event:
                     new_mode = StreamMode.PLANNER_VR_3PT
 
             elif current_mode == StreamMode.POSE_PAUSE:
-                if start_combo and not prev_start_combo:
+                if start_event:
                     new_mode = StreamMode.OFF
                 elif not left_menu_button:
                     new_mode = StreamMode.POSE
@@ -2092,17 +2684,20 @@ def run_pico_manager(
                 #   left_axis_click → return to parent (PLANNER or FROZEN)
                 #   ax_pressed      → POSE (chain 2 exit)
                 #   by_pressed      → POSE (chain 1 exit)
-                if start_combo and not prev_start_combo:
+                if start_event:
                     new_mode = StreamMode.OFF
-                elif left_axis_click and not prev_left_axis_click:
+                elif left_axis_event:
                     new_mode = vr3pt_parent_mode  # Return to parent mode
-                elif ax_pressed and not prev_ax_pressed:
+                elif ax_event:
                     new_mode = StreamMode.POSE
-                elif by_pressed and not prev_by_pressed:
+                elif by_event:
                     new_mode = StreamMode.POSE
 
             # Handle mode transitions before running loop
             if new_mode != current_mode:
+                if current_mode == StreamMode.OFF and new_mode != StreamMode.OFF:
+                    pose_streamer.close_preview_before_control()
+
                 if current_mode == StreamMode.POSE:
                     pose_streamer.on_mode_exit()
 
@@ -2131,7 +2726,9 @@ def run_pico_manager(
                     planner_streamer.recalibrate_for_vr3pt()
 
             # Run one iteration of the new mode
-            if new_mode == StreamMode.POSE:
+            if new_mode == StreamMode.OFF:
+                pose_streamer.render_preview_once()
+            elif new_mode == StreamMode.POSE:
                 pose_streamer.run_once()
             elif (
                 new_mode == StreamMode.PLANNER
@@ -2158,12 +2755,38 @@ def run_pico_manager(
                 current_mode = new_mode
 
             # Mode-independent: send manager_state for data exporter
-            toggle_dc_tmp = bool(a_pressed) and left_grip_mgr > 0.5
-            toggle_da_tmp = bool(b_pressed) and left_grip_mgr > 0.5
-            toggle_dc = toggle_dc_tmp and not prev_toggle_dc
-            toggle_da = toggle_da_tmp and not prev_toggle_da
-            prev_toggle_dc = toggle_dc_tmp
-            prev_toggle_da = toggle_da_tmp
+            # Match the controls used for 8_16_dun_pick_box_2:
+            # left grip+A toggles recording; left grip+B discards the episode.
+            record_pressed = bool(
+                left_grip_mgr > 0.5
+                and a_pressed
+                and not (b_pressed or x_pressed or y_pressed)
+            )
+            abort_pressed = bool(
+                left_grip_mgr > 0.5
+                and b_pressed
+                and not (a_pressed or x_pressed or y_pressed)
+            )
+            if controls_fresh:
+                record_event = record_latch.update(
+                    record_pressed,
+                    not (left_grip_mgr > 0.5 or a_pressed),
+                    now_s,
+                )
+                abort_event = abort_latch.update(
+                    abort_pressed,
+                    not (left_grip_mgr > 0.5 or b_pressed),
+                    now_s,
+                )
+            else:
+                record_event = abort_event = False
+            controls_active = current_mode != StreamMode.OFF
+            toggle_dc = controls_active and record_event
+            toggle_da = controls_active and abort_event
+            if toggle_dc:
+                print("[Manager] Recording start/stop requested")
+            if toggle_da:
+                print("[Manager] Recording discard requested")
             socket.send(
                 pack_pose_message(
                     {
@@ -2175,16 +2798,12 @@ def run_pico_manager(
                 )
             )
 
-            prev_ax_pressed = ax_pressed
-            prev_by_pressed = by_pressed
-            prev_start_combo = start_combo
-            prev_left_axis_click = left_axis_click
-
     except KeyboardInterrupt:
         print("\nStopping manager...")
     finally:
         # Cleanup resources
         reader.stop()
+        pose_streamer.close()
         three_point.close()
         socket.close()
         context.term()
@@ -2202,6 +2821,24 @@ if __name__ == "__main__":
         "--num_frames_to_send", type=int, default=5, help="Number of frames to send (default: 200)"
     )
     parser.add_argument("--target_fps", type=int, default=50, help="Target loop FPS (default: 50)")
+    parser.add_argument(
+        "--slow_frame_log",
+        type=str,
+        default="",
+        help="JSONL path for optional slow-frame diagnostics (default: disabled)",
+    )
+    parser.add_argument(
+        "--slow_frame_threshold_ms",
+        type=float,
+        default=40.0,
+        help="Write a slow-frame record above this duration in ms (default: 40)",
+    )
+    parser.add_argument(
+        "--stall_stack_threshold_ms",
+        type=float,
+        default=100.0,
+        help="Capture thread stacks when one stage exceeds this duration in ms (default: 100)",
+    )
     parser.add_argument(
         "--cuda", action="store_true", help="Use CUDA for tensors and model (default: CPU)"
     )
@@ -2326,6 +2963,9 @@ if __name__ == "__main__":
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
             input_source=args.input_source,
+            slow_frame_log=args.slow_frame_log,
+            slow_frame_threshold_ms=args.slow_frame_threshold_ms,
+            stall_stack_threshold_ms=args.stall_stack_threshold_ms,
         )
     else:
         # Run legacy single-thread pose streaming
@@ -2342,4 +2982,7 @@ if __name__ == "__main__":
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
             input_source=args.input_source,
+            slow_frame_log=args.slow_frame_log,
+            slow_frame_threshold_ms=args.slow_frame_threshold_ms,
+            stall_stack_threshold_ms=args.stall_stack_threshold_ms,
         )

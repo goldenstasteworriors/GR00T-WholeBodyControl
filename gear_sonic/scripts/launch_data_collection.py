@@ -181,6 +181,18 @@ class DataCollectionLaunchConfig:
     pico_waist_tracking: bool = False
     """Enable waist tracking on the teleop streamer."""
 
+    pico_slow_frame_diagnostics: bool = True
+    """Enable low-overhead PICO/SMPL slow-frame diagnostics."""
+
+    pico_slow_frame_log: str = ""
+    """Slow-frame JSONL path. Empty uses logs/pico_slow_frames_<dataset>.jsonl."""
+
+    pico_slow_frame_threshold_ms: float = 40.0
+    """Write a PICO slow-frame record above this duration in milliseconds."""
+
+    pico_stall_stack_threshold_ms: float = 100.0
+    """Capture Python thread stacks when one PICO stage exceeds this duration."""
+
     pico_zmq_feedback_host: str = ""
     """Host for PICO frozen-target feedback (g1_debug). Defaults to state_zmq_host."""
 
@@ -209,8 +221,14 @@ class DataCollectionLaunchConfig:
     inspire_hand_state_frequency: float = 50.0
     """Modbus hand joint-angle feedback polling frequency."""
 
+    inspire_thumb_rotate_default: float | None = None
+    """Fixed thumb-rotation target applied at hand-bridge startup and thereafter."""
+
     left_hand_only: bool = False
     """Drive only the left Inspire hand and store the right hand as synthetic open data."""
+
+    right_hand_only: bool = False
+    """Drive only the right Inspire hand and store the left hand as synthetic open data."""
 
     # Data exporter options
     task_prompt: str = "demo"
@@ -261,6 +279,12 @@ class DataCollectionLaunchConfig:
     # Camera viewer
     camera_viewer: bool = True
     """Start the camera viewer pane."""
+
+    no_camera: bool = False
+    """Collect state/actions without a camera or video files."""
+
+    camera_http_url: str = ""
+    """Direct single-camera HTTP MJPEG URL. When set, it is mapped to ego_view."""
 
     camera_host: str = "192.168.123.164"
     """Camera server host (shared by data exporter and viewer)."""
@@ -317,6 +341,26 @@ def _check_prerequisites(config: DataCollectionLaunchConfig):
     if config.pico_input_source not in {"xrt", "isaac-teleop"}:
         errors.append("--pico-input-source must be one of: xrt, isaac-teleop")
 
+    if config.left_hand_only and config.right_hand_only:
+        errors.append("--left-hand-only and --right-hand-only are mutually exclusive")
+    if config.no_camera and config.record_wrist_cameras:
+        errors.append("--no-camera cannot be combined with --record-wrist-cameras")
+
+    if config.camera_http_url and not config.camera_http_url.startswith(
+        ("http://", "https://")
+    ):
+        errors.append("--camera-http-url must start with http:// or https://")
+    if config.camera_http_url and config.record_wrist_cameras:
+        errors.append(
+            "--record-wrist-cameras is unavailable with a single direct MJPEG URL"
+        )
+
+    if config.pico_slow_frame_diagnostics:
+        if config.pico_slow_frame_threshold_ms <= 0:
+            errors.append("--pico-slow-frame-threshold-ms must be positive")
+        if config.pico_stall_stack_threshold_ms <= 0:
+            errors.append("--pico-stall-stack-threshold-ms must be positive")
+
     if config.inspire_hand_bridge and not config.sim:
         available_interfaces = {name for _, name in socket.if_nameindex()}
         if config.inspire_hand_network not in available_interfaces:
@@ -329,6 +373,10 @@ def _check_prerequisites(config: DataCollectionLaunchConfig):
             errors.append(
                 "--inspire-hand-state-frequency must be in (0, 50]"
             )
+        if config.inspire_thumb_rotate_default is not None and not (
+            0.0 <= config.inspire_thumb_rotate_default <= 1.0
+        ):
+            errors.append("--inspire-thumb-rotate-default must be in [0, 1]")
 
     if config.enable_sonic_publish:
         if config.sim:
@@ -547,6 +595,13 @@ def main(config: DataCollectionLaunchConfig):
     runtime_log_file = repo_root / "logs" / f"data_exporter_{log_tag}.log"
     latency_raw_file = repo_root / "logs" / f"latency_exporter_{log_tag}.jsonl"
     latency_combined_file = repo_root / "logs" / f"latency_combined_{log_tag}.jsonl"
+    pico_slow_frame_file = None
+    if config.pico_slow_frame_diagnostics:
+        pico_slow_frame_file = Path(config.pico_slow_frame_log).expanduser()
+        if not config.pico_slow_frame_log:
+            pico_slow_frame_file = repo_root / "logs" / f"pico_slow_frames_{log_tag}.jsonl"
+        elif not pico_slow_frame_file.is_absolute():
+            pico_slow_frame_file = repo_root / pico_slow_frame_file
 
     _check_prerequisites(config)
     _kill_existing_session()
@@ -585,17 +640,37 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Teleop input:    {config.pico_input_source}")
     if config.deploy_checkpoint:
         print(f"  Checkpoint:      {config.deploy_checkpoint}")
-    print(f"  Camera:          {config.camera_host}:{config.camera_port}")
+    camera_source = (
+        config.camera_http_url
+        if config.camera_http_url
+        else f"{config.camera_host}:{config.camera_port}"
+    )
+    print(f"  Camera:          {'Disabled (no video)' if config.no_camera else camera_source}")
     print(f"  Sonic ZMQ:       {config.sonic_zmq_host}:{config.sonic_zmq_port}")
     print(f"  State ZMQ:       {state_zmq_host}:{config.state_zmq_port}")
     print(f"  PICO feedback:   {pico_feedback_host}:{config.pico_zmq_feedback_port}")
     print(f"  Inspire bridge:  {'Yes' if config.inspire_hand_bridge else 'No'}")
     if config.inspire_hand_bridge:
         print(f"  Inspire config:  {config.inspire_hand_pose_config}")
-    print(f"  Hand data mode:  {'left-only' if config.left_hand_only else 'both'}")
+    hand_data_mode = (
+        "left-only"
+        if config.left_hand_only
+        else "right-only"
+        if config.right_hand_only
+        else "both"
+    )
+    print(f"  Hand data mode:  {hand_data_mode}")
+    print(
+        "  Thumb rotation:  "
+        + (
+            f"fixed at {config.inspire_thumb_rotate_default:.3f}"
+            if config.inspire_thumb_rotate_default is not None
+            else "from hand pose config"
+        )
+    )
     print("  Hand schema:     G1 body 29 + Inspire left 6 + right 6 (41 DOF)")
     print(f"  DC frequency:    {config.data_exporter_frequency} Hz")
-    print(f"  Camera viewer:   {'Yes' if config.camera_viewer else 'No'}")
+    print(f"  Camera viewer:   {'Yes' if config.camera_viewer and not config.no_camera else 'No'}")
     print(f"  Wrist cameras:   {'Yes' if config.record_wrist_cameras else 'No'}")
     print(f"  Profile timing:  {'Yes' if config.profile_timing else 'No'}")
     print(f"  Overwrite data:  {'Yes' if config.overwrite_existing_dataset else 'No'}")
@@ -604,6 +679,10 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Latency curves:  {'Yes' if config.latency_dashboard else 'No'}")
     print(f"  PC IP (for PICO): {local_ip}")
     print(f"  Teleop vis:      vr3pt={config.pico_vis_vr3pt} smpl={config.pico_vis_smpl}")
+    print(
+        "  PICO slow log:   "
+        + (str(pico_slow_frame_file) if pico_slow_frame_file is not None else "Disabled")
+    )
     print("=" * 60)
 
     _create_tmux_session()
@@ -618,6 +697,13 @@ def main(config: DataCollectionLaunchConfig):
         subprocess.run(
             ["tmux", "new-window", "-t", SESSION_NAME, "-n", "inspire_hand"],
         )
+        hand_bridge_side = (
+            "left"
+            if config.left_hand_only
+            else "right"
+            if config.right_hand_only
+            else "both"
+        )
         inspire_cmd = (
             f"cd {repo_root} && "
             f"source .venv_teleop/bin/activate && "
@@ -627,11 +713,16 @@ def main(config: DataCollectionLaunchConfig):
             f"--left-ip {shlex.quote(config.inspire_left_ip)} "
             f"--right-ip {shlex.quote(config.inspire_right_ip)} "
             f"--hand-pose-config {shlex.quote(config.inspire_hand_pose_config)} "
-            f"--side {'left' if config.left_hand_only else 'both'} "
+            f"--side {hand_bridge_side} "
             f"--publish-state "
             f"--state-publish-frequency {config.inspire_hand_state_frequency} "
             f"--dds-pose-mode profile"
         )
+        if config.inspire_thumb_rotate_default is not None:
+            inspire_cmd += (
+                " --thumb-rotate-default "
+                f"{config.inspire_thumb_rotate_default}"
+            )
         hand_target = f"{SESSION_NAME}:inspire_hand"
         subprocess.run(
             ["tmux", "send-keys", "-t", hand_target, inspire_cmd, "C-m"],
@@ -708,12 +799,18 @@ def main(config: DataCollectionLaunchConfig):
         pico_cmd += " --vis_smpl"
     if config.pico_waist_tracking:
         pico_cmd += " --waist_tracking"
+    if pico_slow_frame_file is not None:
+        pico_cmd += (
+            f" --slow_frame_log {shlex.quote(str(pico_slow_frame_file))}"
+            f" --slow_frame_threshold_ms {config.pico_slow_frame_threshold_ms}"
+            f" --stall_stack_threshold_ms {config.pico_stall_stack_threshold_ms}"
+        )
 
     print("Starting teleop streamer (pane 2)...")
     _send_to_pane(1, pico_cmd, wait=2.0)
 
     # --- Pane 3 (bottom-right): Camera Viewer ---
-    if config.camera_viewer:
+    if config.camera_viewer and not config.no_camera:
         viewer_cmd = (
             f"cd {repo_root} && "
             f"source .venv_data_collection/bin/activate && "
@@ -721,6 +818,10 @@ def main(config: DataCollectionLaunchConfig):
             f"--camera-host {config.camera_host} "
             f"--camera-port {config.camera_port}"
         )
+        if config.camera_http_url:
+            viewer_cmd += (
+                f" --camera-http-url {shlex.quote(config.camera_http_url)}"
+            )
         if config.profile_timing:
             viewer_cmd += f" --profile-timing --profile-interval {config.profile_interval}"
         print("Starting camera viewer (pane 3)...")
@@ -746,18 +847,26 @@ def main(config: DataCollectionLaunchConfig):
         f"--latency-log-file {shlex.quote(str(latency_raw_file))} "
         f"--latency-log-interval {config.latency_sample_interval}"
     )
+    if config.camera_http_url:
+        exporter_cmd += (
+            f" --camera-http-url {shlex.quote(config.camera_http_url)}"
+        )
     if config.quiet_data_exporter:
         exporter_cmd += " --quiet-console"
     if config.profile_timing:
         exporter_cmd += f" --profile-timing --profile-interval {config.profile_interval}"
     if config.dataset_name:
         exporter_cmd += f" --dataset-name '{config.dataset_name}'"
+    if config.no_camera:
+        exporter_cmd += " --no-camera"
     if config.record_wrist_cameras:
         exporter_cmd += " --record-wrist-cameras"
     if config.overwrite_existing_dataset:
         exporter_cmd += " --overwrite-existing-dataset"
     if config.left_hand_only:
         exporter_cmd += " --left-hand-only"
+    if config.right_hand_only:
+        exporter_cmd += " --right-hand-only"
     if not config.text_to_speech:
         exporter_cmd += " --no-text-to-speech"
 
@@ -811,7 +920,7 @@ def main(config: DataCollectionLaunchConfig):
     )
     print("    Pane 1 (bottom-left):  Teleop Streamer")
     print("    Pane 2 (top-right):    Data Exporter  <-- you are here")
-    if config.camera_viewer:
+    if config.camera_viewer and not config.no_camera:
         print("    Pane 3 (bottom-right): Camera Viewer")
     if config.latency_dashboard:
         print("  Window 'latency':")

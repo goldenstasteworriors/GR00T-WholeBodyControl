@@ -30,6 +30,7 @@ THUMB_ROTATE_INDEX = 5
 DEFAULT_OPEN_Q = [1.0, 1.0, 1.0, 1.0, 1.0, 0.2]
 DEFAULT_GRASP_Q = [0.15, 0.15, 0.15, 0.15, 1.0, 0.2]
 DEFAULT_THUMB_ROTATE = None
+DEFAULT_DDS_STARTUP_HOLD_S = 0.5
 DEFAULT_HAND_POSE_CONFIG = (
     Path(__file__).resolve().parents[2]
     / "gear_sonic"
@@ -210,7 +211,7 @@ def normalized_to_angle(
     return [int(round(v * 1000.0)) for v in q]
 
 
-def load_pose_config(path: str) -> dict[str, list[float]]:
+def load_pose_config(path: str) -> dict[str, list[float] | float | None]:
     with Path(path).expanduser().open("r", encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, dict):
@@ -220,9 +221,20 @@ def load_pose_config(path: str) -> dict[str, list[float]]:
     grasp_q = data.get("grasp", data.get("closed"))
     if open_q is None or grasp_q is None:
         raise ValueError(f"{path} must define 'open' and 'grasp' (or 'closed')")
+    thumb_rotate_default = data.get("thumb_rotate_default")
+    if thumb_rotate_default is not None:
+        if isinstance(thumb_rotate_default, bool) or not isinstance(
+            thumb_rotate_default, (int, float)
+        ):
+            raise ValueError(f"{path}: thumb_rotate_default must be a number or null")
+        thumb_rotate_default = float(thumb_rotate_default)
+        if not 0.0 <= thumb_rotate_default <= 1.0:
+            raise ValueError(f"{path}: thumb_rotate_default must be in [0.0, 1.0]")
+
     return {
         "open": validate_normalized_pose(open_q, "open"),
         "grasp": validate_normalized_pose(grasp_q, "grasp"),
+        "thumb_rotate_default": thumb_rotate_default,
     }
 
 
@@ -232,7 +244,11 @@ def resolve_hand_profiles(args) -> None:
         "grasp": DEFAULT_GRASP_Q.copy(),
     }
     if args.hand_pose_config:
-        profiles.update(load_pose_config(args.hand_pose_config))
+        config = load_pose_config(args.hand_pose_config)
+        profiles["open"] = config["open"]
+        profiles["grasp"] = config["grasp"]
+        if args.thumb_rotate_default is None:
+            args.thumb_rotate_default = config["thumb_rotate_default"]
     if args.open_q is not None:
         profiles["open"] = validate_normalized_pose(args.open_q, "--open-q")
     if args.grasp_q is not None:
@@ -240,8 +256,8 @@ def resolve_hand_profiles(args) -> None:
 
     args.open_q = profiles["open"]
     args.grasp_q = profiles["grasp"]
-    args.open_angle = normalized_to_angle(args.open_q)
-    args.grasp_angle = normalized_to_angle(args.grasp_q)
+    args.open_angle = normalized_to_angle(args.open_q, args.thumb_rotate_default)
+    args.grasp_angle = normalized_to_angle(args.grasp_q, args.thumb_rotate_default)
 
 
 def profile_pose_from_dds(q: Iterable[float], args) -> list[float]:
@@ -260,6 +276,27 @@ def send_to_target(hands: dict[str, InspireModbusHand], target: str, values: lis
     for side in sides:
         hands[side].set_angle(values, speed=speed, force=force)
         print(f"sent {side}: {values}")
+
+
+def apply_startup_thumb_rotate(
+    args,
+    hands: dict[str, InspireModbusHand],
+    active_sides: list[str],
+) -> None:
+    """Set only thumb rotation before DDS commands begin, preserving other joints."""
+    if args.thumb_rotate_default is None:
+        return
+
+    target = float(np.clip(args.thumb_rotate_default, 0.0, 1.0))
+    for side in active_sides:
+        current_q = hands[side].read_angle_normalized()
+        current_q[THUMB_ROTATE_INDEX] = target
+        angles = normalized_to_angle(current_q, target)
+        hands[side].set_angle(angles, speed=args.speed, force=args.force)
+        print(
+            f"startup thumb rotate {side}: normalized={target:.3f} "
+            f"angle={angles[THUMB_ROTATE_INDEX]} (other channels preserved)"
+        )
 
 
 def run_command(args, hands: dict[str, InspireModbusHand]) -> None:
@@ -378,6 +415,8 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
     profile_samples = []
     last_profile_time = time.monotonic()
     active_sides = ["left", "right"] if args.side == "both" else [args.side]
+    apply_startup_thumb_rotate(args, hands, active_sides)
+    command_enable_time = time.monotonic() + max(float(args.dds_startup_hold_s), 0.0)
 
     def callback(msg: MotorCmds_) -> None:
         nonlocal last_command, last_attempt_command
@@ -385,6 +424,9 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
         callback_start = time.perf_counter()
         if len(msg.cmds) < 12:
             print(f"skip short inspire command: {len(msg.cmds)}")
+            return
+
+        if time.monotonic() < command_enable_time:
             return
 
         right_q = tuple(float(msg.cmds[i].q) for i in range(6))
@@ -476,6 +518,7 @@ def run_dds_bridge(args, hands: dict[str, InspireModbusHand]) -> None:
     print(f"Hand open q={args.open_q} angle={args.open_angle}")
     print(f"Hand grasp q={args.grasp_q} angle={args.grasp_angle}")
     print(f"DDS pose mode={args.dds_pose_mode}")
+    print(f"DDS startup command hold={max(float(args.dds_startup_hold_s), 0.0):.2f}s")
     try:
         while True:
             time.sleep(1.0)
@@ -525,8 +568,8 @@ def parse_args():
         type=float,
         default=DEFAULT_THUMB_ROTATE,
         help=(
-            "Deprecated override for DDS passthrough thumb rotation. "
-            "Prefer setting the sixth value in --open-q/--grasp-q."
+            "Optional fixed normalized thumb-rotation target in [0, 1]. "
+            "When set, apply it at DDS bridge startup and preserve it in every command."
         ),
     )
     parser.add_argument(
@@ -551,7 +594,17 @@ def parse_args():
         default=str(DEFAULT_HAND_POSE_CONFIG),
         help=(
             "Optional JSON with {'open': [6 values], 'grasp': [6 values]}. "
-            "CLI --open-q/--grasp-q override this file."
+            "It may also define 'thumb_rotate_default' as a number or null. "
+            "CLI pose and thumb options override this file."
+        ),
+    )
+    parser.add_argument(
+        "--dds-startup-hold-s",
+        type=float,
+        default=DEFAULT_DDS_STARTUP_HOLD_S,
+        help=(
+            "Ignore transient DDS hand commands for this many seconds after the "
+            "bridge starts. State publishing remains active."
         ),
     )
     parser.add_argument(

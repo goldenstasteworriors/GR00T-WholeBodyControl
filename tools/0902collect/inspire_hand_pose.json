@@ -1,0 +1,14 @@
+{
+  "_channel_order": [
+    "little",
+    "ring",
+    "middle",
+    "index",
+    "thumb_bend",
+    "thumb_rotate"
+  ],
+  "_value_convention": "1.0=open/outward, 0.0=closed/inward",
+  "open": [0.853, 0.849, 0.848, 0.849, 1.0, 0.28],
+  "grasp": [0.0, 0.3, 0.0, 0.0, 0.7, 0.28],
+  "thumb_rotate_default": 0.28
+}

@@ -31,12 +31,18 @@ import cv2
 import numpy as np
 import tyro
 
-from gear_sonic.camera.composed_camera import ComposedCameraClientSensor
+from gear_sonic.camera.composed_camera import (
+    ComposedCameraClientSensor,
+    ComposedCameraHttpClient,
+)
 
 
 @dataclass
 class CameraViewerConfig:
     """CLI config for the ROS-free camera viewer."""
+
+    camera_http_url: str = ""
+    """Direct single-camera HTTP MJPEG URL. When set, it is mapped to ego_view."""
 
     camera_host: str = "localhost"
     """Camera server hostname."""
@@ -82,7 +88,16 @@ def _opencv_highgui_available() -> bool:
 
 
 def main(config: CameraViewerConfig):
-    client = ComposedCameraClientSensor(server_ip=config.camera_host, port=config.camera_port)
+    if config.camera_http_url:
+        client = ComposedCameraHttpClient(
+            config.camera_http_url,
+            direct_stream_name="ego_view",
+        )
+    else:
+        client = ComposedCameraClientSensor(
+            server_ip=config.camera_host,
+            port=config.camera_port,
+        )
 
     print("Waiting for first camera frame...")
     sample = None

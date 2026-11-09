@@ -46,7 +46,10 @@ from gear_sonic.data.features_sonic_vla import (
     get_wrist_camera_features,
     get_wrist_camera_modality_config,
 )
-from gear_sonic.camera.composed_camera import ComposedCameraClientSensor
+from gear_sonic.camera.composed_camera import (
+    ComposedCameraClientSensor,
+    ComposedCameraHttpClient,
+)
 from gear_sonic.utils.data_collection.episode_state import EpisodeState
 from gear_sonic.utils.data_collection.keyboard_subscriber import ZMQKeyboardSubscriber
 from gear_sonic.utils.data_collection.telemetry import Telemetry
@@ -93,10 +96,19 @@ class SonicDataExporterConfig:
     left_hand_only: bool = False
     """Record the right-hand native Inspire fields as a synthetic open pose."""
 
+    right_hand_only: bool = False
+    """Record the left-hand native Inspire fields as a synthetic open pose."""
+
     inspire_hand_pose_config: str = str(DEFAULT_INSPIRE_HAND_POSE_CONFIG)
     """JSON file containing native six-motor Inspire open and grasp poses."""
 
     # Camera
+    camera_http_url: str = ""
+    """Direct single-camera HTTP MJPEG URL. When set, it is mapped to ego_view."""
+
+    no_camera: bool = False
+    """Collect state/actions without camera connections or video features."""
+
     camera_host: str = "localhost"
     """Camera server host."""
 
@@ -417,6 +429,7 @@ class GrootDataCollector:
         self,
         camera_host: str,
         camera_port: int,
+        camera_http_url: str,
         data_exporter: Gr00tDataExporter,
         robot_model,
         text_to_speech=None,
@@ -431,14 +444,19 @@ class GrootDataCollector:
         status_callback=None,
         latency_recorder: LatencyRecorder | None = None,
         left_hand_only: bool = False,
+        right_hand_only: bool = False,
         inspire_open_q: np.ndarray | None = None,
         inspire_grasp_q: np.ndarray | None = None,
+        no_camera: bool = False,
     ):
         self.text_to_speech = text_to_speech
         self.audio_cue = audio_cue
         self.status_callback = status_callback
         self.latency_recorder = latency_recorder
         self.left_hand_only = left_hand_only
+        self.right_hand_only = right_hand_only
+        if self.left_hand_only and self.right_hand_only:
+            raise ValueError("left_hand_only and right_hand_only are mutually exclusive")
         self.inspire_open_q = np.asarray(inspire_open_q, dtype=np.float64)
         self.inspire_grasp_q = np.asarray(inspire_grasp_q, dtype=np.float64)
         if self.inspire_open_q.shape != (INSPIRE_HAND_DOF,):
@@ -455,7 +473,18 @@ class GrootDataCollector:
         self._episode_state = EpisodeState()
         self._keyboard_listener = ZMQKeyboardSubscriber()
 
-        self._image_subscriber = ComposedCameraClientSensor(server_ip=camera_host, port=camera_port)
+        if no_camera:
+            self._image_subscriber = None
+        elif camera_http_url:
+            self._image_subscriber = ComposedCameraHttpClient(
+                camera_http_url,
+                direct_stream_name="ego_view",
+            )
+        else:
+            self._image_subscriber = ComposedCameraClientSensor(
+                server_ip=camera_host,
+                port=camera_port,
+            )
 
         self.obs_act_buffer = deque(maxlen=100)
         self.latest_image_msg = None
@@ -861,7 +890,9 @@ class GrootDataCollector:
     def _add_data_frame(self):
         t_start = time.monotonic()
 
-        if self.latest_proprio_msg is None or self.latest_image_msg is None:
+        if self.latest_proprio_msg is None or (
+            self._image_subscriber is not None and self.latest_image_msg is None
+        ):
             self._print_and_say(
                 f"Waiting for message. "
                 f"Avail msg: proprio {self.latest_proprio_msg is not None} | "
@@ -880,17 +911,27 @@ class GrootDataCollector:
         assert self.latest_proprio_msg is not None
         proprio = self.latest_proprio_msg
 
-        left_hand_q = self._native_inspire_state(proprio["left_hand_q"], "left_hand_q")
-        right_hand_q = self._native_inspire_state(proprio["right_hand_q"], "right_hand_q")
-        left_hand_action = self._legacy_hand_action_to_inspire(
-            proprio["last_left_hand_action"]
-        )
-        right_hand_action = self._legacy_hand_action_to_inspire(
-            proprio["last_right_hand_action"]
-        )
+        if self.right_hand_only:
+            left_hand_q = self.inspire_open_q.copy()
+            left_hand_action = self.inspire_open_q.copy()
+        else:
+            left_hand_q = self._native_inspire_state(
+                proprio["left_hand_q"], "left_hand_q"
+            )
+            left_hand_action = self._legacy_hand_action_to_inspire(
+                proprio["last_left_hand_action"]
+            )
+
         if self.left_hand_only:
             right_hand_q = self.inspire_open_q.copy()
             right_hand_action = self.inspire_open_q.copy()
+        else:
+            right_hand_q = self._native_inspire_state(
+                proprio["right_hand_q"], "right_hand_q"
+            )
+            right_hand_action = self._legacy_hand_action_to_inspire(
+                proprio["last_right_hand_action"]
+            )
 
         observation_state = np.concatenate(
             [proprio["body_q"], left_hand_q, right_hand_q]
@@ -899,13 +940,16 @@ class GrootDataCollector:
             [proprio["last_action"], left_hand_action, right_hand_action]
         ).astype(np.float64, copy=False)
 
+        legacy_left_hand_q = proprio["left_hand_q"]
         legacy_right_hand_q = proprio["right_hand_q"]
+        if self.right_hand_only:
+            legacy_left_hand_q = np.zeros_like(legacy_left_hand_q)
         if self.left_hand_only:
             legacy_right_hand_q = np.zeros_like(legacy_right_hand_q)
 
         whole_q = self.robot_model.get_configuration_from_actuated_joints(
             body_actuated_joint_values=proprio["body_q"],
-            left_hand_actuated_joint_values=proprio["left_hand_q"],
+            left_hand_actuated_joint_values=legacy_left_hand_q,
             right_hand_actuated_joint_values=legacy_right_hand_q,
         )
 
@@ -1204,7 +1248,7 @@ class GrootDataCollector:
                         self._poll_sonic_zmq_messages()
 
                     with self.telemetry.timer("poll_image"):
-                        img_msg = self._image_subscriber.read()
+                        img_msg = self._image_subscriber.read() if self._image_subscriber is not None else None
                         if img_msg is not None:
                             self.latest_image_msg = img_msg
                             self._last_image_receive_monotonic = time.monotonic()
@@ -1259,11 +1303,40 @@ class GrootDataCollector:
 
 
 def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
+    if config.no_camera and config.record_wrist_cameras:
+        raise ValueError("--no-camera cannot be combined with --record-wrist-cameras")
+    if config.left_hand_only and config.right_hand_only:
+        raise ValueError("--left-hand-only and --right-hand-only are mutually exclusive")
+    if config.camera_http_url and not config.camera_http_url.startswith(
+        ("http://", "https://")
+    ):
+        raise ValueError("--camera-http-url must start with http:// or https://")
+    if config.camera_http_url and config.record_wrist_cameras:
+        raise ValueError(
+            "--record-wrist-cameras is unavailable with a single direct MJPEG URL"
+        )
+
     g1_rm = get_g1_robot_model()
     inspire_profiles = load_inspire_hand_profiles(config.inspire_hand_pose_config)
 
     dataset_features = get_features_sonic_inspire6(g1_rm)
     modality_config = get_modality_config_sonic_inspire6(g1_rm)
+
+    if config.no_camera:
+        dataset_features = {
+            key: value for key, value in dataset_features.items()
+            if value.get("dtype") not in ("image", "video")
+        }
+        modality_config["video"] = {}
+        print("[Camera] Disabled: collecting state/actions without video")
+    existing_info = Path(config.root_output_dir) / config.dataset_name / "meta" / "info.json"
+    if existing_info.is_file():
+        stored_features = json.loads(existing_info.read_text())["features"]
+        stored_has_video = any(
+            value.get("dtype") in ("image", "video") for value in stored_features.values()
+        )
+        if stored_has_video == config.no_camera:
+            raise ValueError("Camera mode differs from existing dataset; use a new dataset")
 
     if config.record_wrist_cameras:
         print("[Camera] Wrist cameras enabled — adding to dataset schema")
@@ -1300,10 +1373,33 @@ def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
         script_config={
             **robot_config,
             "record_wrist_cameras": config.record_wrist_cameras,
+            "camera_http_url": None if config.no_camera else config.camera_http_url or None,
+            "no_camera": config.no_camera,
             "schema_compatibility": "g1_inspire_41dof",
             "inspire_hand_pose_config": config.inspire_hand_pose_config,
-            "hand_data_mode": "left_only" if config.left_hand_only else "both",
-            "active_hands": ["left"] if config.left_hand_only else ["left", "right"],
+            "hand_data_mode": (
+                "left_only"
+                if config.left_hand_only
+                else "right_only"
+                if config.right_hand_only
+                else "both"
+            ),
+            "active_hands": (
+                ["left"]
+                if config.left_hand_only
+                else ["right"]
+                if config.right_hand_only
+                else ["left", "right"]
+            ),
+            "left_hand_data": {
+                "source": "synthetic" if config.right_hand_only else "hardware",
+                "default_pose": "open" if config.right_hand_only else None,
+                "default_inspire_6d": (
+                    inspire_profiles["open"].tolist()
+                    if config.right_hand_only
+                    else None
+                ),
+            },
             "right_hand_data": {
                 "source": "synthetic" if config.left_hand_only else "hardware",
                 "default_pose": "open" if config.left_hand_only else None,
@@ -1321,6 +1417,8 @@ def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
         robot_model=g1_rm,
         camera_host=config.camera_host,
         camera_port=config.camera_port,
+        camera_http_url=config.camera_http_url,
+        no_camera=config.no_camera,
         text_to_speech=text_to_speech,
         sonic_data_zmq_host=config.sonic_zmq_host,
         sonic_data_zmq_port=config.sonic_zmq_port,
@@ -1332,6 +1430,7 @@ def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
         status_callback=runtime_output.status,
         latency_recorder=latency_recorder,
         left_hand_only=config.left_hand_only,
+        right_hand_only=config.right_hand_only,
         inspire_open_q=inspire_profiles["open"],
         inspire_grasp_q=inspire_profiles["grasp"],
     )

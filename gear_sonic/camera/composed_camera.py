@@ -643,6 +643,12 @@ class _MjpegGrabber:
         self.url = url
         self.lock = threading.Lock()
         self.frame: np.ndarray | None = None
+        self.frame_timestamp: float | None = None
+        self.frame_monotonic: float | None = None
+        self.frame_sequence = 0
+        self.error: str | None = None
+        self._frame_times: deque[float] = deque(maxlen=60)
+        self._response = None
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -650,34 +656,87 @@ class _MjpegGrabber:
     def _run(self):
         import requests
 
-        resp = requests.get(self.url, stream=True, timeout=10)
-        buf = b""
-        for chunk in resp.iter_content(chunk_size=4096):
-            if not self._running:
-                break
-            buf += chunk
-            while True:
-                soi = buf.find(b"\xff\xd8")
-                if soi == -1:
+        reconnect_delay = 0.5
+        while self._running:
+            try:
+                with requests.Session() as session:
+                    # Camera streams are normally on a directly reachable LAN. Do not
+                    # send them through HTTP_PROXY, which can turn a local connection
+                    # failure into a misleading 502 response.
+                    session.trust_env = False
+                    with session.get(
+                        self.url, stream=True, timeout=(5, 10)
+                    ) as response:
+                        self._response = response
+                        response.raise_for_status()
+                        buf = b""
+                        for chunk in response.iter_content(chunk_size=4096):
+                            if not self._running:
+                                break
+                            if not chunk:
+                                continue
+                            buf += chunk
+                            while True:
+                                soi = buf.find(b"\xff\xd8")
+                                if soi == -1:
+                                    break
+                                eoi = buf.find(b"\xff\xd9", soi + 2)
+                                if eoi == -1:
+                                    break
+                                jpeg_bytes = buf[soi : eoi + 2]
+                                buf = buf[eoi + 2 :]
+                                frame = cv2.imdecode(
+                                    np.frombuffer(jpeg_bytes, dtype=np.uint8),
+                                    cv2.IMREAD_COLOR,
+                                )
+                                if frame is not None:
+                                    now_wall = time.time()
+                                    now_monotonic = time.monotonic()
+                                    with self.lock:
+                                        self.frame = frame
+                                        self.frame_timestamp = now_wall
+                                        self.frame_monotonic = now_monotonic
+                                        self.frame_sequence += 1
+                                        self._frame_times.append(now_monotonic)
+                                        self.error = None
+                        if self._running:
+                            raise RuntimeError("MJPEG stream ended")
+                reconnect_delay = 0.5
+            except Exception as exc:
+                if not self._running:
                     break
-                eoi = buf.find(b"\xff\xd9", soi + 2)
-                if eoi == -1:
-                    break
-                jpeg_bytes = buf[soi : eoi + 2]
-                buf = buf[eoi + 2 :]
-                frame = cv2.imdecode(
-                    np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR
-                )
-                if frame is not None:
-                    with self.lock:
-                        self.frame = frame
+                self.error = f"{type(exc).__name__}: {exc}"
+                print(f"HTTP MJPEG stream failed ({self.url}): {self.error}")
+                # Wait without blocking shutdown, then reconnect with bounded
+                # exponential backoff while preserving the latest valid frame.
+                deadline = time.monotonic() + reconnect_delay
+                while self._running and time.monotonic() < deadline:
+                    time.sleep(min(0.1, deadline - time.monotonic()))
+                reconnect_delay = min(reconnect_delay * 2.0, 5.0)
+            finally:
+                self._response = None
 
-    def get(self) -> np.ndarray | None:
+    def get(self) -> tuple[np.ndarray | None, float | None, float | None, int]:
         with self.lock:
-            return self.frame
+            return (
+                self.frame,
+                self.frame_timestamp,
+                self.frame_monotonic,
+                self.frame_sequence,
+            )
+
+    def fps(self) -> float:
+        with self.lock:
+            if len(self._frame_times) < 2:
+                return 0.0
+            elapsed = self._frame_times[-1] - self._frame_times[0]
+            return (len(self._frame_times) - 1) / elapsed if elapsed > 0 else 0.0
 
     def stop(self):
         self._running = False
+        response = self._response
+        if response is not None:
+            response.close()
         self._thread.join(timeout=2)
 
 
@@ -699,21 +758,39 @@ class ComposedCameraHttpClient:
         "right": "right_wrist",
     }
 
-    def __init__(self, base_url: str, camera_name_map: dict[str, str] | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        camera_name_map: dict[str, str] | None = None,
+        direct_stream_name: str | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.camera_name_map = (
             camera_name_map if camera_name_map is not None else self.DEFAULT_NAME_MAP
         )
         self.camera_names: list[str] = []
         self._grabbers: dict[str, _MjpegGrabber] = {}
-        self._connect()
+        self._latest_message: dict[str, Any] | None = None
+        self._last_sequences: dict[str, int] = {}
+        self._last_staleness_warning_time = 0.0
+        if direct_stream_name is not None:
+            self.camera_names = [direct_stream_name]
+            self._grabbers[direct_stream_name] = _MjpegGrabber(base_url)
+            print(
+                "HTTP MJPEG: direct stream "
+                f"{base_url} mapped to {direct_stream_name}"
+            )
+        else:
+            self._connect()
 
     def _connect(self):
         import requests
 
-        resp = requests.get(f"{self.base_url}/cameras", timeout=5)
-        resp.raise_for_status()
-        self.camera_names = resp.json()
+        with requests.Session() as session:
+            session.trust_env = False
+            resp = session.get(f"{self.base_url}/cameras", timeout=5)
+            resp.raise_for_status()
+            self.camera_names = resp.json()
         print(f"HTTP MJPEG: discovered cameras: {self.camera_names}")
         for name in self.camera_names:
             url = f"{self.base_url}/stream/{name}"
@@ -721,22 +798,51 @@ class ComposedCameraHttpClient:
 
     def read(self, blocking: bool = False, **kwargs) -> dict[str, Any] | None:
         images = {}
+        timestamps = {}
         any_ok = False
+        any_new = False
+        newest_frame_monotonic = None
         for name, grabber in self._grabbers.items():
-            frame = grabber.get()
+            frame, frame_timestamp, frame_monotonic, sequence = grabber.get()
             mapped_name = self.camera_name_map.get(name, name)
             if frame is not None:
                 images[mapped_name] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                timestamps[mapped_name] = frame_timestamp
                 any_ok = True
+                any_new = any_new or self._last_sequences.get(name) != sequence
+                self._last_sequences[name] = sequence
+                if frame_monotonic is not None:
+                    newest_frame_monotonic = max(
+                        newest_frame_monotonic or frame_monotonic,
+                        frame_monotonic,
+                    )
             else:
                 images[mapped_name] = None
         if not any_ok:
             return None
-        return {"images": images, "timestamps": {n: time.time() for n in images}}
+        if any_new or self._latest_message is None:
+            self._latest_message = {"images": images, "timestamps": timestamps}
+        elif newest_frame_monotonic is not None:
+            stale_for = time.monotonic() - newest_frame_monotonic
+            if (
+                stale_for > 0.1
+                and time.monotonic() - self._last_staleness_warning_time >= 2.0
+            ):
+                print(
+                    f"[WARNING] HTTP MJPEG image is {stale_for * 1000:.1f}ms old. "
+                    "Reusing stale image. Check the camera stream."
+                )
+                self._last_staleness_warning_time = time.monotonic()
+        return self._latest_message
 
     def close(self):
         for grabber in self._grabbers.values():
             grabber.stop()
+
+    def fps(self) -> float:
+        rates = [grabber.fps() for grabber in self._grabbers.values()]
+        rates = [rate for rate in rates if rate > 0]
+        return float(np.mean(rates)) if rates else 0.0
 
 
 if __name__ == "__main__":
