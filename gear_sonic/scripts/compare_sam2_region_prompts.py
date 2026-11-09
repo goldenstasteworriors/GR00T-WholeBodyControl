@@ -84,7 +84,7 @@ def run(args):
               "selection": "maximum SAM score among nonempty masks satisfying all positive and negative points",
               "examples": records}
     (args.output / "results.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-    lines = ["# 007 首帧：补充明确范围示范后的 SAM2 对照", "",
+    lines = [f"# {args.review_id} 首帧：明确范围提示后的 SAM2 对照", "",
              "这里的示范被转换为实际图像上的点和输入框，没有使用文字模型或示例图编码。未修改训练标注。",
              "", "左图是输入，右图是 SAM2 实际输出。青色框由模型掩码计算，未用人工示范框冒充输出。", ""]
     for record in records:

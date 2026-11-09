@@ -23,6 +23,49 @@ from review_lab_primitive_starts import task_grip_mask
 OFFSETS = [-60, -30, -15, -6, 0, 6, 15, 30, 45, 60, 90, 120]
 
 
+def export_target_identity(dataset, raw_root, output, review_ids=None):
+    """Show the actual pickup/release event to identify missing first-frame targets."""
+    annotations = json.loads((dataset / "initial_ego_boxes/review_v3/annotations.json").read_text())
+    missing = {r["review_id"] for r in annotations["episodes"] if r["task"] in annotations["rules"] and not r["targets"]}
+    if review_ids is not None:
+        missing = set(review_ids)
+    rows = json.loads((dataset / "meta/segment_provenance.json").read_text())
+    output.mkdir(parents=True, exist_ok=False)
+    font = ImageFont.truetype("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 15)
+    manifests = []
+    for row in rows:
+        rid = row["review_id"]
+        if rid not in missing:
+            continue
+        source = raw_root / row["dataset"]
+        info = json.loads((source / "meta/info.json").read_text())
+        df = pd.read_parquet(episode_path(source, info, row["episode"]))
+        action = np.stack(df["action.wbc"])
+        start, end = row["start_frame"], row["end_frame"]
+        column = -2 if row["task"] == "TAKE_DROPPER_AND_ASPIRATE" else -1
+        values = action[start:end, column]
+        changes = np.flatnonzero(values < 4 if row["task"].startswith("TAKE_") else values > 4)
+        event = start + int(changes[0]) if len(changes) else (start + end) // 2
+        indexes = sorted({start, max(start, event - 15), min(end - 1, event + 15), end - 1})
+        folder = output / rid
+        folder.mkdir()
+        views = ["observation.images.ego_view", "observation.images.right_wrist"]
+        if row["task"] == "TAKE_DROPPER_AND_ASPIRATE":
+            views[1] = "observation.images.left_wrist"
+        board = Image.new("RGB", (640 * len(indexes), 2 * 520), "#14202b")
+        draw = ImageDraw.Draw(board)
+        for j, view in enumerate(views):
+            images = read_frames(episode_path(source, info, row["episode"], view), indexes, info["fps"])
+            for k, index in enumerate(indexes):
+                images[index].save(folder / f"{view.rsplit('.',1)[-1]}_f{index:06d}.jpg", quality=96)
+                board.paste(images[index], (k * 640, j * 520 + 40))
+                draw.text((k * 640 + 5, j * 520), f"{rid} | {view.rsplit('.',1)[-1]} | f{index} ({index-start:+d})", font=font, fill="white")
+        board.save(output / f"{rid}.jpg", quality=95)
+        manifests.append({**row, "gripper_event_frame": event, "sampled_frames": indexes})
+        print(rid, event, flush=True)
+    (output / "manifest.json").write_text(json.dumps(manifests, ensure_ascii=False, indent=2) + "\n")
+
+
 def export_overviews(output):
     data = json.loads((output / "temporal_review.json").read_text())
     rows = [r for r in data["episodes"] if r["annotation_method"] != "unresolved"]
