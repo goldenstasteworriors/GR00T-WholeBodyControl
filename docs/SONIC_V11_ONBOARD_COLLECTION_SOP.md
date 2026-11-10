@@ -190,7 +190,7 @@ mkdir -p /home/unitree/VLA
 cd /home/unitree/VLA
 git clone git@github.com:goldenstasteworriors/GR00T-WholeBodyControl.git
 cd GR00T-WholeBodyControl
-git checkout 4ad2687808b44e3ef126b998fc3fc0972121f6e4
+git checkout 3c7bf4acfb2b93fd3168cf27143c95871f60ea11
 git submodule update --init --recursive
 git lfs pull
 git rev-parse HEAD
@@ -203,7 +203,7 @@ mkdir -p "$HOME/sonic_v11"
 cd "$HOME/sonic_v11"
 git clone git@github.com:goldenstasteworriors/GR00T-WholeBodyControl.git
 cd GR00T-WholeBodyControl
-git checkout 4ad2687808b44e3ef126b998fc3fc0972121f6e4
+git checkout 3c7bf4acfb2b93fd3168cf27143c95871f60ea11
 git submodule update --init --recursive
 git lfs pull
 git rev-parse HEAD
@@ -276,8 +276,7 @@ sha256sum gear_sonic_deploy/policy/sonic_v1_1/* gear_sonic_deploy/planner/target
 cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
 bash install_scripts/install_pico.sh
 bash install_scripts/install_data_collection.sh
-uv pip install --python .venv_teleop/bin/python flask
-.venv_teleop/bin/python -c "import unitree_sdk2py, flask; print('手控制依赖正常')"
+.venv_teleop/bin/python -c "import unitree_sdk2py; print('手控制依赖正常')"
 .venv_data_collection/bin/python gear_sonic/scripts/launch_data_collection.py --help
 ```
 
@@ -325,29 +324,42 @@ ssh -o BatchMode=yes unitree@192.168.123.164 hostname
 
 ## 8. PC：调灵巧手，并保存开合配置
 
-调节前退出采集。本步骤统一使用仓库自带网页，无需在机器人安装额外手控程序。
+调节前退出采集和手桥接。本步骤使用机器人备份中的原工具，实际文件名是 **ctlhand.py**（不是ctrl_hand.py）。第2步固定版本已经包含该文件，不需要另找外部脚本，也不需要再安装整个locodemo项目。
 
-**PC终端A**：将网卡和左右手IP替换为第0步的值，启动透传桥接并保持运行。
-
-```bash
-cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
-.venv_teleop/bin/python decoupled_wbc/scripts/inspire_modbus_hand.py --mode dds --network enp7s0 --left-ip 192.168.123.210 --right-ip 192.168.123.211 --dds-pose-mode passthrough
-```
-
-**PC终端B**：启动网页并保持运行。
+**8.1 机器人：首次安装独立手控环境。**
 
 ```bash
-cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
-.venv_teleop/bin/python decoupled_wbc/scripts/inspire_hand_web.py --network enp7s0 --host 127.0.0.1 --port 8080
+cd /home/unitree/VLA/GR00T-WholeBodyControl
+test -f tools/inspire_hand_web/ctlhand.py
+uv venv .venv_hand_web --python 3.10
+uv pip install --python .venv_hand_web/bin/python -r tools/inspire_hand_web/requirements.txt
+.venv_hand_web/bin/python tools/inspire_hand_web/ctlhand.py --help
 ```
 
-**PC浏览器打开：**
+只在首次安装执行uv建环境；后续从8.2开始。原文件保持不变，直接通过Modbus控制手；此时不要另外开DDS手桥接。
+
+**8.2 机器人终端：**使用第0步确认的左右手IP启动，并保持运行。
+
+```bash
+cd /home/unitree/VLA/GR00T-WholeBodyControl
+.venv_hand_web/bin/python tools/inspire_hand_web/ctlhand.py --left 192.168.123.210 --right 192.168.123.211 --host 127.0.0.1 --web-port 8080
+```
+
+**8.3 PC终端：**将SSH用户和机器人IP替换为实际值，建立隧道，保持运行。
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 unitree@192.168.123.164
+```
+
+**8.4 PC浏览器打开：**
 
 ```text
 http://localhost:8080/
 ```
 
-逐个调整并发送，记录张开、抓握各6个数值。顺序：**小指、无名指、中指、食指、拇指弯曲、拇指旋转**；值域0～1，通常0闭合、1张开。
+分别选择左手、右手，使用“六电机”目标百分比调节并发送。记录张开、抓握各6个**目标值**：网页百分比0～100需除以100；原始angle目标0～1000需除以1000，转换为采集配置的0～1。例如50%对应0.5。不要把受负载影响的实际角度反馈当成目标值。
+
+六电机顺序：**小指、无名指、中指、食指、拇指弯曲、拇指旋转**；配置值域0～1，通常0闭合、1张开。
 
 打开PC项目中的配置文件：
 
@@ -367,7 +379,7 @@ nano gear_sonic/config/data_collection/inspire_hand_pose.json
 
 **网页不会自动保存该JSON。** 当前配置对双手共用一套开合目标；左右若必须用不同目标，需要先扩展配置和桥接后再交付。记录任务、日期和调节值。
 
-**完成标准：**网页发送后真实手响应正常，JSON已保存。完成后在终端A、B分别Ctrl+C退出，防止与采集手桥接冲突。
+**完成标准：**网页发送后真实手响应正常，JSON已保存。完成后在机器人手控终端及PC隧道终端分别Ctrl+C退出，防止与采集手桥接冲突。
 
 ## 9. 每次使用：按顺序启动相机、检查图像、采集
 
@@ -427,25 +439,18 @@ ls outputs/pick_box_v11_20261110_01
 
 交付代码固定提交、v1.1三件套及planner、模型版本/SHA256、手姿态JSON、网络参数表、依赖版本和本SOP。首次安装必须实际录制并检查一条短episode后，才算整套验收完成。
 
-## 附录：已有机器人上的旧手控工具
+## 工具来源
 
-仅为已使用旧工具的操作者保留，不属于首次安装的必做步骤；第8步已提供完整替代流程。旧工具存在时，可在机器人启动：
+机载网页工具从本机机器人备份原样复制，已收入交付代码，依赖及详细用法见tools/inspire_hand_web/README.md。
 
-```bash
-cd /home/unitree/VLA/locodemo
-python ctrl_hand.py
+```text
+原备份：/home/ykj/Downloads/data_collection/VLA/locodemo/ctlhand.py
+交付位置：tools/inspire_hand_web/ctlhand.py
+SHA256：86538b20698e205aabbb29865864b56a2e42630fcf500c620d1462e490494d3f
 ```
-
-PC转发8080端口后访问同一个本地网页：
-
-```bash
-ssh -N -L 8080:127.0.0.1:8080 unitree@192.168.123.164
-```
-
-不要同时启动第8步网页。旧工具若显示0～1000，除以1000后写回第8步JSON；若为物理角度单位则不能直接套用。旧工具也不保证自动保存到我们的配置。
 
 ## 参考与验证范围
 
 官方资料仅作来源参考，无需再跟随其安装流程：[机载部署](https://nvlabs.github.io/GR00T-WholeBodyControl/getting_started/installation_deploy.html)、[模型](https://nvlabs.github.io/GR00T-WholeBodyControl/getting_started/download_models.html)、[PICO配置](https://nvlabs.github.io/GR00T-WholeBodyControl/getting_started/vr_teleop_setup.html)、[遥操作](https://nvlabs.github.io/GR00T-WholeBodyControl/tutorials/vr_wholebody_teleop.html)。
 
-2026-11-10：命令参数、数据维度及Shell/JSON语法按本项目源码核对；机器人连接超时，尚未完成干净环境安装和真机验收。适用范围是第1步已具备匹配基础系统的设备；未找到可确认版本的完整机器人环境归档，不将现有代码备份称为已验证镜像。
+2026-11-10：命令参数、数据维度及Shell/JSON语法按本项目源码核对；手控工具通过本地HTTP启动、模拟手对象接口及锁定版本pymodbus兼容性验证，未向机器人发送请求。机器人连接超时，尚未完成干净环境安装和真机验收。适用范围是第1步已具备匹配基础系统的设备；未找到可确认版本的完整机器人环境归档，不将现有代码备份称为已验证镜像。
