@@ -200,6 +200,9 @@ external_dependencies/XRoboToolkit-PC-Service-Pybind/
 .venv_data_collection/
 .venv_camera/
 .venv_inference/
+.venv_brainco_hand/
+.runtime/
+.playwright-cli/
 
 # XRoboToolkit-PC-Service-Pybind
 xrobotoolkit_sdk.cpython-*-*-*.so

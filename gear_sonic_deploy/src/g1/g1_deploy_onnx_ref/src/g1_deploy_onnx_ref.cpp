@@ -4260,6 +4260,8 @@ class G1Deploy {
 int main(int argc, char const* argv[]) {
   std::cout << "[DEBUG] Program starting..." << std::endl;
   if (argc < 4) {
+    std::cout << "  --hand-type <inspire|brainco>: select hand DDS interface" << std::endl;
+    std::cout << "  --brainco-hand-pose-config <json>: required for BrainCo Revo2" << std::endl;
     std::cout << "Usage: " << argv[0] << " <network_interface> <policy_file> <motion_data_path> [OPTIONS]"
               << std::endl;
     std::cout << "  network_interface: network interface for DDS communication" << std::endl;

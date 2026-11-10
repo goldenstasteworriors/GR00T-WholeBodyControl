@@ -24,7 +24,7 @@ label{display:flex;gap:12px;margin:12px 0}input{flex:1}button{padding:9px;margin
 pre{background:#eee;padding:12px;overflow:auto}</style>
 <h1>强脑 Revo2 双手调节</h1>
 <p>0=张开，1=闭合；按官方索引顺序。拖动只修改目标，点击发送才控制一只手。
-启动模式：{{ '允许发送' if enabled else '只读' }}。电流单位A，speed为归一化速度，均非力矩/弧度速度。</p>
+启动模式：{{ '允许发送' if enabled else '禁止发送' }}。电流单位A，speed为归一化速度，均非力矩/弧度速度。</p>
 <div id="hands"></div><pre id="result">就绪</pre><h2>真实反馈</h2><pre id="state"></pre>
 <script>
 const names={{ names|tojson }}, cfg={{ config|tojson }};
@@ -75,6 +75,8 @@ def create_app(client, config_path, *, enable_commands=False, max_state_age=0.25
         if not enable_commands:
             return jsonify(ok=False, error="只读模式；需以 --enable-commands 启动"), 403
         data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify(ok=False, error="请求必须是JSON对象"), 400
         side = data.get("side")
         if side not in ("left", "right"):
             return jsonify(ok=False, error="请选择left或right，一次只控制一只手"), 400
@@ -95,6 +97,8 @@ def create_app(client, config_path, *, enable_commands=False, max_state_age=0.25
     @app.post("/api/save")
     def save():
         data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify(ok=False, error="请求必须是JSON对象"), 400
         side, pose = data.get("side"), data.get("pose")
         if side not in ("left", "right") or pose not in ("open", "grasp"):
             return jsonify(ok=False, error="side/pose无效"), 400

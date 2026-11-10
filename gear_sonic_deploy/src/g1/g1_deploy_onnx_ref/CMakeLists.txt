@@ -203,6 +203,9 @@ add_executable(${EXECUTABLE_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/g1_deploy_onnx
 target_include_directories(${EXECUTABLE_NAME} PUBLIC ${EXE_INCLUDES} ${PROJECT_SOURCE_DIR}/src)
 
 target_link_directories(${EXECUTABLE_NAME} PRIVATE ${CUDA_LINK_DIRS})
+find_package(yaml-cpp REQUIRED)
+target_link_libraries(${EXECUTABLE_NAME} PRIVATE yaml-cpp)
+
 target_link_libraries(
   ${EXECUTABLE_NAME} PRIVATE ${PROJECT_NAME}
   ${EXE_LIBS}

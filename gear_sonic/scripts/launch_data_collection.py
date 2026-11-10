@@ -189,7 +189,7 @@ class DataCollectionLaunchConfig:
     pico_zmq_feedback_port: int = 5557
     """Port for PICO frozen-target feedback (g1_debug)."""
 
-    # Strong-brain hands use the official robot-side serial-to-DDS service.
+    # BrainCo hands use the official robot-side serial-to-DDS service.
     hand_type: Literal["inspire", "brainco"] = "brainco"
     brainco_hand_pose_config: str = str(DEFAULT_BRAINCO_CONFIG)
     brainco_max_state_age_s: float = 0.25
