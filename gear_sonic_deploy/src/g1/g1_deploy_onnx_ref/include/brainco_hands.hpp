@@ -99,7 +99,8 @@ class BraincoHands {
       }
       if (publishers_[side]->Write(cmd)) {
         std::lock_guard<std::mutex> lock(mutex_);
-        state_[side].sent = target;
+        for (int i = 0; i < 6; ++i)
+          state_[side].sent[i] = cmd.cmds()[i].q();
         state_[side].command_sent = true;
       }
     }

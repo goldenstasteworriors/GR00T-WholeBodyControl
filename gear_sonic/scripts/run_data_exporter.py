@@ -1360,7 +1360,7 @@ def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
                 "max_state_age_s": config.brainco_max_state_age_s,
                 "wrist_frame": "left/right_wrist_yaw_link; not BrainCo fingertips",
             } if config.hand_type == "brainco" else None),
-            "inspire_hand_pose_config": config.inspire_hand_pose_config,
+            "inspire_hand_pose_config": config.inspire_hand_pose_config if config.hand_type == "inspire" else None,
             "hand_data_mode": "left_only" if config.left_hand_only else "both",
             "active_hands": ["left"] if config.left_hand_only else ["left", "right"],
             "right_hand_data": {

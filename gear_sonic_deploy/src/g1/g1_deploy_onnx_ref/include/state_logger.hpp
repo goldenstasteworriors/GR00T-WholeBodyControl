@@ -103,7 +103,7 @@ class StateLogger {
     // Motor estimated torque (one per motor, Nm)
     std::vector<double> motor_torque;  // size = num_joints
 
-    // Dex3 hands (7 motors each)
+    // Hand fields: six native BrainCo motors, or seven legacy hand values.
     std::vector<double> left_hand_q;       // size = 7 (q positions)
     std::vector<double> left_hand_dq;      // size = 7 (dq velocities)
     std::vector<double> right_hand_q;      // size = 7 (q positions)
