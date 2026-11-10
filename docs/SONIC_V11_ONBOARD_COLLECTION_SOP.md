@@ -1,6 +1,6 @@
 # SONIC v1.1 机载推理与 Inspire 数据采集 SOP
 
-**按第0～10步依次操作，不需要另外执行官方教程。** 首次安装完成第0～8步；以后每天从第9步开始。官方资料只用于说明来源，放在文末。
+**按第0～10步依次操作，可以参考sonic官方文档说明。** 首次安装完成第0～8步；以后每次从第9步开始。sonic官方资料放在文末。
 
 部署分工：机器人运行SONIC v1.1推理和RealSense相机；PC运行PICO、Inspire手桥接和数据导出。数据沿用本项目41维格式（身体29＋左手6＋右手6）。
 
@@ -22,14 +22,137 @@
 | 机器人项目目录 | /home/unitree/VLA/GR00T-WholeBodyControl |
 | PC项目目录 | $HOME/sonic_v11/GR00T-WholeBodyControl |
 
-PC查看地址及有线路由：
+### 0.1 机器人：查SSH用户名和机载IP
+
+通过机器人本地终端，或已经能用的SSH连接进入机器人，执行：
+
+```bash
+whoami
+hostname
+ip -br -4 addr
+```
+
+`whoami`的输出是SSH用户名；`hostname`只是机器名称，不是用户名。`ip`输出每行是“网卡名、状态、IPv4/掩码”，例如：
+
+```text
+eth0  UP  192.168.123.164/24
+```
+
+记录PC能够连接的机载地址，去掉 `/24` 等掩码后缀。如果还不知道IP且无法SSH登录，先从机器人本地终端查看，或向设备管理员取得机载网络信息；不要把示例IP当成实际地址。多个网卡时，用下一步从PC验证所选地址。
+
+### 0.2 PC：查机器人有线路由、网卡和PC有线IP
+
+接好机器人网线，在PC执行；输入上一步确认的机载IP：
+
+```bash
+read -r -p "机器人机载IPv4地址: " ROBOT_IP
+ip -br -4 addr
+ip -4 route get "$ROBOT_IP"
+```
+
+路由结果示例：
+
+```text
+192.168.123.164 dev enp7s0 src 192.168.123.222
+```
+
+`dev`后面的名称是PC实际出站网卡，`src`后面的地址是PC有线IPv4。把两者分别记入参数表。若结果经过Wi-Fi、VPN或错误网卡，先让设备管理员修正有线连接/地址配置，再继续；不要仅因命令打印了结果就判定有线网络正常。
+
+用第0.1步的用户名和IP验证SSH：
+
+```bash
+read -r -p "机器人SSH用户名: " ROBOT_USER
+ssh "$ROBOT_USER@$ROBOT_IP" hostname
+```
+
+应显示第0.1步的机器人主机名。首次连接会询问信任主机，尚未配置免密时还会询问登录密码；第7步再设置免密。
+
+### 0.3 PC：查Wi-Fi地址（头显连接用）
+
+在PC执行：
+
+```bash
+for netdev in /sys/class/net/*; do
+  if [ -d "$netdev/wireless" ]; then
+    ip -br -4 addr show dev "${netdev##*/}"
+  fi
+done
+```
+
+例如输出 `wlp0s20f3 UP 10.0.0.25/24`，则PICO应用的PC Service填写 `10.0.0.25`，不是网卡名，也不是机器人的IP。没有输出或没有IPv4时，先将PC连入与PICO相同的Wi-Fi；也可在Ubuntu“设置→Wi-Fi→当前网络→详情”读取IPv4地址。
+
+### 0.4 机器人：确认运动控制网卡
+
+机器人SSH网卡不一定就是运动控制网卡。在机器人执行：
 
 ```bash
 ip -br -4 addr
-ip -4 route get 192.168.123.164
+ip -br link
 ```
 
-**完成标准：**已确认有线通信参数和PC Wi-Fi地址；PICO连接PC的Wi-Fi地址，机载程序连接PC的有线地址。
+优先核对该机器人原有、已验证的SONIC启动命令中传入的网卡；没有记录时，从设备管理员取得运动控制器IP，再查询到该控制器的路由：
+
+```bash
+read -r -p "已确认的运动控制器IPv4地址: " CONTROLLER_IP
+ip -4 route get "$CONTROLLER_IP"
+```
+
+结果中 `dev` 后的网卡作为候选，并核对设备接线/网络说明。第9步启动时必须实际收到身体状态，才能确认DDS链路可用。不能把PC有线网卡名填到机器人参数里，也不能在未核实的情况下统一填 `eth0`。
+
+### 0.5 确认左右手IP及物理侧别
+
+先查手部控制器配置页/设备网络记录，或原来可用的手桥接命令中的 `--left-ip`、`--right-ip`。Linux没有通用命令能自动推断哪一个IP对应左手。
+
+PC可查看已经发现的邻居地址，辅助核对（不是完整设备清单）：
+
+```bash
+ip neigh show
+```
+
+取得候选IP后，检查本项目使用的TCP6000端口。此命令只连接端口，不发送手部动作：
+
+```bash
+read -r -p "待检查的手部IPv4地址: " HAND_IP
+if timeout 3 bash -c 'exec 3<>/dev/tcp/"$1"/6000' _ "$HAND_IP"; then
+  echo "TCP6000可连接；仍需核对手部型号和左右侧别"
+else
+  echo "连接失败，检查手部供电、地址、路由和端口"
+fi
+```
+
+端口可连接不代表已经确认是Inspire或某一侧。最后在第8步分别发送一侧的小幅调整，通过真实响应核对左右；若左右反了，交换参数表中的两个IP。没有任何IP记录时，用手部厂商的网络配置工具读取，不盲猜地址或把其他设备当作手。
+
+### 0.6 查项目路径及模型目录
+
+新安装直接使用第2步创建的目录，不需要另找备份路径。复用已有安装时，在机器人和PC各进入自己的项目根目录执行：
+
+```bash
+pwd -P
+git rev-parse --show-toplevel
+```
+
+记录绝对路径；机器人根目录对应启动参数 `--deploy-onboard-repo-root`，PC根目录用于后续命令中的 `cd`。模型相对路径不凭空猜测，第4步下载后应存在：
+
+```text
+gear_sonic_deploy/policy/sonic_v1_1/model_encoder.onnx
+gear_sonic_deploy/policy/sonic_v1_1/model_decoder.onnx
+gear_sonic_deploy/policy/sonic_v1_1/observation_config.yaml
+```
+
+### 0.7 将查到的值对应到命令
+
+| 查到的值 | 后续替换位置 |
+| --- | --- |
+| 机器人SSH用户名 | 第7步SSH地址；非unitree时，第9步额外加 `--deploy-onboard-user 实际用户名` |
+| 机载IP | `--camera-host`、`--deploy-onboard-host`及SSH地址 |
+| 机器人运动控制网卡 | `--deploy-onboard-interface` |
+| PC有线网卡 | 第8步两个 `--network`；第9步 `--inspire-hand-network` |
+| PC有线IPv4 | `--offboard-zmq-host` |
+| PC Wi-Fi IPv4 | 第6步头显应用的PC Service地址 |
+| 左手、右手IP | 第8、9步 `--left-ip`/`--right-ip` 或 `--inspire-left-ip`/`--inspire-right-ip` |
+| 机器人、PC项目路径 | 两端的 `cd`；机器人路径还用于 `--deploy-onboard-repo-root` |
+
+**完成标准：**参数表填写完整，PC能SSH连接到正确机器人，有线路由及Wi-Fi地址区分清楚；手部物理侧别在第8步完成最终确认。
 
 ## 1. 机器人：检查系统基础
 
@@ -89,6 +212,21 @@ git rev-parse HEAD
 **完成标准：**两端提交号均为上述固定提交，依赖仓库及LFS文件下载成功。若clone提示权限不足，由仓库管理员给接收方帐号授予读取权限并配置其SSH公钥后重试。
 
 ## 3. 机器人：安装C++依赖并编译推理程序
+
+先查已有TensorRT路径。在机器人执行：
+
+```bash
+printf '%s\n' "${TensorRT_ROOT:-尚未设置TensorRT_ROOT}"
+dpkg-query -L libnvinfer-dev 2>/dev/null | grep '/NvInferVersion.h$'
+```
+
+第二条若显示 `/usr/include/.../NvInferVersion.h`，说明开发头文件来自系统包；用第1步的包版本确认版本。TAR安装则从原来的解压目录查找；忘记目录时可限定范围查：
+
+```bash
+find "$HOME" /opt /usr/local -maxdepth 4 -name NvInferVersion.h -print 2>/dev/null
+```
+
+例如找到 `/home/unitree/TensorRT-10.7.0.23/include/NvInferVersion.h`，则根目录是 `/home/unitree/TensorRT-10.7.0.23`，用它替换下方 `$HOME/TensorRT`。多个结果时按第1步要求核对版本，不按搜索顺序随意选择。
 
 若TensorRT是TAR安装，先设置真实安装目录。下面示例仅适用于解压在机器人 `~/TensorRT` 的情况；JetPack系统包安装则跳过这两行，由环境脚本检测。
 
