@@ -45,6 +45,8 @@ import socket
 import subprocess
 import sys
 import time
+from typing import Literal
+from gear_sonic.utils.data_collection.brainco_hand import DEFAULT_CONFIG as DEFAULT_BRAINCO_CONFIG, load_profiles as load_brainco_profiles
 
 
 DEFAULT_INSPIRE_HAND_POSE_CONFIG = (
@@ -187,6 +189,11 @@ class DataCollectionLaunchConfig:
     pico_zmq_feedback_port: int = 5557
     """Port for PICO frozen-target feedback (g1_debug)."""
 
+    # Strong-brain hands use the official robot-side serial-to-DDS service.
+    hand_type: Literal["inspire", "brainco"] = "brainco"
+    brainco_hand_pose_config: str = str(DEFAULT_BRAINCO_CONFIG)
+    brainco_max_state_age_s: float = 0.25
+
     # Inspire hand bridge options
     inspire_hand_bridge: bool = False
     """Start decoupled_wbc/scripts/inspire_modbus_hand.py DDS->Modbus bridge."""
@@ -316,6 +323,18 @@ def _check_prerequisites(config: DataCollectionLaunchConfig):
 
     if config.pico_input_source not in {"xrt", "isaac-teleop"}:
         errors.append("--pico-input-source must be one of: xrt, isaac-teleop")
+
+    if config.hand_type == "brainco":
+        if config.inspire_hand_bridge or config.left_hand_only:
+            errors.append("BrainCo requires both official hands; do not enable the Inspire bridge or synthetic-hand mode")
+        if config.sim or not config.deploy_onboard or not config.deploy_onboard_prebuilt:
+            errors.append("BrainCo currently requires real onboard prebuilt deployment")
+        try:
+            load_brainco_profiles(config.brainco_hand_pose_config)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            errors.append(f"Invalid BrainCo profile: {exc}")
+        if not 0 < config.brainco_max_state_age_s <= 5:
+            errors.append("brainco-max-state-age-s must be in (0,5]")
 
     if config.inspire_hand_bridge and not config.sim:
         available_interfaces = {name for _, name in socket.if_nameindex()}
@@ -503,6 +522,11 @@ def _build_onboard_prebuilt_command(
         "--zmq-host",
         zmq_host,
     ]
+    if config.hand_type == "brainco":
+        deploy_args += [
+            "--hand-type", "brainco", "--brainco-hand-pose-config",
+            config.deploy_onboard_repo_root + "/.runtime/brainco_hand_pose.json",
+        ]
     if config.enable_sonic_publish:
         deploy_args += [
             "--zmq-port",
@@ -549,6 +573,14 @@ def main(config: DataCollectionLaunchConfig):
     latency_combined_file = repo_root / "logs" / f"latency_combined_{log_tag}.jsonl"
 
     _check_prerequisites(config)
+    if config.hand_type == "brainco":
+        # Stage only validated configuration, before starting any control process.
+        remote_dir = config.deploy_onboard_repo_root + "/.runtime"
+        target = f"{config.deploy_onboard_user}@{config.deploy_onboard_host or config.camera_host}"
+        subprocess.run(["ssh", "-o", "BatchMode=yes", target,
+                        "mkdir -p " + shlex.quote(remote_dir)], check=True)
+        subprocess.run(["scp", "-o", "BatchMode=yes", config.brainco_hand_pose_config,
+                        target + ":" + remote_dir + "/brainco_hand_pose.json"], check=True)
     _kill_existing_session()
 
     onboard_host = config.deploy_onboard_host or config.camera_host
@@ -589,6 +621,7 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Sonic ZMQ:       {config.sonic_zmq_host}:{config.sonic_zmq_port}")
     print(f"  State ZMQ:       {state_zmq_host}:{config.state_zmq_port}")
     print(f"  PICO feedback:   {pico_feedback_host}:{config.pico_zmq_feedback_port}")
+    print(f"  Hand type:       {config.hand_type}")
     print(f"  Inspire bridge:  {'Yes' if config.inspire_hand_bridge else 'No'}")
     if config.inspire_hand_bridge:
         print(f"  Inspire config:  {config.inspire_hand_pose_config}")
@@ -746,6 +779,10 @@ def main(config: DataCollectionLaunchConfig):
         f"--latency-log-file {shlex.quote(str(latency_raw_file))} "
         f"--latency-log-interval {config.latency_sample_interval}"
     )
+    exporter_cmd += " --hand-type " + config.hand_type
+    if config.hand_type == "brainco":
+        exporter_cmd += (" --brainco-max-state-age-s " + str(config.brainco_max_state_age_s)
+                         + " --brainco-hand-pose-config " + shlex.quote(config.brainco_hand_pose_config))
     if config.quiet_data_exporter:
         exporter_cmd += " --quiet-console"
     if config.profile_timing:

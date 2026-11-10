@@ -19,6 +19,7 @@ Usage (from repo root):
     python gear_sonic/scripts/run_data_exporter.py --task-prompt "walk forward" --dataset-name my_session
 """
 
+from typing import Literal
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -36,11 +37,18 @@ import wave
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import tyro
+from gear_sonic.utils.data_collection.brainco_hand import (
+    DEFAULT_CONFIG as DEFAULT_BRAINCO_CONFIG,
+    load_profiles as load_brainco_profiles,
+    native_frame as brainco_native_frame,
+)
 import zmq
 
 from gear_sonic.data.exporter import Gr00tDataExporter
 from gear_sonic.data.features_sonic_vla import (
     get_features_sonic_inspire6,
+    get_features_sonic_brainco6,
+    get_modality_config_sonic_brainco6,
     get_g1_robot_model,
     get_modality_config_sonic_inspire6,
     get_wrist_camera_features,
@@ -73,6 +81,10 @@ DEFAULT_INSPIRE_HAND_POSE_CONFIG = (
 @dataclass
 class SonicDataExporterConfig:
     """CLI config for the ROS-free Sonic data exporter."""
+
+    hand_type: Literal["inspire", "brainco"] = "inspire"
+    brainco_max_state_age_s: float = 0.25
+    brainco_hand_pose_config: str = str(DEFAULT_BRAINCO_CONFIG)
 
     # Dataset
     dataset_name: str | None = None
@@ -433,11 +445,16 @@ class GrootDataCollector:
         left_hand_only: bool = False,
         inspire_open_q: np.ndarray | None = None,
         inspire_grasp_q: np.ndarray | None = None,
+        hand_type: str = "inspire",
+        brainco_max_state_age_s: float = 0.25,
     ):
         self.text_to_speech = text_to_speech
         self.audio_cue = audio_cue
         self.status_callback = status_callback
         self.latency_recorder = latency_recorder
+        self.hand_type = hand_type
+        self.brainco_max_state_age_s = brainco_max_state_age_s
+        self._brainco_last_warning = 0.0
         self.left_hand_only = left_hand_only
         self.inspire_open_q = np.asarray(inspire_open_q, dtype=np.float64)
         self.inspire_grasp_q = np.asarray(inspire_grasp_q, dtype=np.float64)
@@ -880,17 +897,32 @@ class GrootDataCollector:
         assert self.latest_proprio_msg is not None
         proprio = self.latest_proprio_msg
 
-        left_hand_q = self._native_inspire_state(proprio["left_hand_q"], "left_hand_q")
-        right_hand_q = self._native_inspire_state(proprio["right_hand_q"], "right_hand_q")
-        left_hand_action = self._legacy_hand_action_to_inspire(
-            proprio["last_left_hand_action"]
-        )
-        right_hand_action = self._legacy_hand_action_to_inspire(
-            proprio["last_right_hand_action"]
-        )
-        if self.left_hand_only:
-            right_hand_q = self.inspire_open_q.copy()
-            right_hand_action = self.inspire_open_q.copy()
+        brainco = None
+        if self.hand_type == "brainco":
+            try:
+                if (self._last_state_receive_monotonic is None or
+                        time.monotonic() - self._last_state_receive_monotonic > self.brainco_max_state_age_s):
+                    raise ValueError("Robot ZMQ state has become stale")
+                brainco = brainco_native_frame(proprio, self.brainco_max_state_age_s)
+            except (KeyError, ValueError, TypeError) as exc:
+                if time.monotonic() - self._brainco_last_warning > 2:
+                    self._print_and_say(f"[BrainCo] Skipping recording frame: {exc}")
+                    self._brainco_last_warning = time.monotonic()
+                return False
+            left_hand_q, right_hand_q = brainco["left_q"], brainco["right_q"]
+            left_hand_action, right_hand_action = brainco["left_action"], brainco["right_action"]
+        else:
+            left_hand_q = self._native_inspire_state(proprio["left_hand_q"], "left_hand_q")
+            right_hand_q = self._native_inspire_state(proprio["right_hand_q"], "right_hand_q")
+            left_hand_action = self._legacy_hand_action_to_inspire(
+                proprio["last_left_hand_action"]
+            )
+            right_hand_action = self._legacy_hand_action_to_inspire(
+                proprio["last_right_hand_action"]
+            )
+            if self.left_hand_only:
+                right_hand_q = self.inspire_open_q.copy()
+                right_hand_action = self.inspire_open_q.copy()
 
         observation_state = np.concatenate(
             [proprio["body_q"], left_hand_q, right_hand_q]
@@ -905,8 +937,10 @@ class GrootDataCollector:
 
         whole_q = self.robot_model.get_configuration_from_actuated_joints(
             body_actuated_joint_values=proprio["body_q"],
-            left_hand_actuated_joint_values=proprio["left_hand_q"],
-            right_hand_actuated_joint_values=legacy_right_hand_q,
+            # EEFs are wrist_yaw_link frames, independent of the hand mechanism.
+            # Do not feed normalized BrainCo closure values into a Dex3 radian FK model.
+            left_hand_actuated_joint_values=(np.zeros(7) if brainco is not None else proprio["left_hand_q"]),
+            right_hand_actuated_joint_values=(np.zeros(7) if brainco is not None else legacy_right_hand_q),
         )
 
         self.robot_model.cache_forward_kinematics(whole_q)
@@ -925,6 +959,11 @@ class GrootDataCollector:
             "observation.eef_state": observation_eef_state,
             "action.wbc": action_wbc,
         }
+
+        if brainco is not None:
+            frame_data["observation.brainco_hand_speed"] = np.asarray(brainco["speed"], dtype=np.float64)
+            frame_data["observation.brainco_hand_current"] = np.asarray(brainco["current_a"], dtype=np.float64)
+            frame_data["observation.brainco_state_age_s"] = np.asarray(brainco["state_age_s"], dtype=np.float64)
 
         self._add_cpp_state_features(frame_data, proprio)
 
@@ -1260,10 +1299,19 @@ class GrootDataCollector:
 
 def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
     g1_rm = get_g1_robot_model()
-    inspire_profiles = load_inspire_hand_profiles(config.inspire_hand_pose_config)
+    if config.hand_type == "brainco" and config.left_hand_only:
+        raise ValueError("BrainCo collection requires actual states from both hands")
+    if not np.isfinite(config.brainco_max_state_age_s) or config.brainco_max_state_age_s <= 0:
+        raise ValueError("brainco_max_state_age_s must be positive")
+    inspire_profiles = ({"open": np.zeros(6), "grasp": np.ones(6)} if config.hand_type == "brainco"
+                        else load_inspire_hand_profiles(config.inspire_hand_pose_config))
 
-    dataset_features = get_features_sonic_inspire6(g1_rm)
-    modality_config = get_modality_config_sonic_inspire6(g1_rm)
+    brainco_profiles = (load_brainco_profiles(config.brainco_hand_pose_config)
+                        if config.hand_type == "brainco" else None)
+    dataset_features = (get_features_sonic_brainco6(g1_rm) if config.hand_type == "brainco"
+                        else get_features_sonic_inspire6(g1_rm))
+    modality_config = (get_modality_config_sonic_brainco6(g1_rm) if config.hand_type == "brainco"
+                       else get_modality_config_sonic_inspire6(g1_rm))
 
     if config.record_wrist_cameras:
         print("[Camera] Wrist cameras enabled — adding to dataset schema")
@@ -1300,7 +1348,18 @@ def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
         script_config={
             **robot_config,
             "record_wrist_cameras": config.record_wrist_cameras,
-            "schema_compatibility": "g1_inspire_41dof",
+            "schema_compatibility": "g1_brainco_revo2_41dof" if config.hand_type == "brainco" else "g1_inspire_41dof",
+            "hand_type": config.hand_type,
+            "brainco_hand_profiles": brainco_profiles,
+            "brainco_interface": ({
+                "source": "unitree/brainco_hand_service@d71996b6999edb2f838a3dca3d9621429a2ef966",
+                "position": "normalized closure: 0=open, 1=closed",
+                "speed": "normalized DDS dq (not rad/s)",
+                "current": "DDS tau_est = current_mA/1000, amperes (not torque)",
+                "state_age": "robot monotonic age since DDS receipt; not sensor exposure time",
+                "max_state_age_s": config.brainco_max_state_age_s,
+                "wrist_frame": "left/right_wrist_yaw_link; not BrainCo fingertips",
+            } if config.hand_type == "brainco" else None),
             "inspire_hand_pose_config": config.inspire_hand_pose_config,
             "hand_data_mode": "left_only" if config.left_hand_only else "both",
             "active_hands": ["left"] if config.left_hand_only else ["left", "right"],
@@ -1331,6 +1390,8 @@ def main(config: SonicDataExporterConfig, runtime_output: RuntimeOutput):
         audio_cue=audio_cue,
         status_callback=runtime_output.status,
         latency_recorder=latency_recorder,
+        hand_type=config.hand_type,
+        brainco_max_state_age_s=config.brainco_max_state_age_s,
         left_hand_only=config.left_hand_only,
         inspire_open_q=inspire_profiles["open"],
         inspire_grasp_q=inspire_profiles["grasp"],

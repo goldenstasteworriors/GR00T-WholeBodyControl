@@ -135,6 +135,7 @@
 
 // Inspire hands
 #include "../include/inspire_hands.hpp"
+#include "../include/brainco_hands.hpp"
 
 // Error monitor
 #include "../include/error_monitor.hpp"
@@ -283,6 +284,8 @@ class G1Deploy {
     
     // Inspire hands manager
     InspireHands inspire_hands_;
+    BraincoHands brainco_hands_;
+    std::string hand_type_ = "inspire";
 
     // Motor error monitor (tracks fault state transitions)
     ErrorMonitor error_monitor_;
@@ -2282,7 +2285,9 @@ class G1Deploy {
       std::string zmq_out_topic = "g1_debug",
       bool enable_motion_recording = false,
       std::array<double, 3> initial_compliance = {0.05, 0.05, 0.0},
-      double initial_max_close_ratio = 1.0)
+      double initial_max_close_ratio = 1.0,
+      std::string hand_type = "inspire",
+      std::string brainco_config = "")
       : time_(0.0),
         publish_dt_(0.002),
         control_dt_(0.02),
@@ -2310,7 +2315,10 @@ class G1Deploy {
       ChannelFactory::Instance()->Init(0, networkInterface);
 
       // Initialize Inspire hands (ChannelFactory already initialized above)
-      inspire_hands_.initialize("");
+      hand_type_ = hand_type;
+      if (hand_type_ == "brainco") brainco_hands_.initialize(brainco_config);
+      else if (hand_type_ == "inspire") inspire_hands_.initialize("");
+      else throw std::runtime_error("hand-type must be inspire or brainco");
 
       audio_thread_ = std::make_unique<AudioThread>();
 
@@ -2644,7 +2652,8 @@ class G1Deploy {
         input_interface_->SetVR3PointCompliance(initial_vr_3point_compliance_);
         // Set initial max close ratio for hands (keyboard-controlled: X/C keys)
         input_interface_->SetMaxCloseRatio(initial_max_close_ratio_);
-        inspire_hands_.SetMaxCloseRatio(initial_max_close_ratio_);
+        if (hand_type_ == "brainco") brainco_hands_.SetMaxCloseRatio(initial_max_close_ratio_);
+        else inspire_hands_.SetMaxCloseRatio(initial_max_close_ratio_);
         std::cout << "[INFO] Initial VR 3-point compliance: ["
                   << initial_vr_3point_compliance_[0] << ", "
                   << initial_vr_3point_compliance_[1] << ", "
@@ -2805,7 +2814,8 @@ class G1Deploy {
       }
 
       // Publish Inspire hand commands at the same publish cadence
-      inspire_hands_.writeOnce();
+      if (hand_type_ == "brainco") brainco_hands_.writeOnce();
+      else inspire_hands_.writeOnce();
     }
 
     /// Gracefully stop all threads and send a damping-only command.
@@ -2874,12 +2884,12 @@ class G1Deploy {
           motor_command_tmp.q_target.at(i) =
               static_cast<float>(current_pos * (1.0 - ratio) + default_angles[i] * ratio);
         }
-        inspire_hands_.close(true);
-        inspire_hands_.close(false);
+        if (hand_type_ == "inspire") inspire_hands_.close(true);
+        if (hand_type_ == "inspire") inspire_hands_.close(false);
       } else {
         program_state_ = ProgramState::WAIT_FOR_CONTROL;
-        inspire_hands_.open(true);
-        inspire_hands_.open(false);
+        if (hand_type_ == "inspire") inspire_hands_.open(true);
+        if (hand_type_ == "inspire") inspire_hands_.open(false);
         std::cout << "Init Done" << std::endl;
       }
       motor_command_buffer_.SetData(motor_command_tmp);
@@ -3026,12 +3036,13 @@ class G1Deploy {
       std::array<double, 3> body_torso_ang_vel = float_to_double<3>(imu_torso->gyroscope());
       std::array<double, 3> body_torso_accel = float_to_double<3>(imu_torso->accelerometer());
 
-      // Collect hand states from Inspire hands
+      // Preserve the legacy path for Inspire; BrainCo uses two official six-motor states.
       std::array<double, 7> left_hand_q = {0.0};
       std::array<double, 7> left_hand_dq = {0.0};
       std::array<double, 7> right_hand_q = {0.0};
       std::array<double, 7> right_hand_dq = {0.0};
       
+      if (hand_type_ == "inspire") {
       auto left_hand_state_ptr = inspire_hands_.getState(true);
       if (left_hand_state_ptr) {
         for (int i = 0; i < 6 && i + 6 < static_cast<int>(left_hand_state_ptr->states().size()); ++i) {
@@ -3048,6 +3059,25 @@ class G1Deploy {
         }
       }
 
+      }
+      std::array<double, 6> brainco_left_action{}, brainco_right_action{};
+      std::array<double, 16> brainco_state{};
+      if (hand_type_ == "brainco") {
+        const auto left = brainco_hands_.snapshot(true);
+        const auto right = brainco_hands_.snapshot(false);
+        for (int i = 0; i < 6; ++i) {
+          left_hand_q[i] = left.q[i]; left_hand_dq[i] = left.speed[i];
+          right_hand_q[i] = right.q[i]; right_hand_dq[i] = right.speed[i];
+          brainco_state[4 + i] = left.current[i];
+          brainco_state[10 + i] = right.current[i];
+        }
+        brainco_left_action = left.sent;
+        brainco_right_action = right.sent;
+        brainco_state[0] = left.age; brainco_state[1] = right.age;
+        brainco_state[2] = left.command_sent ? 1.0 : 0.0;
+        brainco_state[3] = right.command_sent ? 1.0 : 0.0;
+      }
+
       // Log robot state for analysis and debugging
       if (state_logger_) {
         // Get ROS timestamp if using ROS2 output interface (0.0 for non-ROS2 interfaces)
@@ -3059,13 +3089,14 @@ class G1Deploy {
                                     std::span(motor_temperature),
                                     std::span(motor_error),
                                     std::span(motor_torque),
-                                    std::span(left_hand_q),
-                                    std::span(left_hand_dq),
-                                    std::span(right_hand_q),
-                                    std::span(right_hand_dq),
-                                    std::span(last_left_hand_action),
-                                    std::span(last_right_hand_action),
-                                    ros_timestamp);
+                                    std::span(left_hand_q).first(hand_type_ == "brainco" ? 6 : 7),
+                                    std::span(left_hand_dq).first(hand_type_ == "brainco" ? 6 : 7),
+                                    std::span(right_hand_q).first(hand_type_ == "brainco" ? 6 : 7),
+                                    std::span(right_hand_dq).first(hand_type_ == "brainco" ? 6 : 7),
+                                    hand_type_ == "brainco" ? std::span<double>(brainco_left_action) : std::span<double>(last_left_hand_action),
+                                    hand_type_ == "brainco" ? std::span<double>(brainco_right_action) : std::span<double>(last_right_hand_action),
+                                    ros_timestamp,
+                                    hand_type_ == "brainco" ? std::span<double>(brainco_state) : std::span<double>{});
       }
       return true;
     }
@@ -4079,11 +4110,14 @@ class G1Deploy {
           auto motor_command_end_time = std::chrono::steady_clock::now();
 
           // Update Inspire hands max close ratio from keyboard-controlled value (X/C keys)
-          inspire_hands_.SetMaxCloseRatio(input_interface_->GetMaxCloseRatio());
+          if (hand_type_ == "brainco") brainco_hands_.SetMaxCloseRatio(input_interface_->GetMaxCloseRatio());
+          else inspire_hands_.SetMaxCloseRatio(input_interface_->GetMaxCloseRatio());
           
           // set hand poses (use buffered data for consistency)
-          inspire_hands_.setAllJointsCommand(true, left_hand_joint_buffer_);
-          inspire_hands_.setAllJointsCommand(false, right_hand_joint_buffer_);
+          if (hand_type_ == "brainco") brainco_hands_.setAllJointsCommand(true, left_hand_joint_buffer_);
+          else inspire_hands_.setAllJointsCommand(true, left_hand_joint_buffer_);
+          if (hand_type_ == "brainco") brainco_hands_.setAllJointsCommand(false, right_hand_joint_buffer_);
+          else inspire_hands_.setAllJointsCommand(false, right_hand_joint_buffer_);
           
           // Update last hand actions for logging (use buffered data)
           for (int i = 0; i < 7; ++i) {
@@ -4281,6 +4315,7 @@ int main(int argc, char const* argv[]) {
     exit(0);
   }
   std::cout << "[DEBUG] Arguments validated..." << std::endl;
+  std::string handType = "inspire", braincoConfig;
   std::string networkInterface = argv[1];
   std::string modelFile = argv[2];
   std::string motionDataPath = argv[3];
@@ -4530,6 +4565,11 @@ int main(int argc, char const* argv[]) {
         std::cerr << "Error: --set-compliance requires a value argument" << std::endl;
         exit(1);
       }
+    } else if (std::string(argv[i]) == "--hand-type" || std::string(argv[i]) == "--brainco-hand-pose-config") {
+      const std::string flag = argv[i];
+      if (i + 1 >= argc) throw std::runtime_error(flag + " needs a value");
+      if (flag == "--hand-type") handType = argv[++i];
+      else braincoConfig = argv[++i];
     } else if (std::string(argv[i]) == "--max-close-ratio") {
       if (i + 1 < argc) {
         try {
@@ -4553,6 +4593,10 @@ int main(int argc, char const* argv[]) {
     }
   }
 
+  if (handType != "inspire" && handType != "brainco")
+    throw std::runtime_error("--hand-type must be inspire or brainco");
+  if (handType == "brainco" && braincoConfig.empty())
+    throw std::runtime_error("--brainco-hand-pose-config is required");
   std::cout << "[DEBUG] Creating G1Deploy object..." << std::endl;
   G1Deploy custom(
     networkInterface,
@@ -4583,7 +4627,7 @@ int main(int argc, char const* argv[]) {
     zmq_out_topic,
     enableMotionRecording,
     initial_compliance,
-    initial_max_close_ratio
+    initial_max_close_ratio, handType, braincoConfig
   );
   std::cout << "[DEBUG] G1Deploy object created successfully!" << std::endl;
   

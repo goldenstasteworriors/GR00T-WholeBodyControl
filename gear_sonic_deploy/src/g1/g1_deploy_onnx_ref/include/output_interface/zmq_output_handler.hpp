@@ -281,7 +281,7 @@ private:
 
         // State-logger fields: 18 base + 2 optional heading
         // Visualisation fields: output_data_map_.size() (typically 11)
-        int num_state_fields = has_heading_state ? 20 : 18;
+        int num_state_fields = (has_heading_state ? 20 : 18) + (state.brainco_state.empty() ? 0 : 1);
         int num_viz_fields = static_cast<int>(output_data_map_.size());
         pk.pack_map(num_state_fields + num_viz_fields);
 
@@ -348,6 +348,10 @@ private:
             for (const auto& val : state.last_action) pk.pack(val);
         }
 
+        if (!state.brainco_state.empty()) {
+            pk.pack("brainco_state");
+            pk.pack(state.brainco_state);
+        }
         pk.pack("left_hand_q");
         pk.pack_array(state.left_hand_q.size());
         for (const auto& val : state.left_hand_q) pk.pack(val);

@@ -465,3 +465,26 @@ def get_g1_robot_model(
         waist_location=waist_location,
         high_elbow_pose=high_elbow_pose,
     )
+
+
+def get_features_sonic_brainco6(robot_model):
+    """41-DOF schema with the official Revo2 motor order and normalized closure."""
+    from gear_sonic.utils.data_collection.brainco_hand import JOINT_NAMES
+    features = copy.deepcopy(get_features_sonic_inspire6(robot_model))
+    names = list(robot_model.supplemental_info.body_actuated_joints) + [
+        f"{side}_hand_{name}" for side in ("left", "right") for name in JOINT_NAMES
+    ]
+    for key in ("observation.state", "action.wbc"):
+        features[key]["names"] = names
+    for side in ("left", "right"):
+        features[f"teleop.{side}_hand_joints"]["names"] = [f"{side}_hand_{n}" for n in JOINT_NAMES]
+    motor_names = [f"{side}_{n}" for side in ("left", "right") for n in JOINT_NAMES]
+    for key in ("observation.brainco_hand_speed", "observation.brainco_hand_current"):
+        features[key] = {"dtype": "float64", "shape": (12,), "names": motor_names}
+    features["observation.brainco_state_age_s"] = {
+        "dtype": "float64", "shape": (2,), "names": ["left", "right"]}
+    return features
+
+
+def get_modality_config_sonic_brainco6(robot_model):
+    return get_modality_config_sonic_inspire6(robot_model)

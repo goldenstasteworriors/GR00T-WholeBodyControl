@@ -111,6 +111,9 @@ class StateLogger {
     std::vector<double> last_left_hand_action;  // size = 7
     std::vector<double> last_right_hand_action; // size = 7
 
+    // BrainCo: [left_age_s,right_age_s,left_sent,right_sent,left_current_A(6),right_current_A(6)].
+    std::vector<double> brainco_state;
+
     // Post-state data (set after initial state logging via LogPostState)
     bool has_post_state_data = false;
     std::vector<double> token_state;  // Token/latent state from encoder
@@ -170,7 +173,8 @@ class StateLogger {
                         const std::span<double>& right_hand_dq,
                         const std::span<double>& last_left_hand_action,
                         const std::span<double>& last_right_hand_action,
-                        double ros_timestamp = 0.0);
+                        double ros_timestamp = 0.0,
+                        const std::span<double>& brainco_state = {});
 
   /**
    * Log post-state data (e.g., token state from encoder) to the most recent entry.

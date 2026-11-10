@@ -1,0 +1,7 @@
+{
+  "hand_type": "brainco_revo2",
+  "joint_names": ["thumb", "thumb_aux", "index", "middle", "ring", "pinky"],
+  "speed": 1.0,
+  "left": {"open": [0, 0, 0, 0, 0, 0], "grasp": [1, 1, 1, 1, 1, 1]},
+  "right": {"open": [0, 0, 0, 0, 0, 0], "grasp": [1, 1, 1, 1, 1, 1]}
+}
