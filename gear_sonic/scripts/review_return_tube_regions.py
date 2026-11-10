@@ -90,7 +90,7 @@ def run(dataset, output, prompts, ffmpeg):
     (output / "annotations.json").write_text(text)
     (dataset / "meta/initial_ego_boxes.json").write_text(text)
     (output / "changes.json").write_text(json.dumps(changes, ensure_ascii=False, indent=2) + "\n")
-    lines = ["# 放回试管：完整放置区域检查", "", "共 42 段，全部人工标注，不使用 SAM。黄色是首帧放置区域，绿色是放回后用于核对的实际试管范围。目标在首帧可能为空；框表示目标试管放回后占据的范围，不是首帧实体分割。右侧出画的片段仅保留画面内的区域，并单独注明，不能解释为整支管都可见。", "", "未修改起点、三路视频或数值数据。旧框保存在 annotations_before.json。", "", "[42 段检查视频，每张一秒](review.mp4)", ""]
+    lines = ["# 放回试管：完整放置区域检查", "", f"共 {len(panels)} 段，全部人工标注，不使用 SAM。黄色是首帧放置区域，绿色是放回后用于核对的实际试管范围。目标在首帧可能为空；框表示目标试管放回后占据的范围，不是首帧实体分割。右侧出画的片段仅保留画面内的区域，并单独注明，不能解释为整支管都可见。", "", "未修改起点、三路视频或数值数据。旧框保存在 annotations_before.json。", "", f"[{len(panels)} 段检查视频，每张一秒](review.mp4)", ""]
     for offset in range(0, len(panels), 12):
         sheet = Image.new("RGB", (1280, 4*374), "#14202b")
         for j, (_, panel) in enumerate(panels[offset:offset+12]):
