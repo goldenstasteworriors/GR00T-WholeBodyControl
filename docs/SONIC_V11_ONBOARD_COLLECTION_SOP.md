@@ -6,6 +6,8 @@
 
 代码块逐行执行，某行失败先处理该错误，再继续；行末 `\` 表示命令在下一行继续。以下步骤用于新目录，已有环境不要重复安装。
 
+“机器人终端”是机器人本机终端或登录到机器人后的SSH终端；“PC终端”是电脑自己的终端。每次新开终端后先执行该步骤里的 `cd`。第0步的临时查询变量不要求跨终端保留，查到的值请写入参数表。只复制代码块，不复制标题、编号和说明文字。
+
 ## 0. 确认设备和填写参数
 
 准备：G1＋机载Jetson、Inspire双手、RealSense、Ubuntu x86_64 PC、PICO 4/4 Pro、双手柄、双脚踝追踪器；双方需要联网下载依赖及本项目Git仓库读取权限。
@@ -146,10 +148,10 @@ gear_sonic_deploy/policy/sonic_v1_1/observation_config.yaml
 | 机器人SSH用户名 | 第7步SSH地址；非unitree时，第9步额外加 `--deploy-onboard-user 实际用户名` |
 | 机载IP | `--camera-host`、`--deploy-onboard-host`及SSH地址 |
 | 机器人运动控制网卡 | `--deploy-onboard-interface` |
-| PC有线网卡 | 第8步两个 `--network`；第9步 `--inspire-hand-network` |
+| PC有线网卡 | 第9步 `--inspire-hand-network`；第8步网页直接在机器人控制手，不需要此参数 |
 | PC有线IPv4 | `--offboard-zmq-host` |
 | PC Wi-Fi IPv4 | 第6步头显应用的PC Service地址 |
-| 左手、右手IP | 第8、9步 `--left-ip`/`--right-ip` 或 `--inspire-left-ip`/`--inspire-right-ip` |
+| 左手、右手IP | 第8步 `--left`/`--right`；第9步 `--inspire-left-ip`/`--inspire-right-ip` |
 | 机器人、PC项目路径 | 两端的 `cd`；机器人路径还用于 `--deploy-onboard-repo-root` |
 
 **完成标准：**参数表填写完整，PC能SSH连接到正确机器人，有线路由及Wi-Fi地址区分清楚；手部物理侧别在第8步完成最终确认。
@@ -188,7 +190,7 @@ uv --version
 ```bash
 mkdir -p /home/unitree/VLA
 cd /home/unitree/VLA
-git clone git@github.com:goldenstasteworriors/GR00T-WholeBodyControl.git
+git clone https://github.com/goldenstasteworriors/GR00T-WholeBodyControl.git
 cd GR00T-WholeBodyControl
 git checkout 3c7bf4acfb2b93fd3168cf27143c95871f60ea11
 git submodule update --init --recursive
@@ -201,7 +203,7 @@ PC执行：
 ```bash
 mkdir -p "$HOME/sonic_v11"
 cd "$HOME/sonic_v11"
-git clone git@github.com:goldenstasteworriors/GR00T-WholeBodyControl.git
+git clone https://github.com/goldenstasteworriors/GR00T-WholeBodyControl.git
 cd GR00T-WholeBodyControl
 git checkout 3c7bf4acfb2b93fd3168cf27143c95871f60ea11
 git submodule update --init --recursive
@@ -209,7 +211,7 @@ git lfs pull
 git rev-parse HEAD
 ```
 
-**完成标准：**两端提交号均为上述固定提交，依赖仓库及LFS文件下载成功。若clone提示权限不足，由仓库管理员给接收方帐号授予读取权限并配置其SSH公钥后重试。
+**完成标准：**两端提交号均为上述固定提交，依赖仓库及LFS文件下载成功。这里只下载代码，使用HTTPS以免首次安装还要配置GitHub SSH密钥；若仓库访问受限，由管理员提供读取权限后重试。不要在已有同名项目目录上重跑clone，也不要为了继续安装删除旧目录；改用新的父目录，并同步修改参数表和后续路径。
 
 ## 3. 机器人：安装C++依赖并编译推理程序
 
@@ -243,11 +245,12 @@ bash scripts/install_deps.sh
 source scripts/setup_env.sh
 just build
 test -x target/release/g1_deploy_onnx_ref && echo "部署程序已生成"
+ldd target/release/g1_deploy_onnx_ref
 ```
 
 依赖脚本在发现CUDA组件缺失时会尝试安装；基础组件缺失的机器不要继续跑此步骤，回到第1步处理。本流程使用ZMQ及Unitree DDS，无需额外配置ROS2。
 
-**完成标准：**编译成功，显示“部署程序已生成”。本步不启动机器人控制。
+**完成标准：**编译成功，显示“部署程序已生成”，且ldd输出没有 `not found`。若有缺失库，先修正依赖/库路径再继续；不能因为二进制文件存在就认定它能运行。本步不启动机器人控制。
 
 ## 4. 机器人：安装相机环境，下载v1.1模型
 
@@ -277,6 +280,8 @@ cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
 bash install_scripts/install_pico.sh
 bash install_scripts/install_data_collection.sh
 .venv_teleop/bin/python -c "import unitree_sdk2py; print('手控制依赖正常')"
+.venv_teleop/bin/python gear_sonic/scripts/pico_manager_thread_server.py --help
+.venv_data_collection/bin/python gear_sonic/scripts/run_data_exporter.py --help
 .venv_data_collection/bin/python gear_sonic/scripts/launch_data_collection.py --help
 ```
 
@@ -313,16 +318,38 @@ sudo apt-get install "./external_dependencies/downloads/XRoboToolkit_PC_Service_
 ssh unitree@192.168.123.164 hostname
 ```
 
-确保PC可以免密SSH登录，供启动器使用。尚未配置时，先准备PC自己的SSH公钥（若已有则复用），将公钥安装到机器人；不要复制私钥。PC已有默认公钥时可执行：
+确保PC可以免密SSH登录，供启动器使用。先在PC查看是否已有公钥：
+
+```bash
+ls "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub" 2>/dev/null
+```
+
+如果已经有默认公钥，跳过下面的生成命令；如果一个也没有，则执行：
+
+```bash
+ssh-keygen -t ed25519
+```
+
+保存位置按回车使用默认值；若提示文件已存在，不覆盖，先核对现有密钥。按终端提示设置密钥口令，使用有口令的密钥时先将其加载到当前桌面的ssh-agent，确保下方BatchMode检查通过。随后把PC公钥安装到机器人（替换用户名/IP，输入机器人登录密码）：
 
 ```bash
 ssh-copy-id unitree@192.168.123.164
 ssh -o BatchMode=yes unitree@192.168.123.164 hostname
 ```
 
+如果密钥有口令且BatchMode失败，在PC当前终端加载密钥后重试；下面以默认ed25519密钥为例，rsa密钥改用实际文件名：
+
+```bash
+eval "$(ssh-agent -s)"
+ssh-add "$HOME/.ssh/id_ed25519"
+ssh -o BatchMode=yes unitree@192.168.123.164 hostname
+```
+
+后续采集从这个已加载密钥的PC终端启动，使新建tmux会话能够继承agent。每次重新登录PC后先重做BatchMode检查。
+
 **完成标准：**第二条命令直接显示机器人主机名，不询问登录密码。启用防火墙时还需允许：机器人→PC TCP5556（PICO输入），PC→机器人TCP5557（状态反馈）、5555（相机）。
 
-## 8. PC：调灵巧手，并保存开合配置
+## 8. 机器人启动手控网页，PC调节并保存配置
 
 调节前退出采集和手桥接。本步骤使用机器人备份中的原工具，实际文件名是 **ctlhand.py**（不是ctrl_hand.py）。第2步固定版本已经包含该文件，不需要另找外部脚本，也不需要再安装整个locodemo项目。
 
@@ -379,6 +406,15 @@ nano gear_sonic/config/data_collection/inspire_hand_pose.json
 
 **网页不会自动保存该JSON。** 当前配置对双手共用一套开合目标；左右若必须用不同目标，需要先扩展配置和桥接后再交付。记录任务、日期和调节值。
 
+保存后在PC验证JSON格式：
+
+```bash
+cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
+.venv_data_collection/bin/python -m json.tool gear_sonic/config/data_collection/inspire_hand_pose.json
+```
+
+应正常打印配置而不报错；仍需人工确认open、grasp各有6个0～1数值。采集桥接在启动时读取该配置，修改后要停止旧桥接并重新启动第9.3步，不能指望旧进程自动刷新。
+
 **完成标准：**网页发送后真实手响应正常，JSON已保存。完成后在机器人手控终端及PC隧道终端分别Ctrl+C退出，防止与采集手桥接冲突。
 
 ## 9. 每次使用：按顺序启动相机、检查图像、采集
@@ -399,6 +435,8 @@ cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
 
 **9.3 PC终端：**替换第0步参数、任务提示和新的dataset-name后执行。启动器会启动机器人推理及PC手桥接，不再另外开手桥接。
 
+每次启动前，确认第8步手控网页已退出、第7步免密检查通过，并且第9.1步相机仍在运行。重新运行启动器会关闭同名旧tmux会话并重启桥接，已有采集应先正常保存并停止。
+
 ```bash
 cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
 .venv_data_collection/bin/python gear_sonic/scripts/launch_data_collection.py \
@@ -417,7 +455,17 @@ cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
   --profile-timing
 ```
 
-现场确认机器人已准备好后，在deploy窗口按y允许部署。确认相机、头显、身体状态和手反馈正常，然后依次：
+现场确认机器人已准备好后，在deploy窗口按y允许部署。
+
+启动后进入tmux：`data_collection`窗口左上是机器人C++推理，左下是PICO，右上是数据导出，右下是相机。鼠标点击对应pane即可输入；也可先按Ctrl+B松开，再按方向键切换pane。Ctrl+B松开再按W选择窗口，进入 `inspire_hand` 查看手桥接。出现“All components launched”只说明命令已发送；各pane不能有Traceback、持续连接失败或进程退出。
+
+若只是终端断开，在PC重新进入（不会重新启动控制）：
+
+```bash
+tmux attach -t sonic_data_collection
+```
+
+进入控制和录制时依次操作：
 
 1. 站直、双脚并拢、大臂贴体、小臂向前弯曲90度、掌心相对。
 2. A+B+X+Y启动策略并校准；等待稳定，对齐手臂，A+X进入POSE遥操作。
