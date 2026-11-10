@@ -4,6 +4,22 @@
 
 以下代码块按行执行；行末 `\` 表示命令继续到下一行。首次安装使用新目录；已有环境不要重复执行会重建 venv 的安装脚本。
 
+## 官方配置与本项目补充的边界
+
+**基础环境、SONIC v1.1 模型和观测配置按官方说明配置即可**，不需要为我们的数据格式重新训练模型或修改其网络。先依据下列官方教程完成基础安装及遥操作连通，再使用本文的手部配置与采集入口：
+
+| 部分 | 配置依据 |
+| --- | --- |
+| 机载平台、TensorRT、C++ 依赖与编译 | [官方 Deployment 安装](https://nvlabs.github.io/GR00T-WholeBodyControl/getting_started/installation_deploy.html) |
+| v1.1 encoder、decoder、observation_config | [官方模型下载](https://nvlabs.github.io/GR00T-WholeBodyControl/getting_started/download_models.html)，三件套保持配套，不手改模型输入维度 |
+| PICO 安装、配对和全身遥操作 | [官方 PICO 配置](https://nvlabs.github.io/GR00T-WholeBodyControl/getting_started/vr_teleop_setup.html)及[全身遥操作](https://nvlabs.github.io/GR00T-WholeBodyControl/tutorials/vr_wholebody_teleop.html) |
+| Inspire 开合调节、DDS/Modbus 桥接 | 本文第2节及本项目代码 |
+| 41维 state/action、手反馈及采集元数据 | 本项目导出器与 features 配置；不能直接用官方原版导出器替代 |
+
+本文不是官方文档的逐字复刻。另有三项适配需要保留：①我们的启动器通过SSH在机器人运行推理，官方数据采集示例默认推理在PC；②我们使用RealSense，官方采集教程主要验证OAK相机；③固定代码版本的下载参数、发布开关和启动参数与最新官方代码不同。**可以按官方文档安装基础依赖，但不要混用最新版官方启动命令与本项目旧版本参数；最终采集使用第3节入口。**
+
+如果选择最新官方仓库完成基础验证，官方 v1.1 下载参数为 `--sonic-v1-1`；本文固定版本采用下文的兼容下载方式。仅完成官方安装不会自动获得我们的灵巧手映射和保存格式。
+
 ## 1. 一次性准备
 
 **机器人系统前提**：按 NVIDIA 官方教程准备机载系统；AGX Orin 使用 JetPack 6＋TensorRT 10.7，Thor 使用 JetPack 7.1＋TensorRT 10.13。先核对实际型号、L4T 和 TensorRT，不在本 SOP 中升级 CUDA、驱动或刷机。不同平台的 TensorRT engine 不直接混用，在目标机生成。
