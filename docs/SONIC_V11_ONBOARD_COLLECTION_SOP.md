@@ -24,6 +24,41 @@
 
 **机器人系统前提**：按 NVIDIA 官方教程准备机载系统；AGX Orin 使用 JetPack 6＋TensorRT 10.7，Thor 使用 JetPack 7.1＋TensorRT 10.13。先核对实际型号、L4T 和 TensorRT，不在本 SOP 中升级 CUDA、驱动或刷机。不同平台的 TensorRT engine 不直接混用，在目标机生成。
 
+机器人先检查系统与已安装组件（只读）：
+
+```bash
+uname -m
+cat /etc/os-release
+cat /etc/nv_tegra_release
+dpkg-query -W nvidia-l4t-core libnvinfer10 libnvinfer-dev
+nvcc --version
+```
+
+若使用 TensorRT TAR 安装而非系统包，`dpkg-query` 查不到它是正常的；检查实际安装目录的 `include/NvInferVersion.h`。已有符合要求的安装直接复用。新机器人若尚未准备 JetPack/CUDA，需由设备维护者先完成基础系统准备；本文从平台已就绪开始，不包含刷机或驱动更换。
+
+机器人及PC准备基础工具（Ubuntu）：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git git-lfs curl wget tmux
+git lfs install
+```
+
+PC与机器人均需uv；若尚未安装，在对应机器执行官方uv安装器，再加载PATH：
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv --version
+```
+
+机器人在 `/home/unitree/VLA` 下克隆，PC在自己选定的项目父目录下克隆。以下只在机器人执行：
+
+```bash
+mkdir -p /home/unitree/VLA
+cd /home/unitree/VLA
+```
+
 机器人和 PC 均取得我们的固定代码版本（需要仓库读取权限；SSH key 配置由各自帐号完成）：
 
 ```bash
@@ -36,7 +71,21 @@ git lfs pull
 
 推荐机器人放到 `/home/unitree/VLA/GR00T-WholeBodyControl`；PC 可以自行选目录。后文 PC 命令均从项目根目录执行。已有部署可复用，但必须确认启动器指向的机器人目录和代码版本一致。
 
-**机器人：C++ 依赖和编译。** 依赖安装依据官方教程及 `gear_sonic_deploy/scripts/install_deps.sh`；先核对已有依赖，该脚本含系统依赖/CUDA 检测安装逻辑，不在已有机器人上不加检查地重跑。系统基础未满足时先完成平台适配。依赖齐全后：
+**机器人：TensorRT 路径、C++ 依赖和编译。** 官方原生安装依次运行依赖脚本、加载环境、编译。若 TensorRT TAR 已解压到自己的 `~/TensorRT`，先执行下面两行；实际安装在别处时替换路径。使用JetPack系统TensorRT时不要把它指向一个不存在的目录，应沿用系统安装与脚本检测。
+
+```bash
+export TensorRT_ROOT="$HOME/TensorRT"
+test -f "$TensorRT_ROOT/include/NvInferVersion.h"
+```
+
+确认前面的CUDA检查已通过，再执行官方依赖安装步骤。此脚本在发现CUDA缺失时会尝试安装，基础CUDA未就绪时应停止并交由设备维护者处理；不要让它替换现有CUDA环境。源码位置为 `gear_sonic_deploy/scripts/install_deps.sh`。
+
+```bash
+cd /home/unitree/VLA/GR00T-WholeBodyControl/gear_sonic_deploy
+bash scripts/install_deps.sh
+```
+
+依赖齐全后编译；官方ROS2为可选依赖，本SOP采用ZMQ和Unitree DDS，不需要为了SONIC控制额外安装ROS2：
 
 ```bash
 cd /home/unitree/VLA/GR00T-WholeBodyControl/gear_sonic_deploy
@@ -62,7 +111,7 @@ uv pip install --python .venv_camera/bin/python pyrealsense2 huggingface_hub
 sha256sum gear_sonic_deploy/policy/sonic_v1_1/* gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx
 ```
 
-**PC：安装 PICO 和采集环境**（安装前已有 uv；脚本会重建对应环境，只用于首次安装）：
+**PC：安装 PICO 和采集环境。** PC在项目根目录执行（脚本会重建对应环境，只用于首次安装；固定版本的Python由脚本选择，不能拿最新官网的Python版本说明强制覆盖）：
 
 ```bash
 bash install_scripts/install_pico.sh
@@ -70,7 +119,32 @@ bash install_scripts/install_data_collection.sh
 uv pip install --python .venv_teleop/bin/python flask
 ```
 
-按官方 [PICO 配置教程](https://nvlabs.github.io/GR00T-WholeBodyControl/getting_started/vr_teleop_setup.html)完成头显端及 PC Service 配对。安装脚本不等于头显已连接。PC 配置到机器人 SSH 免密登录，并确认到机器人的有线网卡、PC 有线地址及两手 IP；下面所有示例值需按本机替换。左右手物理归属须分别核实，不能只依据 IP 尾号。
+**PC：安装并启动XRoboToolkit PC Service。** 以下下载地址来自官方PICO教程，适用于x86_64 Ubuntu 22.04；文件保存在项目自己的目录中。Ubuntu 24.04将文件名内的 `22.04` 两处改为 `24.04`，不要装错系统版本。
+
+```bash
+mkdir -p external_dependencies/downloads
+wget -P external_dependencies/downloads https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/download/v1.0.0/XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
+sudo apt-get install ./external_dependencies/downloads/XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
+```
+
+安装后从桌面应用菜单打开XRoboToolkit PC Service并保持运行；具体启动入口随安装包版本变化，以已安装应用为准。PC Service装在PC，本SOP不要求在机器人再装一份。
+
+**PICO：一次性配对与校准。** 按[官方PICO教程](https://nvlabs.github.io/GR00T-WholeBodyControl/getting_started/vr_teleop_setup.html)完成以下操作：
+
+1. 准备PICO 4/4 Pro、双手柄、双脚踝追踪器；追踪器指示灯朝上且不被衣物遮挡。在头显Developer设置中按官方要求关闭Safeguard。
+2. Motion Tracker应用中清除旧配对，长按追踪器按钮约6秒进入红蓝闪烁配对模式，配对两只追踪器；按Calibrate，先站直、手柄垂于两侧，再低头让头显识别脚踝追踪器。
+3. 在头显浏览器进入[XRoboToolkit PICO发布页](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client/releases)，安装官方教程指定的 `XRoboToolkit-PICO-1.1.1.apk`，从应用库Unknown栏目打开。
+4. PC与头显接入同一Wi-Fi；在头显应用的PC Service中填写PC的 **Wi-Fi IPv4地址**，连接后状态须为WORKING。勾选Head、Controller，Data/Control选Send，Pico Motion Tracker选Full body。
+
+PC用以下命令查看地址和机器人路由；头显填写Wi-Fi地址，机载启动器填写机器人有线网卡地址，两者不要混淆：
+
+```bash
+ip -br -4 addr
+ip -4 route get 192.168.123.164
+ssh unitree@192.168.123.164 hostname
+```
+
+PC配置到机器人SSH免密登录（将PC已有公钥安装到机器人即可，不复制私钥）。网络对应：机器人连接PC的TCP 5556获取PICO输入，PC连接机器人的5557获取反馈、5555获取图像；启用防火墙时放通这三条路径。官方跨主机参数分别是 `--zmq-host` 和 `--zmq_feedback_host`，本项目启动器负责生成它们。确认实际网卡及两手IP，下面示例值按本机替换；左右手物理归属须分别核实。
 
 ## 2. 调整并记录灵巧手开合
 
@@ -163,6 +237,8 @@ cd /home/unitree/VLA/GR00T-WholeBodyControl
 ```
 
 这条命令会请求真实机器人控制，须现场确认机器人已准备好，再在 deploy pane 按 y。发布开关与部署确认缺一不可。首先确认头显数据、身体状态、手反馈及图像正常，再按 manager 提示校准、进入控制。可视化默认关闭以减少额外负载；需要预览时可改回两个 `--pico-vis-*` 参数。
+
+首次控制顺序：站直、双脚并拢、大臂贴体、小臂向前弯曲90度、掌心相对；按A+B+X+Y启动策略并校准，等待启动稳定，再将手臂与机器人当前姿态对齐，按A+X进入POSE全身遥操作。再按A+X返回PLANNER模式，按A+B+X+Y停止策略；C++控制终端的O也是官方停止入口。PLANNER不是停机状态，需确认已停止再退出。
 
 将焦点放到数据导出 pane：按 c 开始录制，再按 c 结束并保存；录制中按 x 丢弃当前段。每批使用新 dataset-name，不默认启用 `--overwrite-existing-dataset`。停止时先按控制界面提示停止身体控制，再退出进程，勿把 tmux 断开视为停止机器人。
 
