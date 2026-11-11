@@ -1,14 +1,15 @@
 """Control a project-private supervisord instance without system configuration."""
 import argparse
 from pathlib import Path
+import shutil
 import subprocess
 
 
 ROOT = Path("/share/personal/yekangjie/JAR_lab_primitives_20261111")
 PYTHON = "/share/personal/liyanjun/yanjun/envs/jar/bin/python"
 OFFICIAL = "/share/personal/liyanjun/yanjun/JAR/assets/olmo2-0425-1b-official"
-SUPERVISORD = "/root/miniforge/bin/supervisord"
-SUPERVISORCTL = "/root/miniforge/bin/supervisorctl"
+SUPERVISORD = next((p for p in ("/root/miniforge/bin/supervisord", "/etc/aibox/bin/supervisord") if Path(p).is_file()), None)
+SUPERVISORCTL = next((p for p in ("/root/miniforge/bin/supervisorctl", "/etc/aibox/bin/supervisorctl") if Path(p).is_file()), None)
 
 
 def main():
@@ -43,7 +44,7 @@ supervisor.rpcinterface_factory=supervisor.rpcinterface:make_main_rpcinterface
 serverurl=unix://{control}/supervisor.sock
 
 [program:jar-lab-20261111]
-command={PYTHON} -u {code}/run_queue.py --root {ROOT} --python {PYTHON} --official {OFFICIAL} --seconds 14400 --global-batch 32
+command={PYTHON} -u {code}/run_queue.py --root {ROOT} --python {PYTHON} --official {OFFICIAL} --seconds 14400 --global-batch 16 --devices 1,2 --idle-memory-mib 12000 --pause-keepalive
 directory={ROOT}
 autostart=true
 autorestart=false
