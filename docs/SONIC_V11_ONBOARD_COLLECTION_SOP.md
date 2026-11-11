@@ -1,5 +1,7 @@
 # SONIC v1.1 机载推理＋强脑 Revo2 手采集 SOP
 
+**GitHub 无法访问时：**先使用 [本机下载包与 PC→机器人安装说明](../tools/github_bundle/README_ZH.md)。它替代本文第 2～7 步的下载和安装入口，包含旧 GLIBC 的 RealSense 源码编译路径；不要再混用本文原来的在线安装脚本。网络、调手、采集和验收仍按本文对应步骤，并使用下载包说明里的强脑服务路径。APT/PyPI 和 HF Mirror 仍需联网。
+
 按第0～10步顺序操作。首次安装完成全部步骤；以后从第9步开始。官方链接只作来源参考，不需要另外跟随另一套教程。
 
 机器人运行SONIC v1.1、相机和**宇树官方BrainCo串口→DDS服务**；PC运行PICO和数据导出。本版只适配官方服务支持的强脑Revo2，不使用Inspire的手IP、TCP6000桥接或ctlhand.py，也不使用Dex3手接口。
