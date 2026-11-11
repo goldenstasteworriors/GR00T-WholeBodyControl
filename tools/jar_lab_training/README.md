@@ -28,5 +28,7 @@
 
 `run_queue.py` 在项目专用 supervisord 服务中运行，依次训练 6 项，每项 14400 秒。
 它使用独立队列锁，失败立即停止并记录状态；重启时从当前项最新完整 checkpoint 恢复剩余预算。
+检测到其他 GPU 训练时等待四卡显存均低于 2GiB，不停止其他任务；空闲后先运行实际四卡 5 步、
+checkpoint 完整回读及一次自由生成检查，通过后才开始正式队列。未通过的检查会阻止正式训练。
 恢复验证 world size、训练配方和数据签名。不操作已有 GPU 保活进程，不更改环境、CUDA 或驱动。
 日志、缓存、权重和临时目录都位于 `/share/personal/yekangjie/JAR_lab_primitives_20261111`。
