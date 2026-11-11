@@ -292,13 +292,13 @@ ssh -o BatchMode=yes unitree@192.168.123.164 hostname
 
 ```bash
 cd /home/unitree/VLA/GR00T-WholeBodyControl
-uv venv .venv_brainco_hand --python 3.10
-export CYCLONEDDS_HOME=/usr/local
-uv pip install --python .venv_brainco_hand/bin/python -r tools/brainco_hand_web/requirements.txt -e external_dependencies/unitree_sdk2_python
-.venv_brainco_hand/bin/python -m gear_sonic.scripts.brainco_hand_web --network eth0 --check-seconds 5
+bash tools/brainco_hand_web/install_env.sh
+bash tools/brainco_hand_web/run.sh --network eth0 --check-seconds 5
 ```
 
 替换eth0为官方服务使用的DDS网卡。check-seconds只读状态，不发命令；运行时第6步服务必须保持运行。
+
+安装脚本保留已有虚拟环境，自动在项目内补齐CycloneDDS 0.10.2开发头文件及Python绑定，不更换系统DDS。已有离线源码时可把压缩包路径作为安装脚本参数；具体见tools/brainco_hand_web/README.md。启动脚本自动设置库路径，不必手输环境变量。
 
 **完成标准：**PC免密检查成功；机器人打印左右各6个q、speed、current_a及age_s。q/speed为归一化量；current_a是电流A，不是力矩。检查超时则回第6步检查服务和DDS网卡。
 
@@ -315,7 +315,7 @@ scp gear_sonic/config/data_collection/brainco_hand_pose.json unitree@192.168.123
 
 ```bash
 cd /home/unitree/VLA/GR00T-WholeBodyControl
-.venv_brainco_hand/bin/python -m gear_sonic.scripts.brainco_hand_web --network eth0 --enable-commands
+bash tools/brainco_hand_web/run.sh --network eth0 --enable-commands
 ```
 
 **8.3 PC另开终端转发并保持运行：**
