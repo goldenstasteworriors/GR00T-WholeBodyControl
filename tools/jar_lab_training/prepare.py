@@ -10,7 +10,6 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from jar.mixed_cache import atomic_json, digest_json, encode_rgb, decode_rgb
-from jar.uniform_action_tokenizer import UniformActionTokenizer
 
 
 CAMERAS = ["observation.images.ego_view", "observation.images.left_wrist", "observation.images.right_wrist"]

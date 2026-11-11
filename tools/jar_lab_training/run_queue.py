@@ -117,7 +117,7 @@ def main():
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, stop)
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES=args.devices, OMP_NUM_THREADS="4", MKL_NUM_THREADS="4",
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES=args.devices, CUDA_DEVICE_ORDER="PCI_BUS_ID", OMP_NUM_THREADS="4", MKL_NUM_THREADS="4",
                PYTHONDONTWRITEBYTECODE="1", TOKENIZERS_PARALLELISM="false",
                TMPDIR=str(root / "runtime/tmp"), XDG_CACHE_HOME=str(root / "runtime/cache"),
                TORCHINDUCTOR_CACHE_DIR=str(root / "runtime/cache/inductor"),

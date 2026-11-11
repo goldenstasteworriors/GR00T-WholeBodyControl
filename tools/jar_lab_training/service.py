@@ -1,7 +1,6 @@
 """Control a project-private supervisord instance without system configuration."""
 import argparse
 from pathlib import Path
-import shutil
 import subprocess
 
 

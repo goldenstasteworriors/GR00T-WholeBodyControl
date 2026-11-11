@@ -1,4 +1,4 @@
-"""Four-GPU JAR training with a wall-clock budget and observation-only labels."""
+"""Distributed JAR training with a wall-clock budget and observation-only labels."""
 import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone, timedelta
