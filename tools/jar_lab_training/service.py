@@ -19,7 +19,9 @@ def main():
     config = control / "supervisord.conf"
     if args.action == "start":
         if (control / "supervisor.sock").exists():
-            subprocess.run([SUPERVISORCTL, "-c", str(config), "status"], check=True)
+            status = subprocess.run([SUPERVISORCTL, "-c", str(config), "status"])
+            if status.returncode:
+                subprocess.run([SUPERVISORCTL, "-c", str(config), "start", "jar-lab-20261111"], check=True)
             return
         code = Path(__file__).resolve().parent
         config.write_text(f"""[unix_http_server]
@@ -41,7 +43,7 @@ supervisor.rpcinterface_factory=supervisor.rpcinterface:make_main_rpcinterface
 serverurl=unix://{control}/supervisor.sock
 
 [program:jar-lab-20261111]
-command={PYTHON} -u {code}/queue.py --root {ROOT} --python {PYTHON} --official {OFFICIAL} --seconds 14400 --global-batch 32
+command={PYTHON} -u {code}/run_queue.py --root {ROOT} --python {PYTHON} --official {OFFICIAL} --seconds 14400 --global-batch 32
 directory={ROOT}
 autostart=true
 autorestart=false

@@ -26,7 +26,7 @@
 报告未来 observation 的臂部/夹爪 MAE、RMSE、逐关节 MAE，并对照保持当前状态的基线。
 这些结果属于离线预测误差，不是闭环操作成功率；观测预测也不等同于可直接执行的 actuator 命令。
 
-`queue.py` 在项目专用 supervisord 服务中运行，依次训练 6 项，每项 14400 秒。
+`run_queue.py` 在项目专用 supervisord 服务中运行，依次训练 6 项，每项 14400 秒。
 它使用独立队列锁，失败立即停止并记录状态；重启时从当前项最新完整 checkpoint 恢复剩余预算。
 恢复验证 world size、训练配方和数据签名。不操作已有 GPU 保活进程，不更改环境、CUDA 或驱动。
 日志、缓存、权重和临时目录都位于 `/share/personal/yekangjie/JAR_lab_primitives_20261111`。
