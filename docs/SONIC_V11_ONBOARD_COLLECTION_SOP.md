@@ -375,6 +375,14 @@ cd /home/unitree/VLA/GR00T-WholeBodyControl
 .venv_camera/bin/python -m gear_sonic.camera.composed_camera --ego-view-camera realsense --port 5555
 ```
 
+只运行一份相机服务。若系统有多个 RealSense 设备条目或默认枚举遇到异常设备，可指定目标相机的 **SDK 序列号**；从相机启动日志的 `Serial number` 行确认，不用 `/dev/video` 编号或 USB 路径代替。将下一条命令中的文字替换为实际序列号，再整行执行，代替上一条启动命令：
+
+```bash
+.venv_camera/bin/python -m gear_sonic.camera.composed_camera --ego-view-camera realsense --ego-view-device-id "替换为SDK序列号" --port 5555
+```
+
+启动日志会打印目标相机的 USB type：`3.x` 为 USB 3，`2.x` 为 USB 2。看到画面后至少观察 3 分钟，确认持续更新且没有连续取帧超时。若卡住，先看机器人端日志：本机取帧也超时应排查相机/USB 链路，指定序列号不能修复线缆、供电或设备通信故障。更换接口后重新确认速度，不能只根据接口颜色判断。
+
 **9.2 PC打开PC Service并连接PICO，然后检查画面；连续更新后按q退出：**
 
 ```bash

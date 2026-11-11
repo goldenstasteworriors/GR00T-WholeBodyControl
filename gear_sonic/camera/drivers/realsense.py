@@ -46,20 +46,20 @@ class RealSenseSensor(Sensor, SensorServer):
         config: RealSenseConfig = RealSenseConfig(),
         id: int = 0,
         mount_position: str = CameraMountPosition.EGO_VIEW.value,
+        serial_number: str | None = None,
     ):
-        devices = rs.context().query_devices()
-        if len(devices) == 0:
-            raise RuntimeError("No RealSense devices found")
-
-        for device in devices:
-            print(f"Device: {device.get_info(rs.camera_info.name)}")
-            print(f"    Serial number: {device.get_info(rs.camera_info.serial_number)}")
-            print(f"    Firmware version: {device.get_info(rs.camera_info.firmware_version)}")
+        # Selecting a serial directly avoids opening unrelated/unresponsive devices.
+        # Keep the historical sorted-index selection when no serial was requested.
+        if serial_number is None:
+            devices = rs.context().query_devices()
+            if len(devices) == 0:
+                raise RuntimeError("No RealSense devices found")
+            devices = sorted(devices, key=lambda x: x.get_info(rs.camera_info.serial_number))
+            serial_number = devices[id].get_info(rs.camera_info.serial_number)
 
         self.pipeline = rs.pipeline()
         self.config = rs.config()
-        devices = sorted(devices, key=lambda x: x.get_info(rs.camera_info.serial_number))
-        self.config.enable_device(devices[id].get_info(rs.camera_info.serial_number))
+        self.config.enable_device(serial_number)
 
         try:
             self.config.enable_stream(
@@ -69,7 +69,7 @@ class RealSenseSensor(Sensor, SensorServer):
                 rs.format.rgb8,
                 config.fps,
             )
-            self.pipeline.start(self.config)
+            profile = self.pipeline.start(self.config)
         except Exception as e:
             raise RuntimeError(f"Failed to start RealSense pipeline: {e}")
 
@@ -78,10 +78,12 @@ class RealSenseSensor(Sensor, SensorServer):
         self.mount_position = mount_position
         if self._run_as_server:
             self.start_server(port)
-        print(
-            f"Done initializing RealSense sensor: "
-            f"{devices[id].get_info(rs.camera_info.serial_number)}"
-        )
+        device = profile.get_device()
+        print(f"Device: {device.get_info(rs.camera_info.name)}")
+        print(f"    Serial number: {device.get_info(rs.camera_info.serial_number)}")
+        print(f"    Firmware version: {device.get_info(rs.camera_info.firmware_version)}")
+        print(f"    USB type: {device.get_info(rs.camera_info.usb_type_descriptor)}")
+        print(f"Done initializing RealSense sensor: {serial_number}")
 
     def read(self) -> dict[str, Any] | None:
         try:
