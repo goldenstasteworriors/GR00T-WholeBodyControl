@@ -22,6 +22,14 @@ bash tools/brainco_hand_web/run.sh --network eth0 --enable-commands
 
 第一条只读检查两只手状态后退出。第二条提供127.0.0.1:8080网页，PC通过SSH转发访问。没有enable-commands参数时禁止发动作；缺失/陈旧反馈也拒绝动作。初始化只订阅，不发布任何手目标。
 
+在采集PC本地另开终端执行并保持运行（不在机器人SSH终端执行）：
+
+```bash
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18080:127.0.0.1:8080 unitree@192.168.123.164
+```
+
+浏览器新开标签页打开 `http://127.0.0.1:18080/`。应显示“强脑 Revo2 双手调节”和左右手六指滑块。如果出现HMI遥操页面，说明打开了其他服务；不要点击它的控制按钮。PC本地用18080避免与HMI常用8080冲突。转发命令报端口占用/失败时先处理，不能把已有网页当成成功。机器人网页进程和PC转发进程均需保持运行。
+
 安装脚本保留已有虚拟环境，在项目 `.runtime/brainco-web-native/install` 安装完整的 CycloneDDS 0.10.2 开发库，避免某些SDK2分发包缺少 `idl/retcode.h`。不改动系统DDS或手部服务。默认使用清华PyPI镜像，`BRAINCO_PYPI_INDEX` 可指定其他可用源。
 
 已有离线源码时，安装脚本可接收压缩包路径；默认寻找 `.runtime/brainco-diagnostics/cyclonedds-0.10.2.tar.gz`，缺失时从官方codeload下载并检查SHA256。离线源需为官方0.10.2标签归档。启动脚本自动设置正确的 `CYCLONEDDS_HOME` 和库路径，不必手输；不要重建环境或把变量名写成 `CLONEDDS_HOME`。
