@@ -442,6 +442,8 @@ cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
 
 tmux的data_collection窗口：左上C++推理，左下PICO，右上数据导出，右下相机。鼠标点pane切换输入；Ctrl+B松开再按方向键也可切换。各pane不能有Traceback或持续连接失败。只显示“All components launched”不算验收通过。
 
+默认关闭PyVista的VR三点/SMPL预览，无界面采集不加载PyVista/VTK；上述两个`--no-pico-vis-*`参数也明确关闭预览。仍保留PICO姿态计算、校准和右下相机画面。只有调试3D显示时才添加`--pico-vis-vr3pt`，需要人体显示时再添加`--pico-vis-smpl`。
+
 现场确认机器人已准备好，再在C++ pane按y，接着：
 
 1. 站直、双脚并拢、大臂贴体、小臂向前弯90度、掌心相对。

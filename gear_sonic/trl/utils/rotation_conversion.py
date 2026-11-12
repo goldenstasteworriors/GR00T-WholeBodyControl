@@ -605,7 +605,8 @@ def quaternion_multiply_np(a, b):
 def decompose_rotation_aa(rotation_aa, v2):
     angle = np.linalg.norm(rotation_aa, axis=1)[:, None]
     w = np.cos(angle / 2)
-    v = np.sin(angle / 2) * rotation_aa / angle
+    # sin(angle / 2) / angle has the finite limit 1/2 at zero rotation.
+    v = 0.5 * np.sinc(angle / (2 * np.pi)) * rotation_aa
     q = np.concatenate([w, v], axis=1)
 
     v_twist = np.dot(v, v2)[:, None] * v2

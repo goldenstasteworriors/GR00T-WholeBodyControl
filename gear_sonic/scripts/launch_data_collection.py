@@ -174,10 +174,10 @@ class DataCollectionLaunchConfig:
     pico_input_source: str = "xrt"
     """Teleop input source for pico_manager_thread_server.py (xrt or isaac-teleop)."""
 
-    pico_vis_vr3pt: bool = True
+    pico_vis_vr3pt: bool = False
     """Enable VR 3-point visualization on the teleop streamer."""
 
-    pico_vis_smpl: bool = True
+    pico_vis_smpl: bool = False
     """Enable SMPL visualization on the teleop streamer."""
 
     pico_waist_tracking: bool = False

@@ -3,6 +3,9 @@
 """
 
 # Recommended Command Line Arguments:
+    # Normal collection: no PyVista/VTK preview
+    python pico_manager_thread_server.py --manager
+
     # With VR3 PT visualization (by --vis_vr3pt) and optional SMPL body visualization (by --vis_smpl)
     # If you want to enable waist tracking in the VR3 PT visualization, please add --waist_tracking
     python pico_manager_thread_server.py --manager \
@@ -94,17 +97,7 @@ except ImportError:
     print("Warning: G1GripperInverseKinematicsSolver not available.")
     G1GripperInverseKinematicsSolver = None
 
-try:
-    from gear_sonic.utils.teleop.vis.vr3pt_pose_visualizer import VR3PtPoseVisualizer
-except ImportError:
-    print("Warning: VR3PtPoseVisualizer not available (pyvista may not be installed).")
-    VR3PtPoseVisualizer = None
-
-try:
-    from gear_sonic.utils.teleop.vis.vr3pt_pose_visualizer import get_g1_key_frame_poses
-except ImportError:
-    print("Warning: get_g1_key_frame_poses not available (pyvista may not be installed).")
-    get_g1_key_frame_poses = None
+from gear_sonic.utils.teleop.g1_key_frame_poses import get_g1_key_frame_poses
 
 
 class LocomotionMode(IntEnum):
@@ -336,8 +329,7 @@ def run_vr3pt_visualizer_test():
     Standalone test for VR 3-point pose visualizer using PyVista.
     Run this to verify the reference frames are displayed correctly.
     """
-    if VR3PtPoseVisualizer is None:
-        raise ImportError("VR3PtPoseVisualizer not available. Install pyvista: pip install pyvista")
+    from gear_sonic.utils.teleop.vis.vr3pt_pose_visualizer import VR3PtPoseVisualizer
 
     print("=" * 60)
     print("VR 3-Point Pose Visualizer Test (PyVista)")
@@ -364,8 +356,7 @@ def run_vr3pt_live_visualizer():
             "XRoboToolkit SDK not available. Install xrobotoolkit_sdk to use live visualizer."
         )
 
-    if VR3PtPoseVisualizer is None:
-        raise ImportError("VR3PtPoseVisualizer not available. Install pyvista: pip install pyvista")
+    from gear_sonic.utils.teleop.vis.vr3pt_pose_visualizer import VR3PtPoseVisualizer
 
     print("=" * 60)
     print("VR 3-Point Pose Live Visualizer (PyVista)")
@@ -414,8 +405,7 @@ def run_vr3pt_realtime_visualizer(update_hz: int = 10):
             "XRoboToolkit SDK not available. Install xrobotoolkit_sdk to use realtime visualizer."
         )
 
-    if VR3PtPoseVisualizer is None:
-        raise ImportError("VR3PtPoseVisualizer not available. Install pyvista: pip install pyvista")
+    from gear_sonic.utils.teleop.vis.vr3pt_pose_visualizer import VR3PtPoseVisualizer
 
     print("=" * 60)
     print("VR 3-Point Pose Real-time Visualizer (PyVista)")
@@ -1010,11 +1000,7 @@ class ThreePointPose:
         # Optional visualization (requires display + PyVista)
         self.vr3pt_visualizer = None
         if enable_vis_vr3pt:
-            if VR3PtPoseVisualizer is None:
-                raise ImportError(
-                    "VR3PtPoseVisualizer could not be imported but --vis_vr3pt was requested. "
-                    "Ensure pyvista is installed: pip install pyvista"
-                )
+            from gear_sonic.utils.teleop.vis.vr3pt_pose_visualizer import VR3PtPoseVisualizer
             self.vr3pt_visualizer = VR3PtPoseVisualizer(
                 axis_length=0.08,
                 ball_radius=0.015,
@@ -1133,12 +1119,6 @@ class ThreePointPose:
                 "Robot model is required for calibration but was not loaded. "
                 "Ensure the G1 robot model and URDF are available."
             )
-        if get_g1_key_frame_poses is None:
-            raise RuntimeError(
-                "get_g1_key_frame_poses could not be imported. "
-                "Ensure gear_sonic.utils.teleop.vis.vr3pt_pose_visualizer is available."
-            )
-
         # Convert 29-DOF override to full model config if needed
         if self._override_robot_q is not None:
             robot_q = self._robot_model.get_configuration_from_actuated_joints(
