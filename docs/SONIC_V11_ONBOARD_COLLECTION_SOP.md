@@ -239,7 +239,13 @@ wget -P external_dependencies/downloads "https://github.com/XR-Robotics/XRoboToo
 sudo apt-get install "./external_dependencies/downloads/XRoboToolkit_PC_Service_1.0.0_ubuntu_${VERSION_ID}_amd64.deb"
 ```
 
-打开桌面应用XRoboToolkit PC Service并保持运行。头显按顺序：
+PC只需运行XRoboToolkit通信后台；已有`RoboticsServiceProcess`时直接复用，否则执行下面一行：
+
+```bash
+bash /opt/apps/roboticsservice/runService.sh
+```
+
+采集时不要启动`run3D.sh`或桌面的3D演示`RobotLinuxDemo`；它与PyVista是两个不同的可视化程序，均不参与数据保存，额外渲染可能争抢CPU资源。通信后台保持运行。头显按顺序：
 
 1. 两只脚踝追踪器指示灯朝上，避免衣物遮挡；Developer设置关闭Safeguard。
 2. Motion Tracker清除旧配对，长按追踪器按钮约6秒到红蓝闪烁后配对。
