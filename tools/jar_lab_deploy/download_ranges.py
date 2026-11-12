@@ -1,10 +1,12 @@
 """Resumable, hash-checked ModelScope API range downloads on one chosen NIC."""
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import hashlib
 import json
 from pathlib import Path
 import shutil
 import socket
+import struct
 import time
 
 import requests
@@ -31,14 +33,28 @@ def download_file(repo, record, directory, token, interface=None, workers=12):
     if target.is_file() and target.stat().st_size == size and checksum(target) == record["sha256"]:
         return target
     class Adapter(HTTPAdapter):
+        def __init__(self, bound_interface):
+            self.bound_interface = bound_interface
+            super().__init__()
+
         def init_poolmanager(self, *args, **kwargs):
             options = [option for option in HTTPConnection.default_socket_options
                        if option[:2] != (socket.SOL_SOCKET, socket.SO_BINDTODEVICE)]
-            if interface:
-                socket.if_nametoindex(interface)
-                options.append((socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\0"))
+            if self.bound_interface:
+                options.append((socket.SOL_SOCKET, socket.SO_BINDTODEVICE, self.bound_interface.encode() + b"\0"))
             kwargs["socket_options"] = options
             return super().init_poolmanager(*args, **kwargs)
+    def available_interface(attempt):
+        # DHCP renewals can temporarily remove an address. Retry over the default
+        # route on alternate attempts, without changing any host network setting.
+        if not interface or attempt % 2:
+            return None
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                fcntl.ioctl(probe.fileno(), 0x8915, struct.pack("256s", interface.encode()[:15]))
+            return interface
+        except OSError:
+            return None
     part_size = 64 * 1024 * 1024
     ranges = [(start, min(size - 1, start + part_size - 1)) for start in range(0, size, part_size)]
     def fetch(bounds):
@@ -47,7 +63,6 @@ def download_file(repo, record, directory, token, interface=None, workers=12):
         expected = end - start + 1
         with requests.Session() as session:
             session.trust_env = False
-            session.mount("https://", Adapter())
             for attempt in range(12):
                 have = part.stat().st_size if part.exists() else 0
                 if have == expected:
@@ -55,6 +70,8 @@ def download_file(repo, record, directory, token, interface=None, workers=12):
                 if have > expected:
                     raise ValueError("Range part exceeds expected size")
                 try:
+                    session.get_adapter("https://").close()
+                    session.mount("https://", Adapter(available_interface(attempt)))
                     first = start + have
                     with session.get(f"https://modelscope.cn/api/v1/models/{repo}/repo",
                                      params={"Revision": "master", "FilePath": record["path"]},
