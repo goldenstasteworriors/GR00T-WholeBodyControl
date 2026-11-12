@@ -44,7 +44,8 @@ def main():
     def infer():
         client = Client(args.policy_endpoint)
         try:
-            for _ in range(args.chunks):
+            count = 0
+            while count < args.chunks:
                 if stopped.is_set():
                     break
                 with lock:
@@ -63,8 +64,9 @@ def main():
                     current = latest.copy()
                     if np.max(np.abs(current["state"][:14] - packet["state"][:14])) > .1:
                         raise RuntimeError("Measured arms moved too far during inference; reset the session")
-                    prediction.update(target=result["positions"][0], captured=captured)
-            stopped.set()
+                    count += 1
+                    prediction.update(target=result["positions"][0], captured=captured,
+                                      done=count == args.chunks)
         except Exception as error:
             print(f"JAR inference stopped: {error}", flush=True)
             prediction["error"] = str(error)
@@ -112,6 +114,8 @@ def main():
                                        jar_sequence=sequence, jar_sent_monotonic=now, jar_reset=True,
                                        jar_operator_epoch=args.operator_epoch))
                 sequence += 1
+            if target.get("done"):
+                break
             stopped.wait(1/30)
         if prediction.get("error"):
             raise RuntimeError(prediction["error"])
