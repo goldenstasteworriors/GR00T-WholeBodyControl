@@ -28,7 +28,7 @@ def main():
         command = [str(root / ".venv/bin/python"), "-u", str(deployment / "serve.py"),
                    "--bundle", str(root / "bundle"), "--task", args.task, "--checkpoint", args.checkpoint]
     else:
-        command = [str(root / ".venv-download/bin/python"), "-u", str(deployment / "sync_modelscope.py"), "--root", str(root), "--watch"]
+        command = [str(root / ".venv-download/bin/python"), "-u", str(deployment / "sync_modelscope.py"), "--root", str(root), "--watch", "--validate"]
     subprocess.run(["systemd-run", "--user", "--unit", unit, "--collect",
                     "--property=Restart=on-failure", "--property=RestartSec=30",
                     f"--property=WorkingDirectory={root}",

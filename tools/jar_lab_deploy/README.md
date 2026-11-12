@@ -45,11 +45,14 @@ bash bundle/deployment/run.sh start-policy --task TAKE_TUBE --checkpoint best
 bash bundle/deployment/run.sh status
 ```
 
-继续从ModelScope下载后续完成的操作，直到本轮六项全部到齐后退出：
+继续从ModelScope下载后续完成的操作，并逐个运行真实GPU推理验证，直到本轮六项全部到齐且验证完后退出：
 
 ```bash
 bash bundle/deployment/run.sh start-sync
 ```
+
+自动验证和真机输出共用项目锁：真机运行时验证会等待；若验证正在占用GPU，真机入口拒绝接管。
+需要立即真机操作时，先执行 `bash bundle/deployment/run.sh stop-sync`，结束后再start-sync继续续传、验证。
 
 连接G1时，先确认它是29DOF、Dex1双夹爪，原厂站立控制运行。相机服务必须提供上述三路图像。
 下方相机地址是采集记录中的示例值；若现场IP或端口不同，必须替换。pku4090当前有线网卡为enp132s0。

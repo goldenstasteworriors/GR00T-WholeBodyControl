@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import socket
+import subprocess
 from pathlib import Path
 import time
 
@@ -22,6 +23,7 @@ def main():
     parser.add_argument("--repo", default="ykjykj/JAR-G1-Lab-UpperBody-Observation-20261111")
     parser.add_argument("--watch", action="store_true", help="Finish when all six trained operations are downloaded")
     parser.add_argument("--best-only", action="store_true")
+    parser.add_argument("--validate", action="store_true", help="Benchmark each verified checkpoint in the deployment environment")
     args = parser.parse_args()
     interface_path = args.root / "runtime/download-interface"
     if interface_path.is_file():
@@ -47,6 +49,10 @@ def main():
             for record in subset:
                 download_file(args.repo, record, bundle, token,
                               interface=interface_path.read_text().strip() if interface_path.is_file() else None)
+                if args.validate:
+                    subprocess.run([str(args.root / ".venv/bin/python"), str(Path(__file__).with_name("benchmark.py")),
+                                    "--root", str(args.root), "--task", record["path"].split("/")[0],
+                                    "--checkpoint", str(record["step"])], check=True)
         for record in weights:
             path = bundle / record["path"]
             stat = path.stat()

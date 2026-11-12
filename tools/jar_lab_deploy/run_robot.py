@@ -1,5 +1,6 @@
 """Asynchronous JAR inference and 50Hz rate-limited G1 position references."""
 import argparse
+import fcntl
 import json
 from pathlib import Path
 import signal
@@ -29,6 +30,11 @@ def main():
     if args.live:
         if not sys.stdin.isatty() or input("G1 must be standing under its native controller. Type ARM to enable only arms/Dex1: ").strip() != "ARM":
             raise SystemExit("Motor outputs were not enabled")
+        control_lock = Path(__file__).resolve().parents[2].joinpath("runtime/robot-control.lock").open("a")
+        try:
+            fcntl.flock(control_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit("Checkpoint validation or another live controller is active; wait or stop-sync before retrying")
     stopped = threading.Event()
     def stop(signum, frame):
         stopped.set()
