@@ -20,6 +20,8 @@ class Cameras:
         self.lock = threading.Lock()
         self.stopped = threading.Event()
         self.error = None
+        self.capture_times = None
+        self.last_advance = np.zeros(3)
         self.thread = threading.Thread(target=self._receive, name="camera-input")
         self.thread.start()
 
@@ -53,8 +55,15 @@ class Cameras:
                 times = np.asarray(times)
                 if not np.isfinite(times).all():
                     raise ValueError("Invalid camera capture times")
+                received = time.monotonic()
                 with self.lock:
-                    self.frames.append((time.monotonic(), np.stack(pictures), times - times.max()))
+                    advanced = np.ones(3, dtype=bool) if self.capture_times is None else times > self.capture_times
+                    if self.capture_times is not None and np.any(times < self.capture_times - 1e-5):
+                        raise ValueError("Camera capture clock moved backwards")
+                    self.last_advance[advanced] = received
+                    self.capture_times = times.copy()
+                    if advanced.any():
+                        self.frames.append((received, np.stack(pictures), times - times.max()))
                     self.error = None
         except Exception as error:
             self.error = str(error)
@@ -65,9 +74,10 @@ class Cameras:
     def history(self, max_age=.25):
         with self.lock:
             frames = list(self.frames)
+            last_advance = self.last_advance.copy()
         if self.error:
             raise RuntimeError(self.error)
-        if not frames or time.monotonic() - frames[-1][0] > max_age:
+        if not frames or time.monotonic() - min(last_advance) > max_age:
             raise TimeoutError("Waiting for three fresh cameras")
         cut = len(frames) - 1
         indices = np.unique(np.maximum(0, cut - np.array([24, 16, 8, 0])))
