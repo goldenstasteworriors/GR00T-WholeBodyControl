@@ -17,7 +17,7 @@ class ReferenceGuard:
             raise ValueError("Invalid measured robot state")
         if np.any(measured < self.low - .02) or np.any(measured > self.high + .02):
             raise ValueError("Measured position is outside configured physical bounds")
-        self.last = measured.copy()
+        self.last = np.clip(measured, self.low, self.high)
 
     def step(self, measured, target, dt, observation_age, prediction_age):
         measured, target = np.asarray(measured), np.asarray(target)
@@ -28,6 +28,8 @@ class ReferenceGuard:
             raise ValueError("Invalid state/reference/control period")
         if not 0 <= observation_age <= self.max_observation_age:
             raise TimeoutError("Robot observations stale; refuse further reference updates")
+        if np.any(np.abs(self.last - measured) > .150001):
+            raise RuntimeError("Robot moved outside the held reference envelope; stop instead of jumping targets")
         if not 0 <= prediction_age <= self.max_prediction_age:
             return self.last.copy(), "hold_stale_prediction"
         target = np.clip(target, self.low, self.high)

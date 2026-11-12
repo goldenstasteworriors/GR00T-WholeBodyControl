@@ -104,6 +104,12 @@ class UnitreeRobot:
 
     def close(self, last_reference=None):
         if self.live and last_reference is not None:
+            try:
+                measured, age = self.observe()
+                if age <= self.profile["max_observation_age"]:
+                    last_reference = measured
+            except (TimeoutError, ValueError):
+                pass
             for _ in range(110):
                 self.send(last_reference, release=True)
                 time.sleep(.02)
