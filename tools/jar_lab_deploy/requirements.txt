@@ -1,0 +1,16 @@
+torch==2.8.0
+transformers==5.12.1
+numpy==2.2.6
+tokenizers
+safetensors
+pillow
+pyarrow
+pandas
+scipy
+lz4
+pyzmq
+msgpack
+msgpack-numpy
+opencv-python-headless
+modelscope-hub==0.7.1
+unitree-sdk2py==1.0.1
