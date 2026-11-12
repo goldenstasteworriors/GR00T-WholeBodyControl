@@ -18,6 +18,7 @@ from sensors import Cameras
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--interface", required=True)
+    parser.add_argument("--dds-domain", type=int, default=0)
     parser.add_argument("--camera-endpoint", required=True)
     parser.add_argument("--policy-endpoint", default="tcp://127.0.0.1:5560")
     parser.add_argument("--profile", default=str(Path(__file__).with_name("g1_dex1.json")))
@@ -33,7 +34,7 @@ def main():
         stopped.set()
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
-    robot = UnitreeRobot(args.interface, profile, live=args.live)
+    robot = UnitreeRobot(args.interface, profile, live=args.live, domain=args.dds_domain)
     cameras = Cameras(args.camera_endpoint)
     guard = ReferenceGuard(profile["low"], profile["high"], profile["arm_max_speed"], profile["gripper_max_speed"],
                            profile["max_observation_age"], profile["max_prediction_age"])

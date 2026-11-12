@@ -10,9 +10,12 @@ import time
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.connection import HTTPConnection
+import urllib3.util.connection
 
 
 def download_file(repo, record, directory, token, interface=None, workers=12):
+    # The target's IPv6 ModelScope route stalls; this affects only this process.
+    urllib3.util.connection.allowed_gai_family = lambda: socket.AF_INET
     root = Path(directory).resolve()
     target = (root / record["path"]).resolve()
     if not target.is_relative_to(root):
