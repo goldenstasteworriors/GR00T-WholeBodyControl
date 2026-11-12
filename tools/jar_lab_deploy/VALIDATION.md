@@ -10,7 +10,13 @@
   三次回车、站立阶段双臂零增益/零补偿且不写夹爪、限速姿态收敛、服务就绪门控、d/r、旧epoch拒绝、
   初始姿态菜单保存和子进程退出处理通过；Walk函数替换为报错后零调用。
 - 使用生产BodyCommandSender在内存中验证LowCmd关节到电机力矩映射、CRC、阻尼tau/KP零、KD8及阻尼后的写入锁存。
-- 证据：reports/operator-config.json、reports/jar-gravity-numeric.json、reports/jar-operator-mock.json。
+- 真实机器人只读重力检查：12秒592个body/IMU样本，最大body延迟1.175毫秒，仅计算未下发。
+  命令发布器构造和send均设为报错，创建命令发布器及发送尝试为零。
+- 真实只读operator idle运行12秒并信号退出，底层Write和ReleaseMode硬拦截；零调用、正常退出。
+- 真实三相机、实测机器人观测和DISPENSE/step1000 GPU RPC的客户端集成通过。
+  readonly禁止创建ROS目标发布器；模拟execute仅写入内存ROS对象，chunks1确实交付一次预测再发送停止消息。
+- 证据：reports/operator-config.json、reports/jar-gravity-numeric.json、reports/jar-operator-mock.json、
+  reports/jar-gravity-robot-readonly.json、reports/jar-operator-robot-idle.json、reports/jar-client-integration.json。
 - **没有运行operator --execute，没有发送机器人控制命令。实际站立稳定性、初始化轨迹、补偿手感及抓取任务成功率尚未验收。**
 
 本记录对应已从ModelScope下载的 `DISPENSE_TO_HELD_TUBE / step1000` 最佳权重。
