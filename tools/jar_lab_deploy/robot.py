@@ -1,17 +1,28 @@
 """G1 arm_sdk and Dex1 DDS endpoints, with read-only construction by default."""
 import threading
 import time
+from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
 
 
 class UnitreeRobot:
     def __init__(self, interface, profile, live=False, domain=0):
+        import unitree_sdk2py.core.channel as channels
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber, ChannelPublisher
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
         from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorCmds_, MotorStates_
         from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_, unitree_go_msg_dds__MotorCmd_
         from unitree_sdk2py.utils.crc import CRC
+        log_path = Path(__file__).resolve().parents[2] / "runtime/dds.log"
+        log_path.parent.mkdir(exist_ok=True)
+        # The SDK defaults to a system temporary directory; keep its trace in this project.
+        config = channels.ChannelConfigHasInterface.replace("/tmp/cdds.LOG", escape(str(log_path)))
+        if interface == "lo":
+            config = config.replace("</Domain>", "<Discovery><ParticipantIndex>auto</ParticipantIndex>"
+                                    "<Peers><Peer address=\"127.0.0.1\"/></Peers></Discovery></Domain>")
+        channels.ChannelConfigHasInterface = config
         ChannelFactoryInitialize(domain, interface)
         self.live, self.profile = live, profile
         self.lock = threading.Lock()
