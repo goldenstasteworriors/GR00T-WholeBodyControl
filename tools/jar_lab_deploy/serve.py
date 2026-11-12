@@ -35,7 +35,12 @@ def main():
             if not socket.poll(200):
                 continue
             try:
-                arrays, steps = decode_request(socket.recv_multipart())
+                parts = socket.recv_multipart()
+                if len(parts) == 1 and json.loads(parts[0]).get("type") == "status":
+                    socket.send_json(dict(ok=True,task=args.task,checkpoint=predictor.weights,
+                                          observation_dim=16,bins=512,horizon=32))
+                    continue
+                arrays, steps = decode_request(parts)
                 result = predictor.predict(*arrays, steps=steps)
                 positions = result["positions"].astype("<f4")
                 socket.send_multipart([json.dumps(dict(ok=True, task=args.task, shape=list(positions.shape),

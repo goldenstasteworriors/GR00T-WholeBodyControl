@@ -47,6 +47,13 @@ class Client:
             raise ValueError("Invalid response")
         return dict(positions=positions, round_trip_seconds=time.monotonic() - started, **header)
 
+    def status(self):
+        self.socket.send_json(dict(type="status",version=1))
+        result = self.socket.recv_json()
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error","Policy not ready"))
+        return result
+
     def close(self):
         self.socket.close()
         self.context.term()
