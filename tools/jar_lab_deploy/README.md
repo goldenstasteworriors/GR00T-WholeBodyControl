@@ -12,6 +12,7 @@ Ubuntu缺少Python开发头文件时，安装脚本只把官方dev包解压到ru
 
 输入顺序固定为左臂7关节、右臂7关节、左Dex1、右Dex1，角度单位rad。对应原 `observation.state[15:31]`。
 相机顺序为ego_view、left_wrist、right_wrist，RGB，240×240；历史为30Hz下 `[t-24,t-16,t-8,t]`，启动时去重。
+在线历史按这些相对时间选最近的因果帧，保留实际时间间隔；每路相机独立检查时间戳是否持续更新。
 归一化和英文指令直接读取各操作的 `observation_representation.json`，不读取 action 或初始框。
 
 权重预测未来32帧的观测位置。运行时可以只生成前1帧的16个token；这与完整512-token生成的首帧严格对应，

@@ -79,11 +79,12 @@ class Cameras:
             raise RuntimeError(self.error)
         if not frames or time.monotonic() - min(last_advance) > max_age:
             raise TimeoutError("Waiting for three fresh cameras")
-        cut = len(frames) - 1
-        indices = np.unique(np.maximum(0, cut - np.array([24, 16, 8, 0])))
+        received_times = np.asarray([frame[0] for frame in frames])
+        targets = received_times[-1] - np.array([24, 16, 8, 0]) / 30
+        indices = np.unique(np.maximum(0, np.searchsorted(received_times, targets, side="right") - 1))
         pictures = np.stack([frames[i][1] for i in indices])
-        # Match the native 30Hz cut clock; retain per-tuple camera skew.
-        ages = np.stack([(i - cut) / 30 + frames[i][2] for i in indices]).astype(np.float32)
+        # Sample causal 30Hz anchors by time, so packet loss does not compress history.
+        ages = np.stack([frames[i][0] - received_times[-1] + frames[i][2] for i in indices]).astype(np.float32)
         return pictures, ages
 
     def close(self):
