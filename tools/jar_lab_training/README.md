@@ -35,3 +35,17 @@
 checkpoint 完整回读及一次自由生成检查，通过后才开始正式队列。未通过的检查会阻止正式训练。
 恢复验证 world size、训练配方和数据签名。不操作已有 GPU 保活进程，不更改环境、CUDA 或驱动。
 日志、缓存、权重和临时目录都位于 `/share/personal/yekangjie/JAR_lab_primitives_20261111`。
+
+## ModelScope 上传托管
+
+`upload_service.py` 在训练服务器的独立 supervisord 中运行；本机或 SSH 断线不影响它。
+仅跟随本轮固定6项训练：某项训练和离线评估均完成后，上传其保留的全部模型权重。
+远端大小及SHA256核对成功后写回执；网络失败保留上传缓存并重试，全部6项上传后退出。
+原训练服务独立运行。上传凭据保留在服务器任务目录的 `.private` 中，不进入导出包或 Git。
+
+以下每行是一条完整命令，按需分别执行，无须手动换行：
+
+```bash
+ssh -- 'ai2-root-4080' '/etc/aibox/bin/python3.9 /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/upload_service.py status'
+ssh -- 'ai2-root-4080' '/etc/aibox/bin/python3.9 /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/upload_service.py start'
+```

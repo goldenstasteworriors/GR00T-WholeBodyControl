@@ -44,7 +44,8 @@ def prepare(root, export):
     records, weights = [], []
     for run in sorted((root / "runs").iterdir()):
         status_path = run / "status.json"
-        if not status_path.exists() or read(status_path).get("state") != "complete":
+        if (not status_path.exists() or read(status_path).get("state") != "complete"
+                or not (run / "autoregressive_evaluation.json").is_file()):
             continue
         status, best, latest = (read(run / name) for name in ("status.json", "best.json", "latest.json"))
         target = export / run.name
