@@ -1,0 +1,11 @@
+/*
+!/.gitignore
+!/bundle/
+/bundle/*
+!/bundle/deployment/
+/bundle/deployment/*
+!/bundle/deployment/*.py
+!/bundle/deployment/*.sh
+!/bundle/deployment/*.json
+!/bundle/deployment/*.txt
+!/bundle/deployment/*.md

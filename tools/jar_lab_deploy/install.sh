@@ -18,6 +18,11 @@ cmake -S "$deploy_root/runtime/cyclonedds-0.10.5" -B "$deploy_root/runtime/cyclo
     -DCMAKE_INSTALL_PREFIX="$deploy_root/runtime/cyclonedds" -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF
 cmake --build "$deploy_root/runtime/cyclonedds-build" --target install -j 4
 export CYCLONEDDS_HOME="$deploy_root/runtime/cyclonedds"
+if [ -d "$deploy_dir/wheelhouse" ]; then
+    "$uv_bin" pip install --python "$python_bin" --no-index --find-links "$deploy_dir/wheelhouse" \
+        torch==2.8.0 transformers==5.12.1 numpy==2.2.6 tokenizers safetensors pillow pyarrow pandas scipy \
+        lz4 pyzmq msgpack msgpack-numpy opencv-python-headless modelscope-hub==0.7.1
+fi
 "$uv_bin" pip install --python "$python_bin" -r "$deploy_dir/requirements.txt"
 tar -xzf "$deploy_dir/vendor/unitree_sdk2_python.tar.gz" -C "$deploy_root/runtime"
 "$uv_bin" pip install --python "$python_bin" --no-deps "$deploy_root/runtime/external_dependencies/unitree_sdk2_python"

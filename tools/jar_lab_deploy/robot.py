@@ -21,6 +21,8 @@ class UnitreeRobot:
         self.subscribers = []
         def body_callback(message):
             values = np.asarray([m.q for m in message.motor_state[:29]], dtype=np.float64)
+            if values.shape != (29,) or not np.isfinite(values[12:29]).all():
+                return
             with self.lock:
                 self.body, self.received[0] = values, time.monotonic()
                 self.mode_machine = message.mode_machine
