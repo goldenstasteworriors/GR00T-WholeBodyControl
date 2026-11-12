@@ -29,7 +29,8 @@ def download_file(repo, record, directory, token, interface=None, workers=12):
         return target
     class Adapter(HTTPAdapter):
         def init_poolmanager(self, *args, **kwargs):
-            options = list(HTTPConnection.default_socket_options)
+            options = [option for option in HTTPConnection.default_socket_options
+                       if option[:2] != (socket.SOL_SOCKET, socket.SO_BINDTODEVICE)]
             if interface:
                 socket.if_nametoindex(interface)
                 options.append((socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\0"))
