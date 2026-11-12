@@ -28,8 +28,8 @@ def main():
         interface = interface_path.read_text().strip()
         socket.if_nametoindex(interface)
         from urllib3.connection import HTTPConnection
-        HTTPConnection.default_socket_options = HTTPConnection.default_socket_options + [
-            (socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\0")]
+        HTTPConnection.default_socket_options.append(
+            (socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\0"))
     os.environ.setdefault("MODELSCOPE_DOWNLOAD_PARALLEL_WORKERS", "12")
     os.environ.setdefault("MODELSCOPE_DOWNLOAD_PART_SIZE_MB", "64")
     from modelscope_hub import HubApi
