@@ -33,7 +33,9 @@ def main():
     os.environ.setdefault("MODELSCOPE_DOWNLOAD_PARALLEL_WORKERS", "12")
     os.environ.setdefault("MODELSCOPE_DOWNLOAD_PART_SIZE_MB", "64")
     from modelscope_hub import HubApi
-    api = HubApi(token=(args.root / ".private/modelscope.token").read_text().strip(), endpoint="https://modelscope.cn")
+    from download_ranges import download_file
+    token = (args.root / ".private/modelscope.token").read_text().strip()
+    api = HubApi(token=token, endpoint="https://modelscope.cn")
     bundle = args.root / "bundle"
     cache_path = args.root / "reports/verified-downloads.json"
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
@@ -42,9 +44,9 @@ def main():
         manifest = json.loads((bundle / "export_manifest.json").read_text())
         weights = [w for r in manifest["operations"] for w in r["checkpoints"] if not args.best_only or w["best"]]
         for subset in ([w for w in weights if w["best"]], [w for w in weights if not w["best"]]):
-            if subset:
-                api.download_repo(args.repo, "model", local_dir=bundle,
-                                  allow_patterns=[w["path"] for w in subset], max_workers=3)
+            for record in subset:
+                download_file(args.repo, record, bundle, token,
+                              interface=interface_path.read_text().strip() if interface_path.is_file() else None)
         for record in weights:
             path = bundle / record["path"]
             stat = path.stat()

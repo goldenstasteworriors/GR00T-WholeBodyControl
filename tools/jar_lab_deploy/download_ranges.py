@@ -55,7 +55,7 @@ def download_file(repo, record, directory, token, interface=None, workers=12):
                     with session.get(f"https://modelscope.cn/api/v1/models/{repo}/repo",
                                      params={"Revision": "master", "FilePath": record["path"]},
                                      headers={"Authorization": "Bearer " + token, "Range": f"bytes={first}-{end}"},
-                                     stream=True, timeout=(15, 45)) as response:
+                                     stream=True, timeout=(30, 180)) as response:
                         response.raise_for_status()
                         if response.status_code != 206 or response.headers.get("Content-Range") != f"bytes {first}-{end}/{size}":
                             raise ValueError("ModelScope did not honor exact byte range")
