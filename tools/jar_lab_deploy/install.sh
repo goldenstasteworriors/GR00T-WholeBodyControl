@@ -30,6 +30,6 @@ if [ -d "$deploy_dir/wheelhouse" ]; then
 fi
 "$uv_bin" pip install --python "$python_bin" -r "$deploy_dir/requirements.txt"
 tar -xzf "$deploy_dir/vendor/unitree_sdk2_python.tar.gz" -C "$deploy_root/runtime"
-"$uv_bin" pip install --python "$python_bin" --no-deps "$deploy_root/runtime/external_dependencies/unitree_sdk2_python"
+"$uv_bin" pip install --python "$python_bin" --no-deps --editable "$deploy_root/runtime/external_dependencies/unitree_sdk2_python"
 "$python_bin" "$deploy_dir/doctor.py" --root "$deploy_root"
 "$uv_bin" pip freeze --python "$python_bin" > "$deploy_root/reports/installed-requirements.txt"
