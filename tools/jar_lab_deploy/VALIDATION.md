@@ -1,5 +1,18 @@
 # pku4090 验收记录（2026-11-12）
 
+## 本次初始化与重力补偿增量验证
+
+- 参考工程原文件未修改；部署包和SONIC归档从ModelScope下载，SHA256校验通过。
+- 按交付命令运行setup-operator及operator --check-config：真实URDF、Balance/Walk ONNX、349段观测初始姿态可加载，无机器人I/O。
+- 重力CPU数值：30组随机合法姿态，势能梯度误差最大4.89e-9Nm，浮动基参考误差4.44e-15Nm。
+  14臂以外tau严格为零；限幅、10Nm/s变化率、禁用/超时复位、无效IMU和左侧负载隔离均通过。
+- 生命周期模拟采用真实Balance ONNX，DDS/ROS初始化被禁止、运动模式RPC和最终发送器均替换为内存对象。
+  三次回车、站立阶段双臂零增益/零补偿且不写夹爪、限速姿态收敛、服务就绪门控、d/r、旧epoch拒绝、
+  初始姿态菜单保存和子进程退出处理通过；Walk函数替换为报错后零调用。
+- 使用生产BodyCommandSender在内存中验证LowCmd关节到电机力矩映射、CRC、阻尼tau/KP零、KD8及阻尼后的写入锁存。
+- 证据：reports/operator-config.json、reports/jar-gravity-numeric.json、reports/jar-operator-mock.json。
+- **没有运行operator --execute，没有发送机器人控制命令。实际站立稳定性、初始化轨迹、补偿手感及抓取任务成功率尚未验收。**
+
 本记录对应已从ModelScope下载的 `DISPENSE_TO_HELD_TUBE / step1000` 最佳权重。
 SHA256为 `a116ed1b90c26fa7ed1643137fcf5e7d34ceba262d35db58f65703a9bd035f13`。
 其它权重仍在同步；后续验收结果以本机reports中的实际记录为准。

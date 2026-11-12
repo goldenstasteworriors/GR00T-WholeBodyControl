@@ -24,7 +24,78 @@ Ubuntu缺少Python开发头文件时，安装脚本只把官方dev包解压到ru
 推理在独立线程运行，50Hz执行线程对参考位置限速、检查状态时效；旧预测保持上一安全参考，旧机器人状态终止输出。
 这是一种慢速参考位置闭环，不能把完整512-token生成速度误称为30Hz控制性能。
 
-## 已配置的机器人接口
+## 推荐的初始化、站立与重力补偿流程
+
+本流程参考 `/home/yanjun/ykj/labwam_g1/code/low`，独立部署到本目录，不修改参考工程。
+`REFERENCE_SOURCES.json` 记录原文件SHA256；改动包括JAR关节顺序、六项操作、观测初始姿态、独立推理子进程。
+参考代码许可证保存在 `REFERENCE_LICENSE.txt`，SONIC归档保留自身许可证。
+控制代码和SONIC/ONNX/URDF归档均从同一ModelScope仓库下载并校验。
+`.venv-control` 是项目uv环境，**只读继承**原 `.conda_controller` 的Python3.10依赖；没有修改原环境，
+因此启动仍依赖原解释器及其site-packages存在。GPU推理继续使用独立 `.venv` Python3.12。
+
+下面每行都是一条完整命令，分别执行，无需手动折行。安装与配置检查不会初始化机器人通信：
+
+```bash
+cd /home/yanjun/projects/JAR_G1_Deploy_20261112
+bash bundle/deployment/run.sh setup-operator
+bash bundle/deployment/run.sh operator --check-config
+```
+
+默认启动为只读诊断；可以读状态、计算目标和查询模型，但禁止释放原厂模式或发送电机/夹爪指令：
+
+```bash
+bash bundle/deployment/run.sh operator --task DISPENSE_TO_HELD_TUBE
+```
+
+以下是后续现场操作入口，**本次没有执行过此命令或控制机器人**。需要交互终端、机器人支撑和独占控制通道。
+使用SONIC低层全身站立时，必须退出其它PICO/WAM/arm_sdk/低层控制程序。
+GPU推理服务可以继续运行，入口复用同一操作的服务；若操作不同则先按下文stop-policy/start-policy切换。
+
+```bash
+bash bundle/deployment/run.sh operator --task DISPENSE_TO_HELD_TUBE --execute
+```
+
+| 操作 | 行为 |
+| --- | --- |
+| 打开程序 | idle，仅观察，不接管；不发送身体或夹爪命令 |
+| 第一次回车 | 释放原厂模式，启用SONIC站立，导航始终为零；双臂KP/KD及重力补偿为零，不写夹爪 |
+| 等到standing_ready后第二次回车 | 双臂和Dex1缓慢对齐录制的observation初始姿态；臂限速0.25rad/s |
+| 等到ready后第三次回车 | 模型、相机和状态就绪后才开始JAR推理，保持零行走指令 |
+| d | 立即全身阻尼，清空预测、补偿及旧会话；停止模型客户端，身体tau/KP归零、KD=8 |
+| r | 从阻尼/故障/暂停状态重新站立并恢复所选初始姿态；到ready后还需一次回车启动推理 |
+| p | 在idle/standing_ready/ready/damped选择操作编号、episode、frame并保存；不是自动切换模型 |
+| Ctrl+C | 阻尼并清理本次客户端；不会自动张开夹爪 |
+
+`standing_ready` 表示初始化完成且至少等待2秒，**不是机器人已经稳定站立的检测器**。
+`d` 会停止主动平衡，需要现场支撑；`r` 不是倒地起身功能。模型没有动作成功/任务完成检测器，默认持续推理。
+可用 `--chunks 100` 限制预测次数，正常结束后保持站立并进入paused；现场按r重新初始化。
+机器人观测停止或安全监测失败由原SONIC安全链处理；相机/推理客户端故障停止更新上肢目标并进入fault。
+旧epoch、重复序号和超过0.25秒的命令被丢弃，上肢回到实测位置保持。
+
+初始姿态目录包含349段、145173帧的上肢观测，来源仅为 `observation.state[15:31]`。
+默认DISPENSE为episode132、frame0，**不会重放录制的腿部或腰部角度**。
+`p`菜单输入为三个非负整数，例如如下单独一行，随后回车：
+
+```text
+2 132 0
+```
+
+重力补偿在 `gravity.py`：根据实测body29关节与pelvis IMU的wxyz四元数，把世界重力旋到机器人基座，
+用Pinocchio计算命名关节的广义重力，再仅取双臂14维叠加到SONIC低层body_tau。
+使用不带Dex3占位手惯量的G1 29DOF URDF。默认scale1，限幅min(10Nm,URDF effortLimit)，腕pitch/yaw为5Nm，
+变化率10Nm/s。首帧、禁用、阻尼、重启及超过0.25秒的计算间隔清零；无效IMU拒绝计算，不假设机器人竖直。
+Dex1、转接件和夹持物质量/质心未知，目前没有额外负载补偿。
+若有称量结果，可用 `--arm-gravity-payload 文件路径` 传入左右mass_kg/com_m，COM在各自wrist_yaw关节坐标系，
+格式示例（数值必须替换为实测值；不建议复制示例直接上机）：
+
+```json
+{"left": {"mass_kg": 0.5, "com_m": [0.0, 0.0, 0.1]}}
+```
+
+独立ROS domain默认74，仅用于本机控制器与JAR客户端。Unitree反馈仍使用真实机器人DDS域0。
+本流程没有训练走路，零导航时只执行Balance ONNX；参考工厂加载Walk文件但本次测试把其执行函数替换为报错并确认零调用。
+
+## 保留的arm_sdk诊断后端
 
 只使用宇树官方 `rt/arm_sdk` 上半身接口，以及 `rt/dex1/{left,right}/{cmd,state}`。
 读取 `rt/lowstate`；14个臂关节采用SDK索引15–28，腰部保持接管时的观测位置，不发送腿部关节目标。
@@ -81,12 +152,8 @@ bash bundle/deployment/run.sh start-sync
 bash bundle/deployment/run.sh read-only --interface enp132s0 --camera-endpoint tcp://192.168.123.164:5555 --duration 20
 ```
 
-现场检查只读结果、状态时效和预测位置之后，才运行下面的真机入口。程序还会要求在交互终端输入 `ARM`。
-默认最多20秒；Ctrl+C结束时逐步释放arm_sdk接管权，不自动张开夹爪。
-
-```bash
-bash bundle/deployment/run.sh live --interface enp132s0 --camera-endpoint tcp://192.168.123.164:5555 --duration 20
-```
+旧 `live` 子命令仅为arm_sdk后端，依赖原厂站立，不含上述SONIC站立/初始化/重力补偿。
+本次推荐使用前面的operator流程；两种后端不能同时运行。
 
 切换操作前先停止GPU服务，再指定新操作启动；这不会自动启动真机输出：
 

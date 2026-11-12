@@ -20,5 +20,5 @@ case "$command_name" in
         exec "$deploy_root/.venv/bin/python" "$deploy_dir/run_robot.py" "$@" ;;
     live)
         exec "$deploy_root/.venv/bin/python" "$deploy_dir/run_robot.py" --live "$@" ;;
-    *) echo "Use doctor, benchmark, start-policy, stop-policy, start-sync, stop-sync, status, read-only or live" >&2; exit 2 ;;
+    *) echo "Use setup-operator, operator, doctor, benchmark, start-policy, stop-policy, start-sync, stop-sync, status, read-only or live" >&2; exit 2 ;;
 esac
