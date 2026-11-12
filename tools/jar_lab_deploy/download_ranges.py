@@ -57,7 +57,9 @@ def download_file(repo, record, directory, token, interface=None, workers=12):
                                      headers={"Authorization": "Bearer " + token, "Range": f"bytes={first}-{end}"},
                                      stream=True, timeout=(30, 180)) as response:
                         response.raise_for_status()
-                        if response.status_code != 206 or response.headers.get("Content-Range") != f"bytes {first}-{end}/{size}":
+                        exact_range = response.status_code == 206 and response.headers.get("Content-Range") == f"bytes {first}-{end}/{size}"
+                        complete_object = response.status_code == 200 and first == 0 and end == size - 1
+                        if not (exact_range or complete_object):
                             raise ValueError("ModelScope did not honor exact byte range")
                         with part.open("ab") as output:
                             for block in response.iter_content(1024 * 1024):
