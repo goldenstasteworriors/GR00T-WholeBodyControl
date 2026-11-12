@@ -46,6 +46,7 @@ def main():
         api.download_repo(args.repo, "model", local_dir=bundle, ignore_patterns=["*.pt", "deployment/*"], max_workers=4)
         manifest = json.loads((bundle / "export_manifest.json").read_text())
         weights = [w for r in manifest["operations"] for w in r["checkpoints"] if not args.best_only or w["best"]]
+        completed = []
         for subset in ([w for w in weights if w["best"]], [w for w in weights if not w["best"]]):
             with ThreadPoolExecutor(max_workers=3) as pool:
                 pending = {pool.submit(download_file, args.repo, record, bundle, token,
@@ -58,6 +59,14 @@ def main():
                         subprocess.run([str(args.root / ".venv/bin/python"), str(Path(__file__).with_name("benchmark.py")),
                                         "--root", str(args.root), "--task", record["path"].split("/")[0],
                                         "--checkpoint", str(record["step"])], check=True)
+                    completed.append(record["path"])
+                    progress = dict(state="transferring", repo=args.repo, expected_weights=len(weights),
+                                    downloaded_weights=len(completed), paths=completed,
+                                    gpu_validation_enabled=args.validate, checked_at=time.time())
+                    progress_path = args.root / "reports/transfer-progress.json"
+                    temporary = progress_path.with_suffix(".json.incomplete")
+                    temporary.write_text(json.dumps(progress, indent=2) + "\n")
+                    temporary.replace(progress_path)
         for record in weights:
             path = bundle / record["path"]
             stat = path.stat()
@@ -74,6 +83,8 @@ def main():
                       repo=args.repo, tasks=[r["task"] for r in manifest["operations"]],
                       verified_weights=len(weights), sha256_verified=True, checked_at=time.time())
         (args.root / "reports/modelscope-sync.json").write_text(json.dumps(result, indent=2) + "\n")
+        progress.update(state=result["state"])
+        progress_path.write_text(json.dumps(progress, indent=2) + "\n")
         print(json.dumps(result), flush=True)
         if not args.watch or len(manifest["operations"]) == 6:
             return

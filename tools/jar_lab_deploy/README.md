@@ -37,6 +37,9 @@ bash bundle/deployment/run.sh doctor
 bash bundle/deployment/run.sh benchmark --all-checkpoints
 ```
 
+`--all-checkpoints` 需要对应权重全部下载完成。同步中可按已下载操作单独运行 `benchmark --task DISPENSE_TO_HELD_TUBE`。
+实时传输进度见 `reports/transfer-progress.json`；`reports/checkpoint-benchmark.json` 累积记录已通过的各个step。
+
 启动选定操作的GPU推理服务，默认加载验证最佳权重，只绑定127.0.0.1。可把任务改为导出清单中的其它操作。
 这一步没有电机输出，关闭SSH后仍运行。
 

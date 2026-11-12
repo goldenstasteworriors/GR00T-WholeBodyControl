@@ -1,5 +1,6 @@
 """Project-scoped policy/sync systemd user units, independent of SSH."""
 import argparse
+import json
 from pathlib import Path
 import subprocess
 
@@ -15,6 +16,9 @@ def main():
     deployment = root / "bundle/deployment"
     if args.action == "status":
         subprocess.run(["systemctl", "--user", "status", "jar-g1-policy.service", "jar-g1-sync.service", "--no-pager"])
+        progress = root / "reports/transfer-progress.json"
+        if progress.exists():
+            print(json.dumps(json.loads(progress.read_text()), indent=2))
         return
     unit = "jar-g1-policy" if "policy" in args.action else "jar-g1-sync"
     if args.action.startswith("stop"):
