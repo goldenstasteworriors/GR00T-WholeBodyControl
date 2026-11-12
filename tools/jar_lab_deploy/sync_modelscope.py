@@ -1,5 +1,6 @@
 """Download all completed exports exclusively from ModelScope and verify SHA256."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
@@ -46,13 +47,17 @@ def main():
         manifest = json.loads((bundle / "export_manifest.json").read_text())
         weights = [w for r in manifest["operations"] for w in r["checkpoints"] if not args.best_only or w["best"]]
         for subset in ([w for w in weights if w["best"]], [w for w in weights if not w["best"]]):
-            for record in subset:
-                download_file(args.repo, record, bundle, token,
-                              interface=interface_path.read_text().strip() if interface_path.is_file() else None)
-                if args.validate:
-                    subprocess.run([str(args.root / ".venv/bin/python"), str(Path(__file__).with_name("benchmark.py")),
-                                    "--root", str(args.root), "--task", record["path"].split("/")[0],
-                                    "--checkpoint", str(record["step"])], check=True)
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                pending = {pool.submit(download_file, args.repo, record, bundle, token,
+                                       interface=interface_path.read_text().strip() if interface_path.is_file() else None,
+                                       workers=6): record for record in subset}
+                for future in as_completed(pending):
+                    future.result()
+                    record = pending[future]
+                    if args.validate:
+                        subprocess.run([str(args.root / ".venv/bin/python"), str(Path(__file__).with_name("benchmark.py")),
+                                        "--root", str(args.root), "--task", record["path"].split("/")[0],
+                                        "--checkpoint", str(record["step"])], check=True)
         for record in weights:
             path = bundle / record["path"]
             stat = path.stat()
