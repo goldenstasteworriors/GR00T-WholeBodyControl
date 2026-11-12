@@ -9,6 +9,7 @@ from pathlib import Path
 import time
 
 import numpy as np
+from contract import BODY_JOINT_NAMES
 
 
 class ArmGravityCompensator:
@@ -24,6 +25,8 @@ class ArmGravityCompensator:
         if len(self.body) != 29 or self.model.nq != 29 or self.model.nv != 29:
             raise ValueError("Gravity feedforward requires fixed-base G1 29-DOF model")
         names = [robot.joint_names[i] for i in self.body]
+        if names != BODY_JOINT_NAMES:
+            raise ValueError("Gravity input body order differs from the verified G1 motor order")
         if names[15:22] != ["left_"+s+"_joint" for s in ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll", "wrist_pitch", "wrist_yaw")]:
             raise ValueError("Unexpected G1 arm actuator order")
         if names[22:29] != [n.replace("left_", "right_") for n in names[15:22]]:
@@ -63,7 +66,12 @@ class ArmGravityCompensator:
         base = np.asarray(observation["floating_base_pose"], dtype=float)
         if q_obs.shape != (self.input_dofs,) or not np.isfinite(q_obs).all() or base.shape != (7,) or not np.isfinite(base).all():
             raise ValueError("Gravity compensation requires finite measured joints and base pose")
-        quat = base[3:7]  # SONICMJ / Unitree state is w,x,y,z (pelvis in world).
+        return self.raw_state(q_obs[self.body], base[3:7])
+
+    def raw_state(self, measured_body, quat):
+        measured_body, quat = np.asarray(measured_body, dtype=float), np.asarray(quat, dtype=float)
+        if measured_body.shape != (29,) or quat.shape != (4,) or not np.isfinite(measured_body).all() or not np.isfinite(quat).all():
+            raise ValueError("Gravity requires measured body29 and pelvis IMU quaternion wxyz")
         norm = np.linalg.norm(quat)
         if not .9 <= norm <= 1.1:
             raise ValueError("Invalid measured base quaternion for gravity compensation")
@@ -71,7 +79,7 @@ class ArmGravityCompensator:
         rotation = self.pin.Quaternion(w, x, y, z).matrix()
         self.model.gravity.linear = rotation.T @ np.array([0., 0., -9.81])
         q = np.zeros(self.model.nq)
-        q[self.q_indices] = q_obs[self.body]
+        q[self.q_indices] = measured_body
         tau = np.asarray(self.pin.computeGeneralizedGravity(self.model, self.data, q))
         result = np.zeros(29)
         result[15:29] = tau[self.v_indices[15:29]] * self.scale

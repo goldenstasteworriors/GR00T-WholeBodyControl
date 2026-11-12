@@ -29,6 +29,7 @@ class UnitreeRobot:
         self.body, self.hands, self.received = None, [None, None], [0., 0., 0.]
         self.waist = None
         self.mode_machine = 0
+        self.imu_quaternion = None
         self.subscribers = []
         def body_callback(message):
             values = np.asarray([m.q for m in message.motor_state[:29]], dtype=np.float64)
@@ -36,6 +37,7 @@ class UnitreeRobot:
                 return
             with self.lock:
                 self.body, self.received[0] = values, time.monotonic()
+                self.imu_quaternion = np.asarray(message.imu_state.quaternion, dtype=float).copy()
                 self.mode_machine = message.mode_machine
                 if self.waist is None:
                     self.waist = values[12:15].copy()
@@ -101,6 +103,12 @@ class UnitreeRobot:
                 motor.q, motor.dq, motor.tau = float(reference[14 + side]), 0., 0.
                 motor.kp, motor.kd = self.profile["gripper_kp"], self.profile["gripper_kd"]
                 self.publishers[side + 1].Write(self.hand_messages[side])
+
+    def gravity_state(self):
+        with self.lock:
+            if self.body is None or self.imu_quaternion is None:
+                raise TimeoutError("Waiting for measured body and pelvis IMU")
+            return self.body.copy(), self.imu_quaternion.copy(), time.monotonic() - self.received[0]
 
     def close(self, last_reference=None):
         if self.live and last_reference is not None:

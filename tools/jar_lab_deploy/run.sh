@@ -10,6 +10,8 @@ command_name="${1:-doctor}"
 if [ "$#" -gt 0 ]; then shift; fi
 case "$command_name" in
     install) exec bash "$deploy_dir/install.sh" "$@" ;;
+    setup-operator) exec "$deploy_root/.venv-download/bin/python" "$deploy_dir/setup_operator.py" --root "$deploy_root" "$@" ;;
+    operator) exec bash "$deploy_dir/start_operator.sh" "$@" ;;
     doctor|benchmark)
         exec "$deploy_root/.venv/bin/python" "$deploy_dir/$command_name.py" --root "$deploy_root" "$@" ;;
     start-policy|stop-policy|start-sync|stop-sync|status)
