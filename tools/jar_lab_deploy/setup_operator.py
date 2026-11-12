@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import tarfile
+import hashlib
 
 
 def main():
@@ -17,8 +18,15 @@ def main():
     target.mkdir(exist_ok=True)
     with tarfile.open(args.root/"bundle/deployment/vendor/sonicmj-dex1-runtime.tar.gz") as archive:
         archive.extractall(target, filter="data")
-    subprocess.run([str(Path.home()/".local/bin/uv"),"venv","--python",str(args.reference_python),
-                    "--system-site-packages",str(args.root/".venv-control")],check=True)
+    with tarfile.open(args.root/"bundle/deployment/vendor/sonic-controller-source.tar.gz") as archive:
+        archive.extractall(target, filter="data")
+    current = json.loads((args.root/"bundle/deployment/SONIC_REFERENCE.json").read_text())
+    for name, expected in current["source_files"].items():
+        if hashlib.sha256((target/name).read_bytes()).hexdigest() != expected:
+            raise ValueError("Frozen SONIC source mismatch: "+name)
+    if not (args.root/".venv-control/bin/python").is_file():
+        subprocess.run([str(Path.home()/".local/bin/uv"),"venv","--python",str(args.reference_python),
+                        "--system-site-packages",str(args.root/".venv-control")],check=True)
     (args.root/"runtime/control-base.json").write_text(json.dumps(dict(reference_python=str(args.reference_python),
         dependency_mode="read-only inherited site-packages; no changes to reference environment",
         sonic_snapshot="ModelScope LabWAM-G1-Deployment-20261112, SHA256 verified by deployment manifest"),indent=2))
