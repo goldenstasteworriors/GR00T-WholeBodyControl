@@ -41,6 +41,9 @@ class OperatorState:
 
 
 def validate_pose(robot, pose):
+    pose = np.asarray(pose, dtype=float)
+    if pose.shape != (16,) or not np.isfinite(pose).all():
+        raise ValueError("Initial pose must be finite JAR 16D measured positions")
     body = np.asarray(robot.get_body_actuated_joint_indices())
     arms = pose[:14]
     lo, hi = np.asarray(robot.lower_joint_limits)[body[15:29]], np.asarray(robot.upper_joint_limits)[body[15:29]]

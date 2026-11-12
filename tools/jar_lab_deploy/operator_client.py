@@ -73,14 +73,20 @@ def main():
             client.close()
 
     worker = None
-    sequence, received, startup = 0, 0., time.monotonic()
+    sequence, received, startup, armed = 0, 0., time.monotonic(), False
     try:
         while not stopped.is_set() and ros.ok():
             now = time.monotonic()
             message = states.get_msg()
             if message is not None:
                 if message.get("control_mode") != "running" or message.get("jar_operator_epoch") != args.operator_epoch:
-                    raise RuntimeError("Controller phase/epoch changed; this inference session is obsolete")
+                    if armed:
+                        raise RuntimeError("Controller phase/epoch changed; this inference session is obsolete")
+                    if now-startup > 10:
+                        raise TimeoutError("Controller did not arm the requested inference epoch")
+                    stopped.wait(.01)
+                    continue
+                armed = True
                 state = np.r_[np.asarray(message["q"])[indices], message["left_hand_dex1_q"], message["right_hand_dex1_q"]]
                 if state.shape != (16,) or not np.isfinite(state).all():
                     raise ValueError("Invalid measured JAR observation")
@@ -88,7 +94,13 @@ def main():
                 with lock:
                     latest.update(state=state, received=now)
                 if worker is None:
-                    cameras.history()  # Require fresh three-view inputs before inference starts.
+                    try:
+                        cameras.history()
+                    except TimeoutError:
+                        if now-startup > 10:
+                            raise TimeoutError("Waiting for three fresh camera streams")
+                        stopped.wait(.01)
+                        continue
                     worker = threading.Thread(target=infer, name="jar-inference")
                     worker.start()
             if now - (received or startup) > (0.15 if received else 10.):
