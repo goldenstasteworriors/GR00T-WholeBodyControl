@@ -10,7 +10,7 @@ import msgpack_numpy
 import numpy as np
 import zmq
 
-from runtime import CAMERAS
+from contract import CAMERAS
 
 
 class Cameras:

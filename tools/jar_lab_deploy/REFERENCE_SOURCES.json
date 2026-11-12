@@ -1,0 +1,23 @@
+{
+  "reference_root": "/home/yanjun/ykj/labwam_g1",
+  "sources": {
+    "gravity.py": {
+      "path": "/home/yanjun/ykj/labwam_g1/code/low/lab_low/gravity.py",
+      "sha256": "e16764466b3e85a1a61a353ef2b35dfddd674fea5a73bf84ae4bb0e96efa8306"
+    },
+    "initial_poses.py": {
+      "path": "/home/yanjun/ykj/labwam_g1/code/low/lab_low/initial_poses.py",
+      "sha256": "16a3d5b471eba35f82a094844904e0dbc458d61a57e4ad7913542b3cf4a14293"
+    },
+    "operator_control.py": {
+      "path": "/home/yanjun/ykj/labwam_g1/code/low/lab_low/operator_control.py",
+      "sha256": "bab89d4fd8cdc984be359096d56bdedf6c74d933db8451ce847ac8c78d4ebe70"
+    },
+    "g1_bridge.py": {
+      "path": "/home/yanjun/ykj/labwam_g1/code/low/lab_low/g1_bridge.py",
+      "sha256": "4e67ff4bdff9618b44ebe95361417eb1c79c823cdbdc182329fef3a47c43eff2"
+    }
+  },
+  "original_reference_modified": false,
+  "jar_contract": "left arm 7, right arm 7, left Dex1, right Dex1; all from observation"
+}

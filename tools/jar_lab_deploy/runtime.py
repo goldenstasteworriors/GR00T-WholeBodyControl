@@ -9,11 +9,7 @@ import numpy as np
 import torch
 
 
-JOINT_NAMES = [f"{side}_{joint}_joint" for side in ("left", "right")
-               for joint in ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow",
-                             "wrist_roll", "wrist_pitch", "wrist_yaw")]
-JOINT_NAMES += ["left_hand_dex1_motor", "right_hand_dex1_motor"]
-CAMERAS = ["ego_view", "left_wrist", "right_wrist"]
+from contract import JOINT_NAMES, CAMERAS
 
 
 class Predictor:
