@@ -10,6 +10,7 @@
 #include <iostream>
 
 #include <NvInfer.h>
+#include <NvInferVersion.h>
 #include <NvOnnxParser.h>
 
 namespace
@@ -82,9 +83,11 @@ namespace
         int size = -1;
         switch ( dataType )
         {
+#if NV_TENSORRT_MAJOR >= 9
             case nvinfer1::DataType::kINT64:
             size = sizeof( uint64_t );
             break;
+#endif
             
             case nvinfer1::DataType::kINT32:
             case nvinfer1::DataType::kFLOAT:
@@ -92,11 +95,15 @@ namespace
             break;
             
             case nvinfer1::DataType::kHALF:
+#if NV_TENSORRT_MAJOR >= 9
             case nvinfer1::DataType::kBF16:
+#endif
             size = sizeof( uint16_t );
             break;
             
+#if NV_TENSORRT_MAJOR > 8 || (NV_TENSORRT_MAJOR == 8 && NV_TENSORRT_MINOR >= 6)
             case nvinfer1::DataType::kFP8:
+#endif
             case nvinfer1::DataType::kINT8:
             case nvinfer1::DataType::kBOOL:
             case nvinfer1::DataType::kUINT8:
@@ -785,8 +792,10 @@ DataType TRTInferenceEngine::GetTensorDataType(std::string name) const
         return DataType::BOOL;
         case nvinfer1::DataType::kUINT8:
         return DataType::UINT8;
+#if NV_TENSORRT_MAJOR >= 9
         case nvinfer1::DataType::kINT64:
         return DataType::INT64;
+#endif
         default:
         LOG_ERROR("ValidateTensorSize: Tensor " + name + " not found.");
         return DataType::UNKNOWN;

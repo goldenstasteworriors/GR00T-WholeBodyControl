@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # GitHub-free installation using a prepared bundle. APT/PyPI still need network.
 set -euo pipefail
-bundle=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+bundle=${SONIC_BUNDLE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
+bundle=$(cd "$bundle" && pwd)
 action=${1:-help}
 if [[ "$action" == help || "$action" == --help ]]; then
     echo 'Usage: bash tools/github_bundle/install.sh check|camera|robot-build|hand|pc /absolute/project/path'
     echo 'No action starts robot control or hand motion. Keep the extracted bundle in place.'
+    echo 'Set SONIC_BUNDLE_ROOT to reuse an existing bundle with this updated project installer.'
     exit 0
 fi
 project=${2:?Specify the existing project directory}
@@ -69,11 +71,30 @@ robot-build)
         tar -xzf "$bundle/downloads/onnxruntime-aarch64.tgz" -C "$runtime"
     fi
     export onnxruntime_ROOT="$runtime/onnxruntime-linux-aarch64-1.16.3"
-    cmake -S "$project/gear_sonic_deploy" -B "$runtime/sonic-build" \
+    build_dir="$runtime/sonic-build"
+    compiler_args=()
+    # Ubuntu 20.04's default GCC 9 lacks the C++20 library used by SONIC.
+    # Extract Ubuntu's GCC 10 packages locally; leave the system toolchain intact.
+    if [[ "$(c++ -dumpversion | cut -d. -f1)" -lt 10 ]]; then
+        toolchain="$project/.runtime/sonic-toolchain/gcc10"
+        packages="$project/.runtime/sonic-toolchain/packages"
+        if [[ ! -x "$toolchain/usr/bin/aarch64-linux-gnu-g++-10" ]]; then
+            mkdir -p "$toolchain" "$packages"
+            (cd "$packages" && apt-get download gcc-10 g++-10 cpp-10 libgcc-10-dev libstdc++-10-dev gcc-10-base)
+            for package in "$packages"/*.deb; do dpkg-deb -x "$package" "$toolchain"; done
+        fi
+        compiler_args=(
+            "-DCMAKE_C_COMPILER=$toolchain/usr/bin/aarch64-linux-gnu-gcc-10"
+            "-DCMAKE_CXX_COMPILER=$toolchain/usr/bin/aarch64-linux-gnu-g++-10"
+        )
+        build_dir="$runtime/sonic-build-gcc10"
+    fi
+    cmake -S "$project/gear_sonic_deploy" -B "$build_dir" \
+        "${compiler_args[@]}" \
         -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST="$bundle/sources/googletest" \
         -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
         -DCMAKE_CXX_FLAGS="-I$bundle/sources/cppzmq -I$bundle/sources/json/single_include"
-    cmake --build "$runtime/sonic-build" --target g1_deploy_onnx_ref -j "${BUILD_JOBS:-2}"
+    cmake --build "$build_dir" --target g1_deploy_onnx_ref -j "${BUILD_JOBS:-2}"
     ldd "$project/gear_sonic_deploy/target/release/g1_deploy_onnx_ref"
     ;;
 hand)
@@ -97,13 +118,14 @@ pc)
     sudo apt-get install -y build-essential cmake espeak libgl1 libglib2.0-0
     printf 'lerobot @ file://%s/sources/lerobot\n' "$bundle" > "$runtime/overrides.txt"
     venv .venv_teleop
-    uv pip install --python "$project/.venv_teleop/bin/python" -e "$project/gear_sonic[teleop]" 'cmake>=3.22,<4' 'pybind11==2.10.3' 'setuptools<81'
+    uv pip install --python "$project/.venv_teleop/bin/python" -e "$project/gear_sonic[teleop]" 'cmake>=3.22,<4' 'pybind11==2.10.3' 'setuptools<81' wheel tyro pyyaml
     export PATH="$project/.venv_teleop/bin:$PATH"
     export CMAKE_PREFIX_PATH
     CMAKE_PREFIX_PATH=$("$project/.venv_teleop/bin/python" -m pybind11 --cmakedir)
     uv pip install --python "$project/.venv_teleop/bin/python" --no-build-isolation -e "$project/external_dependencies/XRoboToolkit-PC-Service-Pybind_X86_and_ARM64"
     venv .venv_data_collection
     uv pip install --python "$project/.venv_data_collection/bin/python" --overrides "$runtime/overrides.txt" -e "$project/gear_sonic[data_collection]"
+    "$project/.venv_teleop/bin/python" "$project/gear_sonic/scripts/pico_manager_thread_server.py" --help
     "$project/.venv_data_collection/bin/python" "$project/gear_sonic/scripts/launch_data_collection.py" --help
     ;;
 *) echo "Unknown action: $action"; exit 2;;

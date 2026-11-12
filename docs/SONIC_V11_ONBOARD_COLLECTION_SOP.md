@@ -169,6 +169,16 @@ ldd target/release/g1_deploy_onnx_ref
 
 **完成标准：**编译成功，ldd无not found。本步不启动控制；新版本必须重新编译，不能继续使用以前只支持Inspire的旧二进制。
 
+旧版 JetPack / Ubuntu 20.04 的默认 GCC 9 不满足本项目 C++20 要求。使用下载包的 `robot-build` 步骤时，更新后的安装器会在项目 `.runtime/sonic-toolchain` 中准备 GCC 10，不替换系统编译器；强脑分支已对 TensorRT 8.5 的数据类型差异作条件编译。只安装相机和手服务不会生成 SONIC 推理程序，必须完成本步并看到“推理程序已生成”，再启动采集。
+
+已有旧下载包时，先更新强脑分支代码，再用项目中的新安装器复用原包。以下在机器人逐行执行；第二行末尾反斜杠表示与下一行连成一条命令，下载包目录按实际位置替换：
+
+```bash
+cd /home/unitree/VLA/GR00T-WholeBodyControl
+SONIC_BUNDLE_ROOT=/home/unitree/VLA/sonic-brainco-github-bundle-20261111 \
+  bash tools/github_bundle/install.sh robot-build "$PWD"
+```
+
 ## 4. 机器人：安装相机环境及v1.1模型
 
 ```bash
@@ -201,7 +211,7 @@ bash install_scripts/install_data_collection.sh
 .venv_data_collection/bin/python gear_sonic/scripts/launch_data_collection.py --help
 ```
 
-安装脚本只首次执行，会重建venv。PC安装XRoboToolkit PC Service（x86_64 Ubuntu22.04或24.04）：
+安装脚本只首次执行，会重建venv。网络中断后即使 `.venv_teleop` 目录已经存在，也不代表安装完成；必须让以上三个帮助命令全部成功。PICO 环境还必须包含编译好的 `xrobotoolkit_sdk`，不能只创建空虚拟环境。PC安装XRoboToolkit PC Service（x86_64 Ubuntu22.04或24.04）：
 
 ```bash
 . /etc/os-release

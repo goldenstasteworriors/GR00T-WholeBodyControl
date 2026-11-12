@@ -32,7 +32,7 @@ target_include_directories(TRTInference
     PRIVATE ${CUDA_INCLUDES})
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(TRTInference PRIVATE -Wno-deprecated-declarations -std=c++20)
+    target_compile_options(TRTInference PRIVATE -Wno-deprecated-declarations)
 endif()
 
 target_link_libraries(TRTInference ${TensorRT_LIBRARIES} ${CUDA_LIBRARIES})
