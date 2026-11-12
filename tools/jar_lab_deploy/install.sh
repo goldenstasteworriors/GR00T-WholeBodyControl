@@ -18,6 +18,11 @@ cmake -S "$deploy_root/runtime/cyclonedds-0.10.5" -B "$deploy_root/runtime/cyclo
     -DCMAKE_INSTALL_PREFIX="$deploy_root/runtime/cyclonedds" -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF
 cmake --build "$deploy_root/runtime/cyclonedds-build" --target install -j 4
 export CYCLONEDDS_HOME="$deploy_root/runtime/cyclonedds"
+if [ ! -f /usr/include/python3.12/Python.h ]; then
+    mkdir -p "$deploy_root/runtime/python-headers"
+    dpkg-deb -x "$deploy_dir/vendor/libpython3.12-dev_3.12.3-1ubuntu0.17_amd64.deb" "$deploy_root/runtime/python-headers"
+    export CFLAGS="${CFLAGS:-} -I$deploy_root/runtime/python-headers/usr/include/python3.12 -I$deploy_root/runtime/python-headers/usr/include/x86_64-linux-gnu/python3.12"
+fi
 if [ -d "$deploy_dir/wheelhouse" ]; then
     "$uv_bin" pip install --python "$python_bin" --no-index --find-links "$deploy_dir/wheelhouse" \
         torch==2.8.0 transformers==5.12.1 numpy==2.2.6 tokenizers safetensors pillow pyarrow pandas scipy \

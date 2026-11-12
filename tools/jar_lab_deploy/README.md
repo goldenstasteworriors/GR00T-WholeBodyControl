@@ -5,6 +5,7 @@
 独立uv环境位于 `.venv`，下载用的轻量环境位于 `.venv-download`。不修改旧JAR、Conda环境、CUDA或显卡驱动。
 `install.sh` 按官方SDK说明将CycloneDDS 0.10.5编译到本项目runtime中，再安装Python绑定0.10.2和SDK源码。
 SDK及CycloneDDS源码归档同样来自ModelScope；原许可证保留。重新安装可运行 `bash bundle/deployment/run.sh install`。
+Ubuntu缺少Python开发头文件时，安装脚本只把官方dev包解压到runtime，不安装或升级系统Python。
 下载服务可读取 `runtime/download-interface` 中的网卡名，仅为自身连接选择出口，不修改系统路由。
 
 ## 输入、输出与运行方式
