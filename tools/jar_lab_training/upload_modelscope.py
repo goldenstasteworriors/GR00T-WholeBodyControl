@@ -139,11 +139,23 @@ def main():
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--repo")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--reuse-export", action="store_true", help="Reuse a prepared immutable export after a network failure")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     export = args.output / "export"
     export.mkdir(exist_ok=True)
-    manifest = prepare(args.root, export)
+    if args.reuse_export:
+        manifest = read(export / "export_manifest.json")
+        for operation in manifest["operations"]:
+            if read(args.root / "runs" / operation["task"] / "status.json")["state"] != "complete":
+                raise ValueError("Only completed immutable operations can reuse an export")
+            for weight in operation["checkpoints"]:
+                path = export / weight["path"]
+                source = args.root / "runs" / weight["path"]
+                if path.stat().st_size != weight["size"] or not os.path.samefile(path, source):
+                    raise ValueError("Prepared checkpoint changed: " + weight["path"])
+    else:
+        manifest = prepare(args.root, export)
     if args.prepare_only:
         print(json.dumps(dict(event="prepared", weights=manifest["weight_files"], bytes=manifest["weight_bytes"])), flush=True)
         return
@@ -153,7 +165,8 @@ def main():
     if not repo.startswith(username + "/"):
         raise ValueError("Only the authenticated user's namespace is permitted")
     if not api.repo_exists(repo, "model"):
-        api.create_repo(repo, "model", visibility="private", description="G1 upper-body future-observation JAR checkpoints; 4h per primitive")
+        api.create_repo(repo, "model", visibility="private", gated_mode=False,
+                        description="G1 upper-body future-observation JAR checkpoints; 4h per primitive")
     info = api.get_repo(repo, "model")
     if info.private is not True:
         raise ValueError("Expected a private repository")
