@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+import socket
 from pathlib import Path
 import time
 
@@ -22,6 +23,13 @@ def main():
     parser.add_argument("--watch", action="store_true", help="Finish when all six trained operations are downloaded")
     parser.add_argument("--best-only", action="store_true")
     args = parser.parse_args()
+    interface_path = args.root / "runtime/download-interface"
+    if interface_path.is_file():
+        interface = interface_path.read_text().strip()
+        socket.if_nametoindex(interface)
+        from urllib3.connection import HTTPConnection
+        HTTPConnection.default_socket_options = HTTPConnection.default_socket_options + [
+            (socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\0")]
     os.environ.setdefault("MODELSCOPE_DOWNLOAD_PARALLEL_WORKERS", "12")
     os.environ.setdefault("MODELSCOPE_DOWNLOAD_PART_SIZE_MB", "64")
     from modelscope_hub import HubApi

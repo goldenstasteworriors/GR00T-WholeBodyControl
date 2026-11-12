@@ -3,6 +3,9 @@
 工作目录为 `/home/yanjun/projects/JAR_G1_Deploy_20261112`。模型、tokenizer、冻结的模型源码及本目录部署代码均从私有 ModelScope 仓库 `ykjykj/JAR-G1-Lab-UpperBody-Observation-20261111` 下载。
 `bundle/export_manifest.json` 列出已完成操作和权重SHA256；后续训练完成的操作由同步服务继续下载。
 独立uv环境位于 `.venv`，下载用的轻量环境位于 `.venv-download`。不修改旧JAR、Conda环境、CUDA或显卡驱动。
+`install.sh` 按官方SDK说明将CycloneDDS 0.10.5编译到本项目runtime中，再安装Python绑定0.10.2和SDK源码。
+SDK及CycloneDDS源码归档同样来自ModelScope；原许可证保留。重新安装可运行 `bash bundle/deployment/run.sh install`。
+下载服务可读取 `runtime/download-interface` 中的网卡名，仅为自身连接选择出口，不修改系统路由。
 
 ## 输入、输出与运行方式
 
