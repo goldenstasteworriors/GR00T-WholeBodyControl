@@ -95,9 +95,11 @@ def main():
             time.sleep(max(0, .02 - (time.monotonic() - tick)))
     finally:
         stopped.set()
-        worker.join(timeout=17)
-        cameras.close()
-        robot.close(last)
+        try:
+            robot.close(last)
+        finally:
+            worker.join(timeout=17)
+            cameras.close()
 
 
 if __name__ == "__main__":
