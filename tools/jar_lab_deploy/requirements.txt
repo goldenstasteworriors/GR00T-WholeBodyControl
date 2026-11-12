@@ -13,4 +13,5 @@ msgpack
 msgpack-numpy
 opencv-python-headless
 modelscope-hub==0.7.1
-unitree-sdk2py==1.0.1
+cyclonedds==0.10.2
+# unitree-sdk2py is installed from the source archive distributed via ModelScope.

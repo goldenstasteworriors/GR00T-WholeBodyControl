@@ -30,7 +30,7 @@ def main():
     cache_path = args.root / "reports/verified-downloads.json"
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     while True:
-        api.download_repo(args.repo, "model", local_dir=bundle, ignore_patterns=["*.pt"], max_workers=4)
+        api.download_repo(args.repo, "model", local_dir=bundle, ignore_patterns=["*.pt", "deployment/*"], max_workers=4)
         manifest = json.loads((bundle / "export_manifest.json").read_text())
         weights = [w for r in manifest["operations"] for w in r["checkpoints"] if not args.best_only or w["best"]]
         for subset in ([w for w in weights if w["best"]], [w for w in weights if not w["best"]]):

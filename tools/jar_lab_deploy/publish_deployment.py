@@ -20,6 +20,11 @@ def main():
     for file in source.iterdir():
         if file.is_file() and file.suffix in (".py", ".sh", ".json", ".txt", ".md"):
             shutil.copyfile(file, staging / file.name)
+    vendor = staging / "vendor"
+    vendor.mkdir(exist_ok=True)
+    subprocess.run(["git", "-C", str(root / "code"), "archive", "--format=tar.gz",
+                    "--output=" + str(vendor / "unitree_sdk2_python.tar.gz"),
+                    "HEAD", "external_dependencies/unitree_sdk2_python"], check=True)
     files = {str(p.relative_to(staging)): dict(size=p.stat().st_size, sha256=hashlib.sha256(p.read_bytes()).hexdigest())
              for p in staging.rglob("*") if p.is_file() and p.name != "deployment_manifest.json"}
     manifest = dict(files=files, code_commit=subprocess.check_output(["git", "-C", str(root / "code"), "rev-parse", "HEAD"], text=True).strip(),
