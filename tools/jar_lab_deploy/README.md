@@ -4,7 +4,11 @@
 `bundle/export_manifest.json` 列出已完成操作和权重SHA256；后续训练完成的操作由同步服务继续下载。
 独立uv环境位于 `.venv`，下载用的轻量环境位于 `.venv-download`。不修改旧JAR、Conda环境、CUDA或显卡驱动。
 `install.sh` 按官方SDK说明将CycloneDDS 0.10.5编译到本项目runtime中，再安装Python绑定0.10.2和SDK源码。
-SDK及CycloneDDS源码归档同样来自ModelScope；原许可证保留。重新安装可运行 `bash bundle/deployment/run.sh install`。
+SDK及CycloneDDS源码归档同样来自ModelScope；原许可证保留。重新安装时执行以下完整一行命令：
+
+```bash
+bash bundle/deployment/run.sh install
+```
 Ubuntu缺少Python开发头文件时，安装脚本只把官方dev包解压到runtime，不安装或升级系统Python。
 下载服务可读取 `runtime/download-interface` 中的网卡名，仅为自身连接选择出口，不修改系统路由。
 
@@ -38,13 +42,19 @@ bash bundle/deployment/run.sh doctor
 bash bundle/deployment/run.sh benchmark --all-checkpoints
 ```
 
-`--all-checkpoints` 需要对应权重全部下载完成。同步中可按已下载操作单独运行 `benchmark --task DISPENSE_TO_HELD_TUBE`。
+`--all-checkpoints` 需要对应权重全部下载完成。同步中可按已下载操作单独运行以下完整一行命令：
+
+```bash
+bash bundle/deployment/run.sh benchmark --task DISPENSE_TO_HELD_TUBE
+```
 实时传输进度见 `reports/transfer-progress.json`；`reports/checkpoint-benchmark.json` 累积记录已通过的各个step。
 
 启动选定操作的GPU推理服务，默认加载验证最佳权重，只绑定127.0.0.1。可把任务改为导出清单中的其它操作。
 这一步没有电机输出，关闭SSH后仍运行。
+初始化已预加载完整下载的DISPENSE_TO_HELD_TUBE。切换到其它操作前先停止该服务，并确认对应权重已经下载。
 
 ```bash
+bash bundle/deployment/run.sh stop-policy
 bash bundle/deployment/run.sh start-policy --task TAKE_TUBE --checkpoint best
 bash bundle/deployment/run.sh status
 ```
@@ -56,7 +66,12 @@ bash bundle/deployment/run.sh start-sync
 ```
 
 自动验证和真机输出共用项目锁：真机运行时验证会等待；若验证正在占用GPU，真机入口拒绝接管。
-需要立即真机操作时，先执行 `bash bundle/deployment/run.sh stop-sync`，结束后再start-sync继续续传、验证。
+需要立即真机操作时，先暂停同步，结束后再继续。以下每行是一条完整命令，分别执行：
+
+```bash
+bash bundle/deployment/run.sh stop-sync
+bash bundle/deployment/run.sh start-sync
+```
 
 连接G1时，先确认它是29DOF、Dex1双夹爪，原厂站立控制运行。相机服务必须提供上述三路图像。
 下方相机地址是采集记录中的示例值；若现场IP或端口不同，必须替换。pku4090当前有线网卡为enp132s0。
@@ -81,6 +96,8 @@ bash bundle/deployment/run.sh start-policy --task TAKE_DROPPER_AND_ASPIRATE --ch
 ```
 
 ## 验证结果和边界
+
+实际平台、测量值和已通过项目见 [VALIDATION.md](VALIDATION.md)。
 
 验证记录保存在工作目录 `reports`，包括环境、权重SHA256、真实GPU推理延迟、AR前缀一致性、RPC、限速/失联和隔离DDS测试。
 `deployment/fixtures` 是六项操作各一份真实留出观测，来源见其中provenance.json；没有使用action字段作为模型输入或标签。
