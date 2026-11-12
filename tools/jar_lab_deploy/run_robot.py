@@ -79,7 +79,9 @@ def main():
                     raise
                 time.sleep(.02)
                 continue
-            if guard.last is None:
+            if guard.last is None or not args.live:
+                # Read-only previews do not actuate the reference. Re-anchor each
+                # prospective update to the measured pose instead of integrating it.
                 guard.reset(observed)
             with lock:
                 prediction = latest.copy()

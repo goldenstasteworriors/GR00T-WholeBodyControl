@@ -74,18 +74,18 @@ bash bundle/deployment/run.sh start-sync
 ```
 
 连接G1时，先确认它是29DOF、Dex1双夹爪，原厂站立控制运行。相机服务必须提供上述三路图像。
-下方相机地址是采集记录中的示例值；若现场IP或端口不同，必须替换。pku4090当前有线网卡为enp132s0。
+下方相机地址已于2026-11-12连接真实机器人核实，三路相机位于5555端口；若现场IP或端口不同，必须替换。pku4090当前有线网卡为enp132s0。
 先运行只读链路；它只订阅状态、相机并查询模型，不建立电机命令发布器。
 
 ```bash
-bash bundle/deployment/run.sh read-only --interface enp132s0 --camera-endpoint tcp://192.168.123.164:5558 --duration 20
+bash bundle/deployment/run.sh read-only --interface enp132s0 --camera-endpoint tcp://192.168.123.164:5555 --duration 20
 ```
 
 现场检查只读结果、状态时效和预测位置之后，才运行下面的真机入口。程序还会要求在交互终端输入 `ARM`。
 默认最多20秒；Ctrl+C结束时逐步释放arm_sdk接管权，不自动张开夹爪。
 
 ```bash
-bash bundle/deployment/run.sh live --interface enp132s0 --camera-endpoint tcp://192.168.123.164:5558 --duration 20
+bash bundle/deployment/run.sh live --interface enp132s0 --camera-endpoint tcp://192.168.123.164:5555 --duration 20
 ```
 
 切换操作前先停止GPU服务，再指定新操作启动；这不会自动启动真机输出：
