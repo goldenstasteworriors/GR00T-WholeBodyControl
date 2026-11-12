@@ -113,11 +113,12 @@ uv --version
 ```bash
 mkdir -p /home/unitree/VLA
 cd /home/unitree/VLA
-git clone --branch brainco-onboard-v1-20261110 https://github.com/goldenstasteworriors/GR00T-WholeBodyControl.git
+git clone --branch feat/brainco-hand-onboard https://github.com/goldenstasteworriors/GR00T-WholeBodyControl.git
 cd GR00T-WholeBodyControl
 git submodule update --init --recursive
 git lfs pull
-git describe --tags --exact-match
+git branch --show-current
+git rev-parse HEAD
 ```
 
 PC执行：
@@ -125,14 +126,15 @@ PC执行：
 ```bash
 mkdir -p "$HOME/sonic_v11"
 cd "$HOME/sonic_v11"
-git clone --branch brainco-onboard-v1-20261110 https://github.com/goldenstasteworriors/GR00T-WholeBodyControl.git
+git clone --branch feat/brainco-hand-onboard https://github.com/goldenstasteworriors/GR00T-WholeBodyControl.git
 cd GR00T-WholeBodyControl
 git submodule update --init --recursive
 git lfs pull
-git describe --tags --exact-match
+git branch --show-current
+git rev-parse HEAD
 ```
 
-**完成标准：**两端均显示brainco-onboard-v1-20261110。不要覆盖已有同名目录，另选新父目录并同步改后续路径。此版本来自feat/brainco-hand-onboard分支，包含官方DDS客户端、网页及采集适配代码。
+**完成标准：**两端分支均为 feat/brainco-hand-onboard，并记录相同的提交号。不要覆盖已有同名目录，另选新父目录并同步改后续路径。旧 tag brainco-onboard-v1-20261110 保留作初始版本回滚；本文安装入口使用包含后续修复的强脑分支。
 
 ## 3. 机器人：编译SONIC推理
 
@@ -199,6 +201,22 @@ sha256sum gear_sonic_deploy/policy/sonic_v1_1/* gear_sonic_deploy/planner/target
 最后一条下载命令补齐planner；控制仍显式选v1.1三件套。保存模型版本与SHA256，不混用encoder、decoder、观测配置。
 
 **完成标准：**真实相机序列号非空，模型与planner下载成功。pyrealsense2在目标ARM64平台无可用安装时需先完成RealSense SDK适配，不能跳过出图验收。相机安装脚本会重建环境，只在首次安装运行。
+
+### 4.1 当前 TensorRT 8.5：生成兼容 planner
+
+当前旧版机载环境需将官方 planner 的 LayerNormalization 展开、折叠固定形状计算，并展开五维 Einsum 的省略号，解决 TensorRT 8.5 的导入错误。以下在 **PC** 逐行执行；已有 `.venv_model_tools` 时跳过创建环境的那一行。原始模型保留，生成新文件，控制策略仍使用原 SONIC v1.1 encoder/decoder。
+
+```bash
+cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
+mkdir -p gear_sonic_deploy/planner/target_vel/V2
+scp unitree@192.168.123.164:/home/unitree/VLA/GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx gear_sonic_deploy/planner/target_vel/V2/
+uv venv .venv_model_tools --python 3.10
+uv pip install --python .venv_model_tools/bin/python numpy==1.26.4 onnx==1.17.0 onnxruntime==1.17.3
+.venv_model_tools/bin/python tools/model_compat/prepare_planner_trt85.py gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx gear_sonic_deploy/planner/target_vel/V2/planner_sonic_trt85.onnx
+scp gear_sonic_deploy/planner/target_vel/V2/planner_sonic_trt85.onnx unitree@192.168.123.164:/home/unitree/VLA/GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/
+```
+
+第9步的启动命令使用此兼容文件。TensorRT 10 环境可使用官方原始 planner，并将第9步的 planner 文件名改回 `planner_sonic.onnx`。首次加载会生成本机 TensorRT 缓存，需等待构建完成，不能在此过程中反复重启。
 
 ## 5. PC：安装采集环境及PICO
 
@@ -414,7 +432,7 @@ cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
   --deploy-onboard-interface eth0 --offboard-zmq-host 192.168.123.222 \
   --deploy-checkpoint policy/sonic_v1_1/model \
   --deploy-obs-config policy/sonic_v1_1/observation_config.yaml \
-  --deploy-planner planner/target_vel/V2/planner_sonic.onnx \
+  --deploy-planner planner/target_vel/V2/planner_sonic_trt85.onnx \
   --task-prompt "pick up the box" --dataset-name pick_box_brainco_20261110_01 \
   --enable-sonic-publish --no-pico-vis-smpl --no-pico-vis-vr3pt \
   --profile-timing
