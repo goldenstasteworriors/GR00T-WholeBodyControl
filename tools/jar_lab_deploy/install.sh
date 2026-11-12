@@ -21,7 +21,7 @@ export CYCLONEDDS_HOME="$deploy_root/runtime/cyclonedds"
 if [ ! -f /usr/include/python3.12/Python.h ]; then
     mkdir -p "$deploy_root/runtime/python-headers"
     dpkg-deb -x "$deploy_dir/vendor/libpython3.12-dev_3.12.3-1ubuntu0.17_amd64.deb" "$deploy_root/runtime/python-headers"
-    export CFLAGS="${CFLAGS:-} -I$deploy_root/runtime/python-headers/usr/include/python3.12 -I$deploy_root/runtime/python-headers/usr/include/x86_64-linux-gnu/python3.12"
+    export CFLAGS="${CFLAGS:-} -I$deploy_root/runtime/python-headers/usr/include/python3.12 -I$deploy_root/runtime/python-headers/usr/include"
 fi
 if [ -d "$deploy_dir/wheelhouse" ]; then
     "$uv_bin" pip install --python "$python_bin" --no-index --find-links "$deploy_dir/wheelhouse" \
