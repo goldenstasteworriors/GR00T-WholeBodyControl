@@ -15,10 +15,9 @@ def main():
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     records = []
-    for run in sorted((args.training_root / "runs").iterdir()):
-        if not (run / "autoregressive_evaluation.json").exists():
-            continue
-        manifest = json.loads((args.training_root / "cache" / run.name / "manifest.json").read_text())
+    tasks = json.loads((args.training_root / "cache/complete.json").read_text())["tasks"]
+    for task in sorted(tasks):
+        manifest = json.loads((args.training_root / "cache" / task / "manifest.json").read_text())
         row = next(r for r in manifest["rows"] if r["episode"] in manifest["validation"])
         cut = (row["length"] - 2) // 2
         folder = args.training_root / "cache/episodes" / str(row["episode"])
@@ -36,10 +35,10 @@ def main():
         finally:
             os.close(fd)
         future = np.minimum(cut + 1 + np.arange(32), row["length"] - 1)
-        np.savez_compressed(args.output / f"{run.name}.npz", state=numeric["state"][cut], images=np.stack(frames),
+        np.savez_compressed(args.output / f"{task}.npz", state=numeric["state"][cut], images=np.stack(frames),
                             frame_times=(numeric["camera_time"][indices] - numeric["timestamp"][cut]).astype(np.float32),
                             truth=numeric["state"][future])
-        records.append(dict(task=run.name, episode=row["episode"], cut=cut, source="held-out observation only"))
+        records.append(dict(task=task, episode=row["episode"], cut=cut, source="held-out observation only"))
     (args.output / "provenance.json").write_text(json.dumps(records, indent=2) + "\n")
 
 
