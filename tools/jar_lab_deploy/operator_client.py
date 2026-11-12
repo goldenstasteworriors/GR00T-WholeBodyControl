@@ -126,6 +126,7 @@ def main():
         if worker is not None:
             worker.join(timeout=17)
         cameras.close()
+        ros.shutdown()
 
 
 if __name__ == "__main__":
