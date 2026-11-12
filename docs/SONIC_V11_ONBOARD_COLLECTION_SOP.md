@@ -402,6 +402,32 @@ scp unitree@192.168.123.164:/home/unitree/VLA/GR00T-WholeBodyControl/gear_sonic/
 
 先确保第6步官方手服务运行、第7步免密成功。调手网页与官方test_brainco_hand_server测试程序必须退出，避免多个命令来源。
 
+**9.0 机器人：先启动官方强脑手服务，再确认双手反馈。**
+
+安装第6步的依赖不会让服务自动运行，本SOP也没有配置开机自启。每次机器人开机后都要检查；手服务前台终端关闭或按Ctrl+C后，也需要重新检查。网页程序和四pane启动器均不能代替串口服务。
+
+机器人终端先执行下面一行，查看已有服务：
+
+```bash
+pgrep -af '[b]rainco_hand_server'
+```
+
+有进程时复用，不再启动第二份。没有进程时，在机器人终端A逐行执行下面两行，并保持终端运行；eth0替换为第0步确认的DDS网卡：
+
+```bash
+cd /home/unitree/VLA/GR00T-WholeBodyControl/external_dependencies/brainco_hand_service
+sudo ./bin/brainco_hand_server --network_interface eth0
+```
+
+确认日志同时出现left/right绑定成功和两个worker启动。再开机器人终端B，逐行执行下面两行，只读检查、不发送手指命令：
+
+```bash
+cd /home/unitree/VLA/GR00T-WholeBodyControl
+bash tools/brainco_hand_test/run_both_hands.sh --network eth0
+```
+
+必须看到left和right均为`fresh=1`、`Read-only check passed`。没有反馈或只识别一只手时，按第6步排查后重新检查。两个worker在相机、PICO和整个采集期间都要保持运行。
+
 **9.1 机器人新终端启动相机，保持运行：**
 
 ```bash
@@ -417,7 +443,7 @@ cd /home/unitree/VLA/GR00T-WholeBodyControl
 
 启动日志会打印目标相机的 USB type：`3.x` 为 USB 3，`2.x` 为 USB 2。看到画面后至少观察 3 分钟，确认持续更新且没有连续取帧超时。若卡住，先看机器人端日志：本机取帧也超时应排查相机/USB 链路，指定序列号不能修复线缆、供电或设备通信故障。更换接口后重新确认速度，不能只根据接口颜色判断。
 
-**9.2 PC打开PC Service并连接PICO，然后检查画面；连续更新后按q退出：**
+**9.2 PC按第5步复用或启动XRoboToolkit通信后台（不启动3D演示），连接PICO，然后检查画面；连续更新后按q退出：**
 
 ```bash
 cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
