@@ -412,7 +412,7 @@ scp unitree@192.168.123.164:/home/unitree/VLA/GR00T-WholeBodyControl/gear_sonic/
 pgrep -af '[b]rainco_hand_server'
 ```
 
-有进程时复用，不再启动第二份。没有进程时，在机器人终端A逐行执行下面两行，并保持终端运行；eth0替换为第0步确认的DDS网卡：
+pgrep有输出只说明进程存在，不代表双手都连接成功。有进程时先执行下面的双手只读检查，两侧均正常才复用，不再启动第二份。没有进程时，在机器人终端A逐行执行下面两行，并保持终端运行；eth0替换为第0步确认的DDS网卡：
 
 ```bash
 cd /home/unitree/VLA/GR00T-WholeBodyControl/external_dependencies/brainco_hand_service
@@ -427,6 +427,40 @@ bash tools/brainco_hand_test/run_both_hands.sh --network eth0
 ```
 
 必须看到left和right均为`fresh=1`、`Read-only check passed`。没有反馈或只识别一只手时，按第6步排查后重新检查。两个worker在相机、PICO和整个采集期间都要保持运行。
+
+**单手无反馈时的手动恢复：**
+
+官方服务启动时对每个候选串口只查询一次设备信息。某只手查询失败后会被略过，另一只手仍可运行，程序也不会在后台重新识别缺失的一侧。因此启动命令成功、进程存在或右手能动，都不能代替双侧验收。具体失败原因以该次启动日志为准。
+
+扫描过程中某个候选端口显示`Failed to get device info`不一定是故障：未接手的串口也会被尝试。应看最终是否出现左右各一条`bound to`和两个worker启动，以及双侧`fresh=1`，不按固定ttyUSB编号猜左右手。
+
+1. 先结束正在录制的episode，并处理好手中物品：手服务重启会使双手默认张开，不会主动停止身体控制。
+2. 如果按第9.0步在前台终端运行，在**原手服务终端**按Ctrl+C，再执行第9.0步的启动命令。不要关闭身体控制pane，也不要在旧手服务仍运行时另开一份。
+3. 如果当前由排查时创建的临时后台服务`brainco-hand-session`运行，改为在机器人终端执行下面一行，代替前台重启：
+
+```bash
+sudo systemctl restart brainco-hand-session.service
+```
+
+该临时服务只属于当前开机，不是新配置的开机自启。使用它时可查看本次扫描日志：
+
+```bash
+journalctl -u brainco-hand-session.service -n 40 --no-pager
+```
+
+4. 重新执行上面的双手只读检查，必须左右均为`fresh=1`。一次重启仍失败时，不要反复盲目重启；保留扫描日志，并检查串口占用（下面一行只读）：
+
+```bash
+sudo fuser -v /dev/ttyUSB*
+```
+
+若前台方式启动且需要保留日志，先停止旧手服务，再在机器人终端逐行执行下面三行，代替普通前台启动命令。输出日志位于项目内，日志会显示尝试端口、设备信息读取失败及最终左右绑定结果：
+
+```bash
+cd /home/unitree/VLA/GR00T-WholeBodyControl
+mkdir -p .runtime/brainco-hand-recovery
+sudo ./external_dependencies/brainco_hand_service/bin/brainco_hand_server --network_interface eth0 2>&1 | tee ".runtime/brainco-hand-recovery/service-$(date +%Y%m%d-%H%M%S).log"
+```
 
 **9.1 机器人新终端启动相机，保持运行：**
 
