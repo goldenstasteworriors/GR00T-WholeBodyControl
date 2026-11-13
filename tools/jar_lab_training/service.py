@@ -38,8 +38,11 @@ def main():
     program = "jar-lab-20261111" if root == ROOT else "jar-" + root.name
     control = root / "control"
     config = control / "supervisord.conf"
+    # Supervisor binds a temporary socket with a PID suffix before renaming it.
+    # Leave room for that suffix under Linux's 108-byte AF_UNIX limit.
+    socket_path = control / ("s.sock" if len(str(control/"supervisor.sock").encode()) > 90 else "supervisor.sock")
     if args.action == "start":
-        if (control / "supervisor.sock").exists():
+        if socket_path.exists():
             status = subprocess.run([SUPERVISORCTL, "-c", str(config), "status"])
             if status.returncode:
                 subprocess.run([SUPERVISORCTL, "-c", str(config), "start", program], check=True)
@@ -53,7 +56,7 @@ def main():
         if args.compact_checkpoints:
             command.append("--compact-checkpoints")
         config.write_text(f"""[unix_http_server]
-file={control}/supervisor.sock
+file={socket_path}
 chmod=0600
 
 [supervisord]
@@ -68,7 +71,7 @@ nodaemon=false
 supervisor.rpcinterface_factory=supervisor.rpcinterface:make_main_rpcinterface
 
 [supervisorctl]
-serverurl=unix://{control}/supervisor.sock
+serverurl=unix://{socket_path}
 
 [program:{program}]
 command={shlex.join(command)}
