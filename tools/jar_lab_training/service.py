@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 import subprocess
 import shlex
+from run_queue import project_tmp
 
 
 ROOT = Path("/share/personal/yekangjie/JAR_lab_primitives_20261111")
@@ -42,6 +43,8 @@ def main():
     # Leave room for that suffix under Linux's 108-byte AF_UNIX limit.
     socket_path = control / ("s.sock" if len(str(control/"supervisor.sock").encode()) > 90 else "supervisor.sock")
     if args.action == "start":
+        temporary = project_tmp(root)
+        temporary.mkdir(parents=True, exist_ok=True)
         if socket_path.exists():
             status = subprocess.run([SUPERVISORCTL, "-c", str(config), "status"])
             if status.returncode:
@@ -88,7 +91,7 @@ redirect_stderr=true
 stdout_logfile={control}/queue.log
 stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=2
-environment=TMPDIR="{root}/runtime/tmp",XDG_CACHE_HOME="{root}/runtime/cache",PYTHONDONTWRITEBYTECODE="1"
+environment=TMPDIR="{temporary}",XDG_CACHE_HOME="{root}/runtime/cache",PYTHONDONTWRITEBYTECODE="1"
 """)
         subprocess.run([SUPERVISORD, "-c", str(config)], check=True)
         subprocess.run([SUPERVISORCTL, "-c", str(config), "status"], check=True)

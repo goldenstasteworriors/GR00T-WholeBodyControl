@@ -3,6 +3,7 @@ import argparse
 import atexit
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,17 @@ TASKS = ["TAKE_TUBE", "TAKE_DROPPER_AND_ASPIRATE", "DISPENSE_TO_HELD_TUBE",
 STOP = False
 CHILD = None
 PAUSED_KEEPALIVES = []
+
+
+def project_tmp(root):
+    root = Path(root).resolve()
+    path = root/"runtime/tmp"
+    if len(str(path).encode()) > 65:
+        # Python multiprocessing appends pymp-*/listener-* Unix socket names.
+        path = root.parent/("t_"+hashlib.sha256(str(root).encode()).hexdigest()[:6])
+    if len(str(path).encode()) > 65:
+        raise ValueError("Project temporary path is too long for multiprocessing Unix sockets")
+    return path
 
 
 def process_start(pid):
@@ -123,13 +135,15 @@ def main():
     scripts = Path(__file__).resolve().parent
     control = root / "control"
     control.mkdir(parents=True, exist_ok=True)
+    temporary = project_tmp(root)
+    temporary.mkdir(parents=True, exist_ok=True)
     lock = (control / "queue.lock").open("a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, stop)
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=args.devices, CUDA_DEVICE_ORDER="PCI_BUS_ID", OMP_NUM_THREADS="4", MKL_NUM_THREADS="4",
                PYTHONDONTWRITEBYTECODE="1", TOKENIZERS_PARALLELISM="false",
-               TMPDIR=str(root / "runtime/tmp"), XDG_CACHE_HOME=str(root / "runtime/cache"),
+               TMPDIR=str(temporary), XDG_CACHE_HOME=str(root / "runtime/cache"),
                TORCHINDUCTOR_CACHE_DIR=str(root / "runtime/cache/inductor"),
                PYTHONPATH=str(root / "vendor") + ":" + str(scripts))
     if not args.dry_run:

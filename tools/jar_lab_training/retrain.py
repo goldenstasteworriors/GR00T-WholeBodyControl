@@ -11,6 +11,7 @@ import sys
 
 sys.dont_write_bytecode = True
 from service import ROOT, PYTHON, OFFICIAL
+from run_queue import project_tmp
 
 
 def write(path, value):
@@ -90,7 +91,9 @@ def main():
             (root/name).mkdir(parents=True,exist_ok=True)
         if root.stat().st_dev != base.stat().st_dev:
             raise ValueError("Rerun must stay on the same authorized mount")
-        os.environ.update(TMPDIR=str(root/"runtime/tmp"),XDG_CACHE_HOME=str(root/"runtime/cache"),
+        temporary=project_tmp(root)
+        temporary.mkdir(parents=True,exist_ok=True)
+        os.environ.update(TMPDIR=str(temporary),XDG_CACHE_HOME=str(root/"runtime/cache"),
                           PYTHONDONTWRITEBYTECODE="1",TOKENIZERS_PARALLELISM="false")
         for name in ("vendor","cache"):
             target=root/name
@@ -106,7 +109,7 @@ def main():
             subprocess.run(git+["-C",str(root/"code"),"checkout","HEAD"],check=True)
         recipe=dict(seconds_per_operation=3600,devices=args.devices,global_batch=16,
                     train_eval_samples=64,eval_every=500,save_every=500,compact_checkpoints=True,
-                    min_free_gib=28,idle_memory_mib=args.idle_memory_mib,
+                    min_free_gib=28,idle_memory_mib=args.idle_memory_mib,runtime_tmp=str(temporary),
                     initialization="official OLMo2 independently for all six tasks",
                     target="strictly future upper-body observation, no action or walking",
                     train_best="minimum eval-mode NLL on fixed training cuts",
