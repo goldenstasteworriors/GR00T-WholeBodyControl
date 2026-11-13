@@ -98,9 +98,12 @@ def main():
             if target.resolve() != (base/name).resolve():raise ValueError("Unexpected existing "+name)
         if not (root/"code").exists():
             repo=Path(__file__).resolve().parents[2]
-            subprocess.run(["git","-C",str(repo),"worktree","add","--detach","--no-checkout",str(root/"code"),"HEAD"],check=True)
-            subprocess.run(["git","-C",str(root/"code"),"sparse-checkout","set","tools/jar_lab_training"],check=True)
-            subprocess.run(["git","-C",str(root/"code"),"checkout","HEAD"],check=True)
+            # This text-only sparse snapshot needs no LFS assets. Disable hooks
+            # only for these commands; the shared repository config stays intact.
+            git=["git","-c","core.hooksPath=/dev/null"]
+            subprocess.run(git+["-C",str(repo),"worktree","add","--detach","--no-checkout",str(root/"code"),"HEAD"],check=True)
+            subprocess.run(git+["-C",str(root/"code"),"sparse-checkout","set","tools/jar_lab_training"],check=True)
+            subprocess.run(git+["-C",str(root/"code"),"checkout","HEAD"],check=True)
         recipe=dict(seconds_per_operation=3600,devices=args.devices,global_batch=16,
                     train_eval_samples=64,eval_every=500,save_every=500,compact_checkpoints=True,
                     min_free_gib=28,idle_memory_mib=args.idle_memory_mib,
