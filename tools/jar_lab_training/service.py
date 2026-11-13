@@ -8,8 +8,17 @@ import shlex
 ROOT = Path("/share/personal/yekangjie/JAR_lab_primitives_20261111")
 PYTHON = "/share/personal/liyanjun/yanjun/envs/jar/bin/python"
 OFFICIAL = "/share/personal/liyanjun/yanjun/JAR/assets/olmo2-0425-1b-official"
-SUPERVISORD = next((p for p in ("/root/miniforge/bin/supervisord", "/etc/aibox/bin/supervisord") if Path(p).is_file()), None)
-SUPERVISORCTL = next((p for p in ("/root/miniforge/bin/supervisorctl", "/etc/aibox/bin/supervisorctl") if Path(p).is_file()), None)
+def existing_executable(candidates):
+    for path in candidates:
+        try:
+            if Path(path).is_file():return path
+        except PermissionError:
+            continue
+    return None
+
+
+SUPERVISORD = existing_executable(("/root/miniforge/bin/supervisord", "/etc/aibox/bin/supervisord"))
+SUPERVISORCTL = existing_executable(("/root/miniforge/bin/supervisorctl", "/etc/aibox/bin/supervisorctl"))
 
 
 def main():

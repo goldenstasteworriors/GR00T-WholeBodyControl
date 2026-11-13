@@ -76,7 +76,11 @@ def main():
     parser.add_argument("action",choices=("start","prepare","status","stop"))
     parser.add_argument("--root",type=Path,required=True)
     parser.add_argument("--base",type=Path,default=ROOT)
+    parser.add_argument("--devices",default="1,2",help="Exactly two verified idle GPU indices")
     args = parser.parse_args()
+    devices=args.devices.split(",")
+    if len(devices)!=2 or len(set(devices))!=2 or not all(d.isdigit() for d in devices):
+        raise ValueError("Select exactly two distinct GPU indices")
     root,base=args.root.resolve(),args.base.resolve()
     if root == base or base not in root.parents:
         raise ValueError("Use a separate rerun subdirectory under the existing /share experiment")
@@ -96,7 +100,7 @@ def main():
             subprocess.run(["git","-C",str(repo),"worktree","add","--detach","--no-checkout",str(root/"code"),"HEAD"],check=True)
             subprocess.run(["git","-C",str(root/"code"),"sparse-checkout","set","tools/jar_lab_training"],check=True)
             subprocess.run(["git","-C",str(root/"code"),"checkout","HEAD"],check=True)
-        recipe=dict(seconds_per_operation=3600,devices="1,2",global_batch=16,
+        recipe=dict(seconds_per_operation=3600,devices=args.devices,global_batch=16,
                     train_eval_samples=64,eval_every=500,save_every=500,compact_checkpoints=True,
                     min_free_gib=28,initialization="official OLMo2 independently for all six tasks",
                     target="strictly future upper-body observation, no action or walking",
@@ -112,7 +116,7 @@ def main():
         if args.action == "prepare":return
     command=[PYTHON,str(root/"code/tools/jar_lab_training/service.py"),args.action,"--root",str(root)]
     if args.action == "start":
-        command += ["--seconds","3600","--devices","1,2","--train-eval-samples","64",
+        command += ["--seconds","3600","--devices",args.devices,"--train-eval-samples","64",
                     "--eval-every","500","--save-every","500","--compact-checkpoints","--min-free-gib","28"]
     subprocess.run(command,check=True)
 
