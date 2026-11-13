@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--save-every", type=int, default=1000)
     parser.add_argument("--compact-checkpoints", action="store_true")
     parser.add_argument("--min-free-gib", type=float, default=0)
+    parser.add_argument("--idle-memory-mib", type=int, default=12000)
     args = parser.parse_args()
     root = args.root.resolve()
     program = "jar-lab-20261111" if root == ROOT else "jar-" + root.name
@@ -46,7 +47,7 @@ def main():
         code = Path(__file__).resolve().parent
         command = [PYTHON, "-u", str(code/"run_queue.py"), "--root", str(root), "--python", PYTHON,
                    "--official", OFFICIAL, "--seconds", str(args.seconds), "--global-batch", "16",
-                   "--devices", args.devices, "--idle-memory-mib", "12000", "--pause-keepalive",
+                   "--devices", args.devices, "--idle-memory-mib", str(args.idle_memory_mib), "--pause-keepalive",
                    "--train-eval-samples", str(args.train_eval_samples), "--eval-every", str(args.eval_every),
                    "--save-every", str(args.save_every), "--min-free-gib", str(args.min_free_gib)]
         if args.compact_checkpoints:

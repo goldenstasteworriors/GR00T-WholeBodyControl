@@ -2,12 +2,15 @@
 
 ## 2026-11-13：每项1小时，分别保留两种最低NLL
 
-独立目录为原实验下的 `retrain_1h_20261113`；原4小时结果保留不动。
+运行于A800-1的GPU1、2，独立目录为原实验下的 `retrain_1h_20261113_A800`。
+用户已授权删除上一轮上传ModelScope的本地checkpoint。`reclaim_uploaded.py` 先逐份核对云端和本地SHA256/大小，
+全部通过后才清理对应模型、导出硬链接和optimizer；云端副本及本地日志、配置和归档标记保留。
 复用已校验的只读vendor/cache软链接，冻结本次代码到独立Git worktree；六项都重新从官方OLMo2初始化。
 运行设置仍是GPU1、2两卡DDP、global batch16、512桶、双臂与Dex1的16维未来observation；不训走路、不读action。
 
 `retrain.py` 先检查349段数值校验和、原episode分组隔离、图像因果性和未来目标，再交给独立supervisord。
-显存高于12000MiB或空闲磁盘低于28GiB时等待，不停止其它训练/推理任务。只暂停既有已核实的两张卡保卡进程，退出时恢复。
+A800-1所选两卡当前均为0MiB，本轮启动门槛为显存低于1MiB、空闲磁盘至少28GiB；不停止其它训练/推理任务。
+只暂停既有已核实的所选卡保卡进程，退出时恢复；本次检查没有发现保卡进程，指定README也不存在，因此未启动额外保卡任务。
 空闲后自动执行实际两卡5步、checkpoint逐tensor回读和单样本自回归检查；全部通过后才开始正式队列。
 每项预算3600秒，从初始化和初始验证之后计时，包含常规评估/保存；到时的最终评估、保存和离线评估另有少量开销。
 SSH或本机断线不影响这个服务器端服务。
@@ -26,9 +29,9 @@ SSH或本机断线不影响这个服务器端服务。
 相同目录重复start不会启动第二个队列；使用status查看等待或训练状态。
 
 ```bash
-ssh -- 'ai2-root-4080' '/share/personal/liyanjun/yanjun/envs/jar/bin/python /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/retrain.py prepare --root /share/personal/yekangjie/JAR_lab_primitives_20261111/retrain_1h_20261113'
-ssh -- 'ai2-root-4080' '/share/personal/liyanjun/yanjun/envs/jar/bin/python /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/retrain.py start --root /share/personal/yekangjie/JAR_lab_primitives_20261111/retrain_1h_20261113'
-ssh -- 'ai2-root-4080' '/share/personal/liyanjun/yanjun/envs/jar/bin/python /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/retrain.py status --root /share/personal/yekangjie/JAR_lab_primitives_20261111/retrain_1h_20261113'
+ssh -- 'A800-1' '/share/personal/liyanjun/yanjun/envs/jar/bin/python /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/retrain.py prepare --root /share/personal/yekangjie/JAR_lab_primitives_20261111/retrain_1h_20261113_A800'
+ssh -- 'A800-1' '/share/personal/liyanjun/yanjun/envs/jar/bin/python /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/retrain.py start --root /share/personal/yekangjie/JAR_lab_primitives_20261111/retrain_1h_20261113_A800'
+ssh -- 'A800-1' '/share/personal/liyanjun/yanjun/envs/jar/bin/python /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/retrain.py status --root /share/personal/yekangjie/JAR_lab_primitives_20261111/retrain_1h_20261113_A800'
 ```
 
 以下记录上一轮4小时配方。
