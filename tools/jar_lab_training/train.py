@@ -8,7 +8,6 @@ import math
 import os
 from pathlib import Path
 import random
-import re
 import shutil
 import signal
 import time
@@ -25,6 +24,7 @@ from jar.olmo2 import OLMo2Config, OLMo2Model
 from jar.olmo2_checkpoint import publish_checkpoint
 from jar.olmo2_pretrained import initialize_official
 from dataset import ObservationDataset, GlobalBatchSampler, validation_indices
+from checkpoint_policy import lower_nll, prune_checkpoints
 
 
 STOP_REQUESTED = False
@@ -50,7 +50,7 @@ def inputs(batch, device):
 
 
 @torch.inference_mode()
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, split="validation"):
     model.eval()
     nll, count = 0., 0
     for batch in loader:
@@ -60,20 +60,23 @@ def evaluate(model, loader, device):
         count += out["num_target_tokens"].item()
     model.train()
     return dict(nll=nll / count, supervised_tokens=count, samples=len(loader.dataset),
-                metric="held-out future observation teacher-forced full-vocabulary NLL; not execution success")
+                split=split, metric="future observation teacher-forced full-vocabulary NLL; not execution success")
 
 
-def save(model, optimizer, output, step, epoch, next_batch, best, elapsed, args, rank, world, signature, readback=False):
+def save(model, optimizer, output, step, epoch, next_batch, best, elapsed, args, rank, world, signature,
+         readback=False, best_train=None, finished=False):
     rng = dict(torch=torch.get_rng_state(), cuda=torch.cuda.get_rng_state(),
                numpy=np.random.get_state(), python=random.getstate())
     states = [None] * world
     dist.all_gather_object(states, rng)
     if rank == 0:
+        if args.compact_checkpoints and shutil.disk_usage(output).free < 24 * 1024**3:
+            raise RuntimeError("Less than 24 GiB free for atomic model+optimizer checkpoint; existing weights retained")
         target = output / f"step{step}"
         publish_checkpoint(target, model.state_dict(),
             dict(optimizer=optimizer.state_dict(), step=step, epoch=epoch, next_batch=next_batch,
                  rng=states, world=world, best=best, elapsed_seconds=elapsed,
-                 arguments=vars(args), dataset_signature=signature),
+                 arguments=vars(args), dataset_signature=signature, best_train=best_train),
             dict(utc=utc(), step=step, epoch=epoch, next_batch=next_batch,
                  representation="uniform512-future-observation", horizon=32, dimensions=16,
                  first_target_offset=1, dataset_signature=signature))
@@ -91,12 +94,11 @@ def save(model, optimizer, output, step, epoch, next_batch, best, elapsed, args,
         atomic_json(output / "latest.json", dict(step=step, path=str(target)))
         if best["step"] == step:
             atomic_json(output / "best.json", dict(best, path=str(target)))
-        completed = sorted((p for p in output.iterdir() if p.is_dir() and re.fullmatch(r"step\d+", p.name)
-                            and (p / "complete.json").is_file()), key=lambda p: int(p.name[4:]))
-        keep = {p.name for p in completed[-2:]} | {f"step{best['step']}"}
-        for old in completed:
-            if old.name not in keep:
-                shutil.rmtree(old)
+            atomic_json(output / "best_validation.json", dict(best, path=str(target)))
+        if best_train and best_train["step"] == step:
+            atomic_json(output / "best_train.json", dict(best_train, path=str(target)))
+        retained = prune_checkpoints(output, best, best_train, compact=args.compact_checkpoints, finished=finished)
+        atomic_json(output / "checkpoint-retention.json", retained)
     dist.barrier()
     gc.collect()
     torch.cuda.empty_cache()
@@ -116,9 +118,15 @@ def main():
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--save-every", type=int, default=1000)
     parser.add_argument("--eval-every", type=int, default=1000)
+    parser.add_argument("--train-eval-samples", type=int, default=0,
+                        help="Track an additional train-NLL winner on this many fixed, evenly spaced train cuts")
+    parser.add_argument("--compact-checkpoints", action="store_true",
+                        help="Keep optimizer only at latest while active; finish with NLL winners' model weights only")
     parser.add_argument("--resume")
     parser.add_argument("--compile", action="store_true")
     args = parser.parse_args()
+    if min(args.max_seconds, args.global_batch, args.eval_every, args.save_every) <= 0 or args.train_eval_samples < 0:
+        raise ValueError("Training budget/intervals must be positive and train-eval-samples nonnegative")
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, stop_requested)
     rank, world, local = (int(os.environ[k]) for k in ("RANK", "WORLD_SIZE", "LOCAL_RANK"))
@@ -146,7 +154,7 @@ def main():
     loader = DataLoader(train, batch_sampler=sampler, num_workers=args.workers,
                         collate_fn=mixed_pack_collate, pin_memory=True,
                         **(dict(persistent_workers=True, prefetch_factor=2) if args.workers else {}))
-    vloader = None
+    vloader = tloader = None
     if rank == 0:
         cuts = validation_indices(validation)
         # Smoke verifies data and numerics without running the whole validation.
@@ -154,15 +162,30 @@ def main():
             cuts = cuts[:2]
         vloader = DataLoader(Subset(validation, cuts), batch_size=1, num_workers=2,
                             collate_fn=mixed_pack_collate, pin_memory=True, persistent_workers=True)
+        train_cuts = validation_indices(train) if args.train_eval_samples else []
+        if len(train_cuts) > args.train_eval_samples:
+            train_cuts = [train_cuts[i] for i in np.linspace(0, len(train_cuts)-1, args.train_eval_samples, dtype=int)]
+        if args.max_steps:
+            train_cuts = train_cuts[:2]
+        if train_cuts:
+            tloader = DataLoader(Subset(train, train_cuts), batch_size=1, num_workers=2,
+                                 collate_fn=mixed_pack_collate, pin_memory=True, persistent_workers=True)
+        atomic_json(output / "nll-evaluation-cuts.json", dict(
+            train=[dict(zip(("row", "cut"), train.locate(i))) for i in train_cuts],
+            validation=[dict(zip(("row", "cut"), validation.locate(i))) for i in cuts],
+            selection="Fixed cuts, post-update eval mode, identical subsets at every evaluation; episode-disjoint",
+            test_meaning="Existing held-out validation split used for model selection, not an independent final test set"))
         atomic_json(output / "observation_representation.json", train.manifest)
         atomic_json(output / "training.json", dict(utc=utc(), arguments=vars(args), world=world,
                     train_episodes=len(train.rows), train_cuts=len(train), validation_episodes=len(validation.rows),
                     validation_cuts=len(cuts), steps_per_epoch=len(sampler), input_dim=16, target_dim=16,
                     target="strictly future observation.state; no action data read",
-                    budget="14400 seconds per operation after initialization and initial validation; final checkpoint/evaluation extra",
+                    budget=f"{args.max_seconds:g} seconds per operation after initialization and initial validation; final checkpoint/evaluation extra",
                     parameters="FP32", compute="BF16", optimizer="AdamW beta=(0.9,0.95), WD=0.01, grad clip=1",
                     scheduler="20-step linear warmup then wall-clock cosine to 10% of peak LR",
-                    checkpoint_retention="latest two plus best validation; step5 full readback",
+                    checkpoint_retention=("active: latest two and train/validation NLL winners, latest optimizer only; completed: NLL winners weights only"
+                                          if args.compact_checkpoints else "latest two plus train/validation NLL winners; step5 full readback"),
+                    train_nll_selection_samples=len(train_cuts),
                     name=datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d") + "_" + args.task))
     with torch.device("meta"):
         model = OLMo2Model(config)
@@ -178,8 +201,8 @@ def main():
         restored = torch.load(resume / "trainer.pt", map_location="cpu", weights_only=False, mmap=True)
         if restored["world"] != world or restored["dataset_signature"] != train.manifest["signature"]:
             raise ValueError("Resume world/dataset mismatch")
-        for key in ("global_batch", "lr", "warmup_steps", "max_seconds", "task", "compile"):
-            if restored["arguments"][key] != vars(args)[key]:
+        for key in ("global_batch", "lr", "warmup_steps", "max_seconds", "task", "compile", "train_eval_samples", "compact_checkpoints"):
+            if restored["arguments"].get(key, parser.get_default(key)) != vars(args)[key]:
                 raise ValueError("Resume recipe differs: " + key)
     else:
         initial = initialize_official(model, args.official, config, verify=rank == 0)
@@ -199,9 +222,11 @@ def main():
     ddp = DDP(model, device_ids=[local], broadcast_buffers=False, gradient_as_bucket_view=True)
     step, start_epoch, skip, elapsed_before = 0, 0, 0, 0.
     best = dict(nll=1e30, step=-1)
+    best_train = None
     if restored is not None:
         optimizer.load_state_dict(restored["optimizer"])
         step, start_epoch, skip, elapsed_before, best = (restored[k] for k in ("step", "epoch", "next_batch", "elapsed_seconds", "best"))
+        best_train = restored.get("best_train")
         state = restored["rng"][rank]
         torch.set_rng_state(state["torch"])
         torch.cuda.set_rng_state(state["cuda"])
@@ -249,10 +274,11 @@ def main():
             dist.all_reduce(loss_sum)
             torch.cuda.synchronize()
             elapsed = elapsed_before + time.monotonic() - started
-            stopped = torch.tensor(int(STOP_REQUESTED or elapsed >= args.max_seconds or
-                                        bool(args.max_steps and step >= args.max_steps)), device=device)
+            stopped = torch.tensor([int(STOP_REQUESTED), int(elapsed >= args.max_seconds or
+                                        bool(args.max_steps and step >= args.max_steps))], device=device)
             dist.all_reduce(stopped, op=dist.ReduceOp.MAX)
-            finished = bool(stopped.item())
+            interrupted, budget_finished = map(bool, stopped.tolist())
+            finished = interrupted or budget_finished
             if rank == 0:
                 record = dict(utc=utc(), step=step, epoch=epoch + (batch_index + 1) / len(sampler),
                               train_nll=float(loss_sum / totals[0]), lr=lr, grad_norm=norm.item(),
@@ -269,24 +295,29 @@ def main():
                     atomic_json(output / "first-step-check.json", dict(passed=True, finite_loss=True,
                                 finite_grad_norm=True, maximum_bin_head_change=delta, world=world))
             improved = False
-            if step % args.eval_every == 0 or finished:
+            if step % args.eval_every == 0 or finished or (args.train_eval_samples and step == 5):
                 if rank == 0:
                     result = evaluate(model, vloader, device)
                     append_json(output / "validation.jsonl", dict(step=step, utc=utc(), **result))
-                    if result["nll"] < best["nll"]:
-                        best, improved = dict(nll=result["nll"], step=step), True
-                payload = [best, improved]
+                    best, improved = lower_nll(best, result["nll"], step)
+                    if tloader is not None:
+                        train_result = evaluate(model, tloader, device, split="fixed train subset")
+                        append_json(output / "train-evaluation.jsonl", dict(step=step, utc=utc(), **train_result))
+                        best_train, train_improved = lower_nll(best_train, train_result["nll"], step)
+                        improved = improved or train_improved
+                payload = [best, best_train, improved]
                 dist.broadcast_object_list(payload, src=0)
-                best, improved = payload
+                best, best_train, improved = payload
             if step == 5 or step % args.save_every == 0 or improved or finished:
                 save(model, optimizer, output, step, epoch, batch_index + 1, best,
                      elapsed_before + time.monotonic() - started, args, rank, world,
-                     train.manifest["signature"], readback=step == 5)
+                     train.manifest["signature"], readback=step == 5, best_train=best_train,
+                     finished=finished and not interrupted)
             if finished:
                 if rank == 0:
-                    atomic_json(output / "status.json", dict(utc=utc(), state="interrupted" if STOP_REQUESTED else "complete",
+                    atomic_json(output / "status.json", dict(utc=utc(), state="interrupted" if interrupted else "complete",
                                 step=step, elapsed_seconds=elapsed_before + time.monotonic() - started,
-                                budget_seconds=args.max_seconds, best=best))
+                                budget_seconds=args.max_seconds, best=best, best_train=best_train))
                 dist.destroy_process_group()
                 return
         skip = 0
