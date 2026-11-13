@@ -33,6 +33,13 @@ def prune_checkpoints(output, best, best_train, *, compact=False, finished=False
             trainer = folder/"trainer.pt"
             if trainer.is_file():
                 trainer.unlink()
+                marker = folder/"complete.json"
+                data = json.loads(marker.read_text())
+                data.setdefault("files", {}).pop("trainer.pt", None)
+                data["optimizer_retained"] = False
+                temporary = marker.with_suffix(".new.json")
+                temporary.write_text(json.dumps(data, indent=2)+"\n")
+                temporary.replace(marker)
     retained = sorted(set(completed) & keep)
     if compact and finished:
         latest = output/"latest.json"
