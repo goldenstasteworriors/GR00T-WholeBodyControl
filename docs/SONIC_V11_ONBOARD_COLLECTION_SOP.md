@@ -484,7 +484,7 @@ cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
 .venv_data_collection/bin/python gear_sonic/scripts/run_camera_viewer.py --camera-host 192.168.123.164 --camera-port 5555
 ```
 
-**9.3 PC启动全身采集**，替换第0步参数、任务提示与新的dataset-name。帐号不是unitree时额外加deploy-onboard-user实际帐号；不需要手部IP，也不启动Inspire桥接：
+**9.3 PC启动全身采集**，替换第0步参数、任务提示与dataset-name。首次采集或另开批次使用新名称；同任务同配置续录时保持原名称。帐号不是unitree时额外加deploy-onboard-user实际帐号；不需要手部IP，也不启动Inspire桥接：
 
 ```bash
 cd "$HOME/sonic_v11/GR00T-WholeBodyControl"
@@ -521,7 +521,11 @@ tmux的data_collection窗口：左上C++推理，左下PICO，右上数据导出
 
 停止身体控制/退出程序不会保证手自动松开；官方服务可保留最后目标。需要松手时，在身体控制结束、无其他手命令来源后，用第8步网页明确发送张开目标。
 
-单侧反馈超过0.25秒、机器人状态流陈旧或手命令尚未成功发布时，导出器暂停添加帧并打印原因，不伪造缺失手状态。它不会因此自动改变身体控制策略。每批使用新dataset-name，不开启覆盖已有数据。
+单侧反馈超过0.25秒、机器人状态流陈旧或手命令尚未成功发布时，导出器暂停添加帧并打印原因，不伪造缺失手状态。它不会因此自动改变身体控制策略。
+
+**重启后续录：**上次已正常保存、任务/手型/模型/相机及频率配置不变时，保持相同`--dataset-name`，不加`--overwrite-existing-dataset`，程序会加载已有目录并创建下一个episode。例如已有episode_000000，下一条录制保存为episode_000001，不是向上一段视频追加帧。无需手动改项目目录或预先创建输出文件夹。
+
+换任务、手型、模型、采集配置或另开独立批次时使用新dataset-name。省略该参数则按启动时间自动生成新名称。`--overwrite-existing-dataset`会删除同名数据集后重建，不能用于续录。已有目录损坏或上次未保存的片段，不保证自动恢复；异常退出后先检查保存结果。
 
 终端断开后PC重新进入（不重新启动控制）：
 
