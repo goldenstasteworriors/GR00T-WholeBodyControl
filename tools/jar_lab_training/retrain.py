@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
 from service import ROOT, PYTHON, OFFICIAL
 
 
@@ -23,7 +24,7 @@ def preflight(root):
     import numpy as np
     from jar.mixed_cache import digest_json
     from jar.olmo2 import OLMo2Config
-    from dataset import ObservationDataset, validation_indices
+    from dataset import ObservationDataset
     complete = json.loads((root/"cache/complete.json").read_text())
     assert complete["action_columns_read"] is False
     from run_queue import TASKS
