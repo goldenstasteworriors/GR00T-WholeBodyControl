@@ -1,5 +1,38 @@
 # G1 实验室操作：仅用 observation 训练 JAR
 
+## 2026-11-13：每项1小时，分别保留两种最低NLL
+
+独立目录为原实验下的 `retrain_1h_20261113`；原4小时结果保留不动。
+复用已校验的只读vendor/cache软链接，冻结本次代码到独立Git worktree；六项都重新从官方OLMo2初始化。
+运行设置仍是GPU1、2两卡DDP、global batch16、512桶、双臂与Dex1的16维未来observation；不训走路、不读action。
+
+`retrain.py` 先检查349段数值校验和、原episode分组隔离、图像因果性和未来目标，再交给独立supervisord。
+显存高于12000MiB或空闲磁盘低于28GiB时等待，不停止其它训练/推理任务。只暂停既有已核实的两张卡保卡进程，退出时恢复。
+空闲后自动执行实际两卡5步、checkpoint逐tensor回读和单样本自回归检查；全部通过后才开始正式队列。
+每项预算3600秒，从初始化和初始验证之后计时，包含常规评估/保存；到时的最终评估、保存和离线评估另有少量开销。
+SSH或本机断线不影响这个服务器端服务。
+
+第5步、之后每500步及结束时，在eval模式下计算完整词表teacher-forced NLL：
+
+- 训练NLL：训练episode固定切点最多64个，均匀抽取；不是随机batch loss，也不宣称覆盖全训练集。
+- 测试NLL：沿用上一轮的留出验证集，每段固定0/25/50/75%切点。它用于选权重，不是独立最终测试集。
+- 各自最低分别记录在 `best_train.json` 与 `best_validation.json`，`best.json`兼容指向验证最低。
+  JSON记录step、NLL和具体模型路径；相同步骤只保存一份。评估曲线位于 `train-evaluation.jsonl`、`validation.jsonl`。
+- 训练期间保留最近两份模型及两种NLL最佳模型，只有最新checkpoint保留optimizer供断点续训。
+  正常完成后只留下两种NLL赢家的FP32模型权重，不保留optimizer；中断退出则保留恢复状态。
+  `latest.json`在完成后表示最新保留的赢家；真正结束步数以status.json/last_training_checkpoint.json为准。
+
+下面每行都是一条完整命令，分别执行，无需手动折行。prepare仅做CPU检查，start会先prepare再启动资源等待/训练服务。
+相同目录重复start不会启动第二个队列；使用status查看等待或训练状态。
+
+```bash
+ssh -- 'ai2-root-4080' '/share/personal/liyanjun/yanjun/envs/jar/bin/python /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/retrain.py prepare --root /share/personal/yekangjie/JAR_lab_primitives_20261111/retrain_1h_20261113'
+ssh -- 'ai2-root-4080' '/share/personal/liyanjun/yanjun/envs/jar/bin/python /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/retrain.py start --root /share/personal/yekangjie/JAR_lab_primitives_20261111/retrain_1h_20261113'
+ssh -- 'ai2-root-4080' '/share/personal/liyanjun/yanjun/envs/jar/bin/python /share/personal/yekangjie/JAR_lab_primitives_20261111/code/tools/jar_lab_training/retrain.py status --root /share/personal/yekangjie/JAR_lab_primitives_20261111/retrain_1h_20261113'
+```
+
+以下记录上一轮4小时配方。
+
 本工具复用指定服务器 JAR 的 OLMo2 模型、官方权重初始化、512 桶 codec 和 packing，不修改原 JAR。
 运行时先冻结 `jar/` 的独立快照到实验目录 `vendor/`，并记录原仓库版本与文件哈希。
 
