@@ -81,3 +81,24 @@
 - [exporter.py](../../gear_sonic/data/exporter.py)：275行缺少源timestamp时使用frame_index/fps。
 
 新增分析产物位于本机项目.runtime/dataset_audit/zhenglichuangpu_20261113_v1，包含metrics.json、signals.npz、overview.jpg、visual_motion.npz、torso_angular_step.npy、fk_check.json、alignment_scan.npz、alignment_estimate.json、alignment_diagnostics.png。未创建临时测试脚本；未修改采集代码及原数据。
+
+## Observation仿真回放视频
+
+用户确认采用“身体回放＋真实手部数据条”。[完整视频](/home/ykj/project/SONICMJ/GR00T-WholeBodyControl/outputs/observation_replays/zhenglichuangpu_20261113_v1/observation_replay.mp4)左侧按observation.state名称映射29个身体关节，使用记录的机身四元数；右侧为同frame_index的原相机画面，下方为12个强脑电机的实测开合程度。没有对视频额外移帧。
+
+数据未记录机身平移，故固定根位置，不能据此恢复绕床行走的世界坐标轨迹。采用项目规定的G1 29-DOF资产；缺少Revo2手模型，不渲染替代手几何，手部只显示真实观测条。这是运动学回放，没有运行SONIC策略、物理闭环或机器人通信。
+
+脚本：[render_lerobot_observations.py](../../gear_sonic/scripts/render_lerobot_observations.py)，复用现有replay_lerobot_mujoco的读取、关节名映射和根姿态函数。本次完整执行的命令如下；逐行运行，行尾反斜杠表示续行。重复运行时应将output改成不存在的新文件名：
+
+```bash
+cd /home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.worktrees/brainco-hand-onboard
+mkdir -p .runtime/render_tmp
+MUJOCO_GL=egl TMPDIR="$PWD/.runtime/render_tmp" PYTHONPATH="$PWD" \
+  /home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.venv_sim/bin/python \
+  -m gear_sonic.scripts.render_lerobot_observations \
+  --dataset-path /home/ykj/Downloads/dataset/zhenglichuangpu_20261113_v1 \
+  --output /home/ykj/project/SONICMJ/GR00T-WholeBodyControl/outputs/observation_replays/zhenglichuangpu_20261113_v1/observation_replay.mp4 \
+  --ffmpeg /home/ykj/project/SONICMJ/GR00T-WholeBodyControl/.venv_data_collection/lib/python3.10/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2
+```
+
+使用既有项目环境，无依赖或驱动改动。完成12帧小样和全部2635帧渲染，关节写入/读回误差为0。输出目录还包含预览图、编码日志、带验证结果的JSON清单及抽查图。
