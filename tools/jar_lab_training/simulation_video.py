@@ -92,7 +92,7 @@ class Policy:
         self.low,self.high=(np.array(self.manifest["normalization"][k],dtype=np.float32) for k in ("low","high"))
         self.prefixes={}
 
-    def predict(self, state, rgb, timing, instruction, frame, horizon=1):
+    def prepare(self, state, rgb, timing, instruction, frame):
         torch=self.torch
         from dataset import normalize
         state=np.asarray(state,dtype=np.float32)
@@ -116,6 +116,11 @@ class Policy:
             state_positions=prefix["state_positions"][None].to(self.device),
             camera_ids=torch.arange(3,device=self.device).repeat(len(history))[None],
             frame_times=torch.tensor(np.minimum(ages,0),dtype=torch.float32,device=self.device)[None])
+        return prefix,obs
+
+    def predict(self, state, rgb, timing, instruction, frame, horizon=1):
+        torch=self.torch
+        prefix,obs=self.prepare(state,rgb,timing,instruction,frame)
         if self.device.type=="cuda":torch.cuda.synchronize(self.device)
         started=time.monotonic()
         with torch.inference_mode(),torch.autocast(self.device.type,dtype=torch.bfloat16,enabled=self.device.type=="cuda"):
@@ -125,6 +130,38 @@ class Policy:
         physical=(values+1)*(self.high-self.low)/2+self.low
         if not np.isfinite(physical).all():raise RuntimeError("Nonfinite predicted position")
         return physical.astype(float),tokens[0].cpu().numpy(),seconds
+
+    def stream(self, state, rgb, timing, instruction, frame, horizon=32):
+        """Native greedy AR with one yield per 16 tokens; retain KV within a chunk.
+
+        Chunk observations stay fixed. Each returned row is a future-observation
+        position reference, not a timestamp-adjusted trajectory or motor command.
+        """
+        if not 1<=horizon<=32:raise ValueError("Streaming horizon must be 1..32")
+        torch=self.torch
+        prefix,obs=self.prepare(state,rgb,timing,instruction,frame)
+        current=prefix["input_ids"][None].to(self.device)
+        if current.shape[1]+horizon*16>self.config.max_position_embeddings:
+            raise ValueError("Streaming output exceeds the trained context")
+        if self.device.type=="cuda":torch.cuda.synchronize(self.device)
+        started=time.monotonic();previous=started;past=None;tokens=[]
+        with torch.inference_mode(),torch.autocast(self.device.type,dtype=torch.bfloat16,enabled=self.device.type=="cuda"):
+            for index in range(horizon*16):
+                result=self.model(current,**(obs if past is None else {}),past_key_values=past,
+                                  use_cache=True,logits_to_keep=1)
+                past=result["past_key_values"]
+                logits=result["logits"][:,-1,self.tokenizer.low_token_id:self.tokenizer.high_token_id+1]
+                current=logits.argmax(-1,keepdim=True)+self.tokenizer.low_token_id
+                tokens.append(current)
+                if len(tokens)==16:
+                    ids=torch.cat(tokens,dim=1)[0].cpu().numpy()
+                    values=self.tokenizer.decode_actions(ids,horizon=1)
+                    physical=(values+1)*(self.high-self.low)/2+self.low
+                    if not np.isfinite(physical).all():raise RuntimeError("Nonfinite streamed position")
+                    now=time.monotonic()
+                    yield dict(row=index//16,positions=physical.astype(float),tokens=ids.copy(),
+                               elapsed_seconds=now-started,interval_seconds=now-previous)
+                    previous=now;tokens=[]
 
     def close(self):
         del self.model
