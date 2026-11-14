@@ -1,7 +1,8 @@
 """Standalone MuJoCo arm dynamics for dataset-image/JAR state-feedback previews.
 
 No robot, SDK, ROS or DDS imports. The original SONIC XML stays unchanged.
-Pelvis/legs/waist are fixed; only the fourteen named arm joints are integrated.
+Pelvis/legs/waist are fixed. Integrate fourteen named arm joints and, when
+selected, four Dex1 sliders; policy state remains fourteen arms + two motors.
 """
 from pathlib import Path
 import hashlib
