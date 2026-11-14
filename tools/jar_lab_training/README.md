@@ -1,5 +1,15 @@
 # G1 实验室操作：仅用 observation 训练 JAR
 
+## 真并发异步预览（2026-11-14）
+
+`async_simulation_video.py` 在独立线程进行JAR推理，同时按墙钟30Hz推进MuJoCo控制和录制图像。
+`--mode latest` 更新最新单帧参考，`--mode aligned32` 按观测帧时钟使用32帧预测，整块过期则丢弃并保持。
+仿真期间记录qpos，结束推理后再渲染，避免编码器/渲染器阻塞控制时钟；request状态与对应tick实测状态逐个校验。
+时钟迟到量、每次推理延迟、请求接受/过期、缓冲余量均进入结果；不把过期第0行重新播放成未来动作。
+同样使用G1＋Dex1动力学和1小时验证最佳权重，没有框或真机I/O。六项单帧异步预览及取试管32帧对照独立保存于
+训练目录的 `visualizations_async_20261114`。
+实机现状、1/8/32帧计时和现场命令见 [异步部署说明](../jar_lab_deploy/ASYNC_DEPLOYMENT.md)。
+
 ## G1＋Dex1 几何与动力学视频（2026-11-14）
 
 `simulation_video.py --gripper-mode mujoco --dex1-urdf <URDF>` 在上一版JAR反馈链中加入真实夹爪几何和四个动态滑块。
