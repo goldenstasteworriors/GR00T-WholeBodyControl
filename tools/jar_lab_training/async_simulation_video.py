@@ -169,13 +169,13 @@ def rollout(args, task):
             while True:
                 try:r=completed.get_nowait()
                 except queue.Empty:break
-                accepted=buffer.accept(r,frame,now)
+                accepted=buffer.accept(r,frame,time.monotonic())
                 applied.append(dict(source_frame=r["source_frame"],received_frame=frame,accepted=accepted,
                                     latency_seconds=r["ready"]-r["captured"],
                                     chunk_id=r.get("chunk_id"),generated_row=r.get("generated_row"),
                                     prediction_frame=r.get("prediction_frame")))
                 last_latency=r["inference_seconds"]
-            target,origin,left,phase=buffer.sample(frame,now)
+            target,origin,left,phase=buffer.sample(frame,time.monotonic())
             inputs.append(state);qpos.append(physics.data.qpos.copy());targets.append(target)
             ticks.append(now-start);lateness.append(now-deadline);origins.append(origin);remaining.append(left)
             phases.append(phase);latencies.append(last_latency)
