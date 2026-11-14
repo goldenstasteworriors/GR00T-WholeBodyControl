@@ -1,5 +1,18 @@
 # G1 实验室操作：仅用 observation 训练 JAR
 
+## 逐帧流式自回归预览（2026-11-14）
+
+`Policy.stream` 与官方贪心解码逐token对应：同一chunk的观测前缀和KV cache保持不变，每16个标量token
+解码成一帧16维未来observation位置并立即yield，不等512个token全部生成完。
+`async_simulation_video.py --mode stream32` 在下一30Hz控制tick使用刚发布的行，32行结束后才取最新仿真反馈/图像重规划。
+每项先核对8行流式输出与官方整段生成的token及数值完全一致；取试管短测另核对全部32行/512token。
+
+本轮使用 `best_validation.json`，并逐项核对step/NLL确实等于1小时训练的 `validation.jsonl` 最小值。
+权重选择证据见产物 `weight-selection.json`，产物独立保存在 `visualizations_stream_20261114`。
+本次按生成到达时刻更新慢速位置参考，不把它称为原生30Hz时间对齐轨迹；视频显示chunk行号、观测年龄和预测帧。
+同一chunk内部不会注入新的实测状态，推理等待不会暂停物理或录制图像时钟；初始状态之后仍全部使用仿真反馈。
+该流式接口仅接入仿真，未修改pku实机执行器或机器人I/O。
+
 ## 真并发异步预览（2026-11-14）
 
 `async_simulation_video.py` 在独立线程进行JAR推理，同时按墙钟30Hz推进MuJoCo控制和录制图像。
