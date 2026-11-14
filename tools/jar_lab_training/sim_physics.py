@@ -34,6 +34,17 @@ class ArmPhysics:
         for motor in list(actuator):
             if motor.get("joint") not in ARMS:
                 actuator.remove(motor)
+            else:
+                # Express PD as an affine actuator so implicitfast can integrate
+                # its velocity derivative; explicit wrist damping is unstable
+                # at useful simulation timesteps for the small wrist inertias.
+                motor.tag = "general"
+                motor.set("gaintype", "fixed")
+                motor.set("gainprm", "1")
+                motor.set("biastype", "affine")
+                motor.set("biasprm", f"0 {-kp} {-kd}")
+                motor.set("forcelimited", "true")
+                motor.set("forcerange", " ".join(map(str, effort[motor.get("joint")])))
         option = root.find("option")
         if option is None:
             option = ET.SubElement(root, "option")
@@ -88,8 +99,7 @@ class ArmPhysics:
             # deployment's arm-only 10Nm/URDF cap and 10Nm/s startup ramp.
             desired = np.clip(self.data.qfrc_bias, -self.gravity_limit, self.gravity_limit)
             self.gravity += np.clip(desired-self.gravity, -10*self.model.opt.timestep, 10*self.model.opt.timestep)
-            tau = self.kp*(self.command-self.data.qpos)-self.kd*self.data.qvel+self.gravity
-            self.data.ctrl[:] = np.clip(tau, self.effort[:, 0], self.effort[:, 1])
+            self.data.ctrl[:] = self.kp*self.command+self.gravity
             mujoco.mj_step(self.model, self.data)
         if not np.isfinite(self.data.qpos).all() or not np.isfinite(self.data.qvel).all():
             raise RuntimeError("Nonfinite simulated state")
