@@ -69,6 +69,14 @@ class Policy:
             raise ValueError("Unexpected observation joint order")
         choice = json.loads((Path(training)/"runs"/task/"best_validation.json").read_text())
         self.choice = choice
+        weight_path=Path(choice["path"])/"raw_model.pt"
+        # The shared filesystem is fast for sequential reads but slow for the
+        # many small mmap page faults triggered by model.to(cuda).
+        started=time.monotonic();buffer=bytearray(32*1024*1024)
+        with weight_path.open("rb",buffering=0) as stream:
+            while stream.readinto(buffer):pass
+        del buffer
+        print(json.dumps(dict(event="checkpoint_prefetched",task=task,seconds=time.monotonic()-started)),flush=True)
         self.device = torch.device(device)
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
@@ -76,7 +84,7 @@ class Policy:
             torch.backends.cuda.enable_cudnn_sdp(False)
             torch.backends.cuda.matmul.allow_tf32=True
         torch.set_num_threads(4)
-        self.model,self.config = load_olmo2_bundle(Path(choice["path"])/"raw_model.pt",device=device)
+        self.model,self.config = load_olmo2_bundle(weight_path,device=device)
         self.model.eval()
         if self.config.state_dim != 16 or self.config.action_dim != 16:
             raise ValueError("Expected the unchanged 16D OLMo2 checkpoint")
@@ -192,7 +200,7 @@ def rollout(args, task):
     output=args.output/task;output.mkdir(parents=True,exist_ok=True)
     writer=imageio_ffmpeg.write_frames(str(output/"rollout.mp4"),(1920,1080),fps=30,codec="libx264",
         pix_fmt_in="rgb24",pix_fmt_out="yuv420p",quality=7,macro_block_size=1,
-        output_params=["-preset","veryfast","-movflags","+faststart"],ffmpeg_log_level="error")
+        output_params=["-preset","veryfast","-threads","4","-movflags","+faststart"],ffmpeg_log_level="error")
     writer.send(None)
     inputs,targets,actual,latencies=[],[],[],[]
     previous=initial.copy();previous_latency=0.;prefix_equal=None
