@@ -1,7 +1,7 @@
 """Recorded RGB + simulated proprioception rollouts, with zero robot transport.
 
 Only reset uses the recorded initial state. Subsequent model states come from
-MuJoCo arms and an explicitly selected ideal Dex1 servo. Recorded states are
+MuJoCo arms and Dex1 dynamics (or the explicit legacy ideal servo). Recorded states are
 used in the reference panel/metrics, never as subsequent policy inputs.
 """
 import argparse
@@ -138,8 +138,9 @@ class VideoCanvas:
         self.physics,self.mujoco=physics,mujoco
         self.renderer=mujoco.Renderer(physics.model,height=800,width=560)
         self.camera=mujoco.MjvCamera()
-        self.camera.lookat[:]=[.08,0.,.75]
-        self.camera.distance,self.camera.azimuth,self.camera.elevation=2.25,10.,-12.
+        self.camera.lookat[:]=[.15,0.,1.13] if physics.dex1 else [.08,0.,.75]
+        self.camera.distance,self.camera.azimuth,self.camera.elevation=(1.55,135.,-13.) if physics.dex1 else (2.25,10.,-12.)
+        self.view=mujoco.MjvOption();self.view.geomgroup[3:]=0
         self.fonts={size:ImageFont.truetype(str(font),size) for size in (18,22,26,34,38)}
 
     def frame(self, images, task, episode, index, state, truth, previous_target, latency, nll):
@@ -157,10 +158,11 @@ class VideoCanvas:
         for y,value in zip((470,506,542,578),(
             "3-view causal RGB history + fixed English task text",
             "Arms: integrated MuJoCo qpos (14D)",
-            "Dex1: ideal rate-limited servo state (2D)",
+            "Dex1: integrated jaw positions -> motor angles (2D)" if self.physics.dex1 else "Dex1: ideal rate-limited servo state (2D)",
             "Only reset uses recorded state; then feedback is simulated")):
             text(24,y,value,22,MUTED)
-        text(24,638,"Dex1 native angle   /   ideal state, no jaw contacts",22)
+        text(24,638,"Dex1 native angle   /   simulated sliders, approximate mapping" if self.physics.dex1 else
+             "Dex1 native angle   /   ideal state, no jaw contacts",22)
         for side in range(2):
             y=686+side*112
             text(24,y,f"{'LEFT' if side==0 else 'RIGHT'}   sim {state[14+side]:.3f} rad    recorded {truth[14+side]:.3f} rad",22)
@@ -173,7 +175,7 @@ class VideoCanvas:
         text(24,970,f"Last inference: {latency*1000:.0f} ms  |  arm reference cap 0.25 rad/s",22,MUTED)
         text(776,126,"MODEL -> PHYSICS",26,BLUE);text(1352,126,"RECORDED OBSERVATION POSE",26,GREEN)
         for x,data in ((776,self.physics.data),(1352,self.physics.reference)):
-            self.renderer.update_scene(data,camera=self.camera)
+            self.renderer.update_scene(data,camera=self.camera,scene_option=self.view)
             image.paste(Image.fromarray(self.renderer.render()),(x,168))
         text(776,985,"Fixed pelvis / legs / waist. Arms have gravity, inertia and bounded PD.",22,MUTED)
         text(24,1033,"Offline state-feedback check: recorded images do not react to simulated motion. No object/task-success simulation.",22,MUTED)
@@ -190,9 +192,12 @@ def rollout(args, task):
     folder=Path(args.cache)/"episodes"/str(row["episode"])
     with np.load(folder/"observations.npz") as loaded:numeric={k:loaded[k] for k in loaded.files}
     timing={key:numeric[key] for key in ("camera_time","timestamp")}
-    if args.gripper_mode!="ideal":raise ValueError("An explicit supported gripper model is required")
     initial=numeric["state"][0].copy()
-    physics=ArmPhysics(args.xml,initial[:14]);gripper=IdealDex1(initial[14:])
+    if args.gripper_mode=="mujoco":
+        if args.dex1_urdf is None:raise ValueError("MuJoCo grippers require the verified Dex1 URDF")
+        physics=ArmPhysics(args.xml,initial,dex1_urdf=args.dex1_urdf);gripper=None
+    else:
+        physics=ArmPhysics(args.xml,initial[:14]);gripper=IdealDex1(initial[14:])
     rgb=RecordedRGB(args.cache,row["episode"],row["length"])
     canvas=VideoCanvas(physics,args.font)
     frames=min(row["length"],round(args.seconds*30))
@@ -206,9 +211,9 @@ def rollout(args, task):
     previous=initial.copy();previous_latency=0.;prefix_equal=None
     try:
         for frame in range(frames):
-            state=np.r_[physics.state(),gripper.q].astype(np.float32)
+            state=(physics.state() if physics.dex1 else np.r_[physics.state(),gripper.q]).astype(np.float32)
             truth=numeric["state"][frame]
-            physics.set_reference(truth[:14])
+            physics.set_reference(truth if physics.dex1 else truth[:14])
             view=canvas.frame(rgb.frame(frame),task,row["episode"],frame,state,truth,previous,
                               previous_latency,policy.choice["nll"])
             if frame==0:Image.fromarray(view).save(output/"first_frame.png")
@@ -220,8 +225,11 @@ def rollout(args, task):
                 if not prefix_equal:raise RuntimeError("One-frame AR prefix differs from full generation")
             target=predicted[0]
             inputs.append(state);targets.append(target);latencies.append(latency)
-            physics.advance(target[:14]);gripper.advance(target[14:])
-            actual.append(np.r_[physics.state(),gripper.q])
+            if physics.dex1:
+                physics.advance(target);actual.append(physics.state())
+            else:
+                physics.advance(target[:14]);gripper.advance(target[14:])
+                actual.append(np.r_[physics.state(),gripper.q])
             previous,previous_latency=target,latency
             if frame%60==0:print(json.dumps(dict(task=task,episode=row["episode"],frame=frame,frames=frames,
                                                inference_ms=latency*1000)),flush=True)
@@ -236,8 +244,8 @@ def rollout(args, task):
     np.savez_compressed(output/"rollout.npz",model_input_state=inputs,prediction_target=targets,
                         integrated_next_state=actual,recorded_reference=reference,inference_seconds=latencies)
     result=dict(passed=True,task=task,episode=row["episode"],frames=frames,simulated_seconds=frames/30,
-                checkpoint=policy.choice,gripper_model="ideal native-angle 0.5rad/s servo; no geometry/contact/inertia",
-                model_inputs="causal dataset RGB, simulated arms14+ideal Dex1x2, fixed English operation instruction",
+                checkpoint=policy.choice,gripper_model=physics.summary()["gripper"],
+                model_inputs="causal dataset RGB, simulated arms14+Dex1x2, fixed English operation instruction",
                 recorded_state_input_frames=[0],state_feedback_chain_verified=True,one_frame_prefix_equals_full=prefix_equal,
                 arms_mae_rad=float(np.abs(inputs[:,:14]-reference[:,:14]).mean()),
                 grippers_mae_rad=float(np.abs(inputs[:,14:]-reference[:,14:]).mean()),
@@ -260,7 +268,8 @@ def main():
     parser.add_argument("--max-frames",type=int,default=0)
     parser.add_argument("--device",default="cuda:0")
     parser.add_argument("--memory-fraction",type=float,default=.25)
-    parser.add_argument("--gripper-mode",choices=("ideal",),required=True)
+    parser.add_argument("--gripper-mode",choices=("ideal","mujoco"),required=True)
+    parser.add_argument("--dex1-urdf",type=Path)
     parser.add_argument("--skip-prefix-check",action="store_true")
     args=parser.parse_args()
     if args.cache is None:args.cache=args.training_root/"cache"
