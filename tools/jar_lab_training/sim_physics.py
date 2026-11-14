@@ -24,6 +24,9 @@ class ArmPhysics:
         root.find("compiler").set("meshdir", str((xml_path.parent/root.find("compiler").get("meshdir")).resolve()))
         effort = {}
         for body in root.iter("body"):
+            for geom in list(body.findall("geom")):
+                if geom.get("mesh", "").endswith("rubber_hand"):
+                    body.remove(geom)  # do not present the canonical dummy hand as Dex1
             for joint in list(body.findall("joint")):
                 name = joint.get("name")
                 if name not in ARMS:
@@ -115,4 +118,4 @@ class ArmPhysics:
                     fixed="pelvis, legs and waist at canonical XML zero pose; no locomotion controller",
                     simulated_joints=ARMS,kp=self.kp,kd=self.kd,arm_reference_speed_rad_s=self.speed,
                     feedforward="arm generalized bias, capped at min(10Nm, URDF effort), ramp 10Nm/s",
-                    tool_inertia="canonical rubber-hand model; Dex1/tool payload not modeled")
+                    tool_inertia="canonical XML inertias; no additional Dex1/adaptor/tool inertia; dummy hand visuals hidden")

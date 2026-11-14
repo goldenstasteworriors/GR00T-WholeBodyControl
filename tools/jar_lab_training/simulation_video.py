@@ -130,8 +130,8 @@ class VideoCanvas:
         self.physics,self.mujoco=physics,mujoco
         self.renderer=mujoco.Renderer(physics.model,height=800,width=560)
         self.camera=mujoco.MjvCamera()
-        self.camera.lookat[:]=[.08,0.,.94]
-        self.camera.distance,self.camera.azimuth,self.camera.elevation=2.15,10.,-12.
+        self.camera.lookat[:]=[.08,0.,.75]
+        self.camera.distance,self.camera.azimuth,self.camera.elevation=2.25,10.,-12.
         self.fonts={size:ImageFont.truetype(str(font),size) for size in (18,22,26,34,38)}
 
     def frame(self, images, task, episode, index, state, truth, previous_target, latency, nll):
@@ -141,7 +141,7 @@ class VideoCanvas:
         text(24,72,task.replace("_"," "),26,BLUE)
         text(1080,29,f"HELD-OUT EPISODE {episode}     {index/30:5.2f} s",26)
         text(1080,71,f"1h validation-best NLL {nll:.4f}   |   offline 30 fps playback",22,MUTED)
-        labels=["EGO / recorded RGB","LEFT WRIST / recorded RGB","RIGHT WRIST / recorded RGB"]
+        labels=["EGO / recorded RGB","LEFT WRIST","RIGHT WRIST"]
         for camera in range(3):
             x=24+camera*248;text(x,126,labels[camera],18,MUTED)
             image.paste(Image.fromarray(images[camera]).resize((232,232)),(x,158))
