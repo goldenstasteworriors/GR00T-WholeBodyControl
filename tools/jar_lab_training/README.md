@@ -1,5 +1,29 @@
 # G1 实验室操作：仅用 observation 训练 JAR
 
+## 数据图像＋仿真状态视频（2026-11-14）
+
+`simulation_video.py` 使用1小时版本每项验证NLL最低的权重，每项选第一段留出episode，回放最多15秒。
+输入是三视角原始RGB因果历史、仿真双臂/夹爪16维位置、固定英文操作指令；没有框输入，也不是纯图像模型。
+只有frame0用记录状态初始化。之后双臂输入取自600Hz MuJoCo积分结果，夹爪取自显式选择的理想伺服状态；
+真实记录状态只供右侧对照/误差计算。rollout.npz保存每次输入、预测和积分后状态，并核对完整反馈链。
+`sim_physics.py` 在内存中派生标准SONIC rev1 G1模型，固定骨盆/腿/腰，只积分命名顺序核验后的14个臂关节。
+双臂PD为60/1.5，参考限速0.25rad/s；力矩按XML关节限值限制，偏置补偿限幅10Nm/腕5Nm、启动斜率10Nm/s。
+PD使用MuJoCo affine actuator，使implicitfast能处理腕部速度反馈。原XML/mesh文件保持不变。
+
+当前夹爪方案为 `--gripper-mode ideal`：原生角度0–5.4rad、0.5rad/s理想伺服，仅显示数值状态条。
+没有Dex1几何、夹爪接触或额外工具惯量；隐藏标准资产的rubber-hand显示，避免把它误作Dex1。
+视频并排显示真实三相机、模型驱动的仿真姿态和录制观测姿态。录制图像不随仿真动作变化，未仿真物体操作成功率。
+播放为30fps，模型推理按离线时间完成，视频内单列实际推理耗时。每项首帧核对16-token生成与512-token生成前缀一致。
+程序不导入机器人SDK/ROS/DDS，不创建真机控制通道。模型和仿真分别在项目独立uv环境中运行，不修改原Conda/CUDA/驱动。
+
+服务器生成目录，以下为一整行路径：
+
+```text
+/share/personal/yekangjie/JAR_lab_primitives_20261111/retrain_1h_20261113_A800/visualizations_20261114
+```
+
+环境、模型/资产路径和运行参数见该目录run-plan.json；每段视频旁有summary.json及rollout.npz。
+
 ## 2026-11-13：每项1小时，分别保留两种最低NLL
 
 运行于A800-1的GPU1、2，独立目录为原实验下的 `retrain_1h_20261113_A800`。
