@@ -141,7 +141,7 @@ class Policy:
         torch=self.torch
         prefix,obs=self.prepare(state,rgb,timing,instruction,frame)
         current=prefix["input_ids"][None].to(self.device)
-        if current.shape[1]+horizon*16>self.config.max_position_embeddings:
+        if current.shape[1]+horizon*16>self.model.config.max_position_embeddings:
             raise ValueError("Streaming output exceeds the trained context")
         if self.device.type=="cuda":torch.cuda.synchronize(self.device)
         started=time.monotonic();previous=started;past=None;tokens=[]
