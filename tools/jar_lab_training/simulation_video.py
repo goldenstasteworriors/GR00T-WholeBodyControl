@@ -84,7 +84,7 @@ class Policy:
         self.low,self.high=(np.array(self.manifest["normalization"][k],dtype=np.float32) for k in ("low","high"))
         self.prefixes={}
 
-    def predict(self, state, rgb, numeric, instruction, frame, horizon=1):
+    def predict(self, state, rgb, timing, instruction, frame, horizon=1):
         torch=self.torch
         from dataset import normalize
         state=np.asarray(state,dtype=np.float32)
@@ -94,7 +94,8 @@ class Policy:
         pictures=np.stack([rgb.frame(int(index)) for index in history])
         # [history,camera,H,W,RGB] -> the exact training [history*camera,RGB,H,W].
         pictures=pictures.transpose(0,1,4,2,3).reshape(-1,3,240,240).copy()
-        ages=numeric["camera_time"][history].reshape(-1)-numeric["timestamp"][frame]
+        if set(timing)!={"camera_time","timestamp"}:raise ValueError("Only frame timing enters the policy clock")
+        ages=timing["camera_time"][history].reshape(-1)-timing["timestamp"][frame]
         if np.any(ages>1e-7):raise ValueError("Future image leakage")
         text=f"Robot: Unitree G1 with Dex1 grippers. Control rate: 30 Hz. {instruction}"
         key=text,len(pictures)
@@ -180,6 +181,7 @@ def rollout(args, task):
     row=rows[0]
     folder=Path(args.cache)/"episodes"/str(row["episode"])
     with np.load(folder/"observations.npz") as loaded:numeric={k:loaded[k] for k in loaded.files}
+    timing={key:numeric[key] for key in ("camera_time","timestamp")}
     if args.gripper_mode!="ideal":raise ValueError("An explicit supported gripper model is required")
     initial=numeric["state"][0].copy()
     physics=ArmPhysics(args.xml,initial[:14]);gripper=IdealDex1(initial[14:])
@@ -203,9 +205,9 @@ def rollout(args, task):
                               previous_latency,policy.choice["nll"])
             if frame==0:Image.fromarray(view).save(output/"first_frame.png")
             writer.send(view)
-            predicted,tokens,latency=policy.predict(state,rgb,numeric,row["instruction"],frame)
+            predicted,tokens,latency=policy.predict(state,rgb,timing,row["instruction"],frame)
             if frame==0 and not args.skip_prefix_check:
-                _,full_tokens,_=policy.predict(state,rgb,numeric,row["instruction"],frame,horizon=32)
+                _,full_tokens,_=policy.predict(state,rgb,timing,row["instruction"],frame,horizon=32)
                 prefix_equal=bool(np.array_equal(tokens,full_tokens[:16]))
                 if not prefix_equal:raise RuntimeError("One-frame AR prefix differs from full generation")
             target=predicted[0]
